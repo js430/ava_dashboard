@@ -8,6 +8,13 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from dotenv import load_dotenv
+import logging
+
+logger = logging.getLogger("dashboard")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+)
 
 load_dotenv()
 
@@ -138,6 +145,19 @@ async def callback(request: Request, code: str = None, error: str = None):
         "username": user["username"],
         "avatar": user.get("avatar")
     }
+    try:
+        async with request.app.state.db.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO dashboard_sessions (user_id, username, ip_address)
+                VALUES ($1, $2, $3)
+                """,
+                int(user["id"]),
+                user["username"],
+                request.client.host
+            )
+    except Exception as e:
+        logger.error(f"Failed to log dashboard session: {e}")
     return RedirectResponse("/")
 
 @app.get("/logout")
@@ -210,3 +230,22 @@ async def get_restocks(
         })
 
     return JSONResponse(result)
+
+ADMIN_USER_IDS = {138165719211835392,96718322170597376,1085970316490199040}
+@app.get("/admin", response_class=HTMLResponse)
+async def admin(request: Request, user=Depends(get_current_user)):
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403)
+    
+    async with request.app.state.db.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT username, user_id, logged_in_at, ip_address
+            FROM dashboard_sessions
+            ORDER BY logged_in_at DESC
+            LIMIT 100
+        """)
+    
+    return templates.TemplateResponse("admin.html", {
+        "request": request,
+        "sessions": rows
+    })
