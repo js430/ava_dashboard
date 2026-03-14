@@ -56,6 +56,14 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     await app.state.db.close()
+# --- Public IPv4 address getter ---#
+def get_real_ip(request: Request) -> str:
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        # X-Forwarded-For can be a comma-separated list if there are multiple proxies
+        # The first one is the original client IP
+        return forwarded_for.split(",")[0].strip()
+    return request.client.host
 
 # ---- Auth helpers ----
 def get_current_user(request: Request):
@@ -123,6 +131,7 @@ async def accept_terms(request: Request):
     if not user:
         raise HTTPException(status_code=401)
     request.session["terms_accepted"] = True
+    ip_address=get_real_ip(request)
     try:
         async with app.state.db.acquire() as conn:
             await conn.execute(
@@ -134,7 +143,7 @@ async def accept_terms(request: Request):
                 """,
                 int(user["id"]),
                 user["username"],
-                request.client.host
+                ip_address
             )
         logger.info(f"Terms accepted: {user['username']} ({user['id']})")
     except Exception as e:
@@ -185,7 +194,7 @@ async def callback(request: Request, code: str = None, error: str = None):
         "username": user["username"],
         "avatar": user.get("avatar")
     }
-
+    ip_address=get_real_ip(request)
     # Log the session
     try:
         async with app.state.db.acquire() as conn:
@@ -196,7 +205,7 @@ async def callback(request: Request, code: str = None, error: str = None):
                 """,
                 int(user["id"]),
                 user["username"],
-                request.client.host
+                ip_address
             )
         logger.info(f"Dashboard login: {user['username']} ({user['id']}) from {request.client.host}")
     except Exception as e:
