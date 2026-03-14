@@ -175,6 +175,7 @@ async def get_restocks(
                 'other-online-restocks',
                 'pokemon-center-drops'
             ))
+            AND (store_name NOT IN ('Costco', 'Sam's Club'))
             ORDER BY date ASC
             """,
             since

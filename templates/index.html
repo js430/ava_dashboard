@@ -28,10 +28,9 @@
   .table-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; padding: 16px; position: relative; overflow: hidden; }
   .wm-canvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 999; }
   .table-scroll { overflow-x: auto; }
-  table { border-collapse: collapse; font-size: 11px; }
+  table { border-collapse: collapse; font-size: 11px; width: 100%; }
   .loc-cell { font-size: 11px; white-space: nowrap; padding: 3px 10px 3px 0; text-align: right; min-width: 130px; }
   .loc-name { color: #111; font-weight: 500; }
-  .store-header-label { font-size: 10px; color: #aaa; font-weight: 600; letter-spacing: 0.05em; padding-top: 10px; }
   .col-head { font-size: 10px; color: #888; text-align: center; padding: 2px 1px; min-width: 28px; }
   .sub-head { font-size: 9px; color: #aaa; text-align: center; padding: 1px; }
   .cell { width: 28px; height: 24px; text-align: center; vertical-align: middle; cursor: default; font-size: 10px; font-weight: 500; border-radius: 3px; border: 1px solid transparent; transition: border-color 0.1s; }
@@ -45,6 +44,29 @@
   .tip-title { font-weight: 600; margin-bottom: 4px; font-size: 12px; }
   .tip-dates { color: #555; font-size: 10px; white-space: pre-line; }
   .empty { text-align: center; padding: 40px; color: #aaa; font-size: 14px; }
+
+  /* Store group header row */
+  .store-group-header { cursor: pointer; user-select: none; }
+  .store-group-header:hover .store-header-inner { background: #f9f9f9; }
+  .store-header-inner {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px 8px 0;
+    border-top: 2px solid #e4e4e7;
+    margin-top: 8px;
+  }
+  .store-header-name {
+    font-size: 13px; font-weight: 700; color: #111; letter-spacing: 0.01em;
+  }
+  .store-header-count {
+    font-size: 11px; color: #999; font-weight: 400;
+  }
+  .store-chevron {
+    margin-left: auto;
+    font-size: 11px; color: #aaa;
+    transition: transform 0.2s;
+    display: inline-block;
+  }
+  .store-chevron.open { transform: rotate(90deg); }
 </style>
 </head>
 <body>
@@ -120,16 +142,18 @@ const REGIONS = [
   { key:"RVA",  label:"Central VA",        color:"#993556" },
 ];
 
-const SLOTS         = ["Morning","Afternoon","Evening"];
-const SLOT_S        = ["AM","PM","Eve"];
-const DOW_ORDER     = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
-const STORE_ORDER   = ["Target","Walmart","Best Buy","5 Below","Barnes and Noble"];
+const SLOTS           = ["Morning","Afternoon","Evening"];
+const SLOT_S          = ["AM","PM","Eve"];
+const DOW_ORDER       = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+const STORE_ORDER     = ["Target","Walmart","Best Buy","5 Below","Barnes and Noble"];
 const EXCLUDED_STORES = ["Costco","Sams Club"];
 
-let currentPeriod = 'week';
-let currentRegion = 'NOVA';
-let showSlots     = true;
-let rawData       = [];
+let currentPeriod  = 'week';
+let currentRegion  = 'NOVA';
+let showSlots      = true;
+let rawData        = [];
+// Track which store groups are expanded — all collapsed by default
+let expandedStores = new Set();
 
 function getHeatColor(val, max){
   if(val===0) return {bg:"#f4f4f5", fg:"#bbb"};
@@ -210,6 +234,15 @@ function aggregateData(){
   return {dayList, locs:sorted};
 }
 
+function toggleStore(storeName){
+  if(expandedStores.has(storeName)){
+    expandedStores.delete(storeName);
+  } else {
+    expandedStores.add(storeName);
+  }
+  render();
+}
+
 function render(){
   const {dayList,locs}=aggregateData();
 
@@ -229,6 +262,7 @@ function render(){
     drawWatermark(); return;
   }
 
+  // Build thead
   let html="<thead>";
   if(showSlots){
     html+="<tr><th class='loc-cell'></th>";
@@ -252,45 +286,70 @@ function render(){
   }
   html+="</thead><tbody>";
 
-  let lastStore=null;
+  // Group locs by store
+  const groups={};
   locs.forEach(loc=>{
-    if(loc.store!==lastStore){
-      const spanCols=showSlots?dayList.length*3:dayList.length;
-      html+=`<tr>
-        <td class='loc-cell store-header-label'>${loc.store}</td>
-        <td colspan='${spanCols+1}'><div style='height:1px;background:#ebebeb;margin-top:10px;'></div></td>
-      </tr>`;
-      lastStore=loc.store;
-    }
+    if(!groups[loc.store]) groups[loc.store]=[];
+    groups[loc.store].push(loc);
+  });
 
-    let rowTotal=0;
-    html+=`<tr><td class='loc-cell'><span class='loc-name'>${loc.location}</span></td>`;
+  const spanCols=showSlots?dayList.length*3:dayList.length;
 
-    dayList.forEach(({key,label},dayIdx)=>{
-      const d=loc.days[key]||{Morning:[],Afternoon:[],Evening:[]};
-      if(showSlots){
-        SLOTS.forEach((sl,slIdx)=>{
-          const times=d[sl];
-          const count=times.length;
+  STORE_ORDER.forEach(storeName=>{
+    const group=groups[storeName];
+    if(!group||!group.length) return;
+
+    const isOpen=expandedStores.has(storeName);
+    const totalRestocks=group.reduce((sum,loc)=>{
+      return sum+dayList.reduce((s,{key})=>{
+        const d=loc.days[key]||{Morning:[],Afternoon:[],Evening:[]};
+        return s+SLOTS.reduce((ss,sl)=>ss+d[sl].length,0);
+      },0);
+    },0);
+
+    // Store group header row — clicking toggles
+    html+=`<tr class='store-group-header' onclick='toggleStore(${JSON.stringify(storeName)})'>
+      <td colspan='${spanCols+2}'>
+        <div class='store-header-inner'>
+          <span class='store-header-name'>${storeName}</span>
+          <span class='store-header-count'>${group.length} location${group.length!==1?"s":""} · ${totalRestocks} restock${totalRestocks!==1?"s":""}</span>
+          <span class='store-chevron${isOpen?" open":""}'>&#9654;</span>
+        </div>
+      </td>
+    </tr>`;
+
+    if(!isOpen) return;
+
+    group.forEach(loc=>{
+      let rowTotal=0;
+      html+=`<tr><td class='loc-cell'><span class='loc-name'>${loc.location}</span></td>`;
+
+      dayList.forEach(({key,label},dayIdx)=>{
+        const d=loc.days[key]||{Morning:[],Afternoon:[],Evening:[]};
+        if(showSlots){
+          SLOTS.forEach((sl,slIdx)=>{
+            const times=d[sl];
+            const count=times.length;
+            rowTotal+=count;
+            const {bg,fg}=getHeatColor(count,maxVal);
+            const divClass=slIdx===0&&dayIdx>0?" day-divider":"";
+            const safeTitle=`${loc.location} · ${label} ${sl} (${count})`;
+            const safeDates=times.length?times.join("\n"):"No restocks";
+            html+=`<td class='cell${divClass}' style='background:${bg};color:${fg}' data-title="${safeTitle.replace(/"/g,'&quot;')}" data-dates="${safeDates.replace(/"/g,'&quot;')}">${count>0?count:`<span style='opacity:0.3'>·</span>`}</td>`;
+          });
+        } else {
+          const allTimes=SLOTS.flatMap(sl=>d[sl]);
+          const count=allTimes.length;
           rowTotal+=count;
           const {bg,fg}=getHeatColor(count,maxVal);
-          const divClass=slIdx===0&&dayIdx>0?" day-divider":"";
-          const safeTitle=`${loc.location} · ${label} ${sl} (${count})`;
-          const safeDates=times.length?times.join("\n"):"No restocks";
+          const divClass=dayIdx>0?" day-divider":"";
+          const safeTitle=`${loc.location} · ${label} (${count})`;
+          const safeDates=allTimes.length?allTimes.join("\n"):"No restocks";
           html+=`<td class='cell${divClass}' style='background:${bg};color:${fg}' data-title="${safeTitle.replace(/"/g,'&quot;')}" data-dates="${safeDates.replace(/"/g,'&quot;')}">${count>0?count:`<span style='opacity:0.3'>·</span>`}</td>`;
-        });
-      } else {
-        const allTimes=SLOTS.flatMap(sl=>d[sl]);
-        const count=allTimes.length;
-        rowTotal+=count;
-        const {bg,fg}=getHeatColor(count,maxVal);
-        const divClass=dayIdx>0?" day-divider":"";
-        const safeTitle=`${loc.location} · ${label} (${count})`;
-        const safeDates=allTimes.length?allTimes.join("\n"):"No restocks";
-        html+=`<td class='cell${divClass}' style='background:${bg};color:${fg}' data-title="${safeTitle.replace(/"/g,'&quot;')}" data-dates="${safeDates.replace(/"/g,'&quot;')}">${count>0?count:`<span style='opacity:0.3'>·</span>`}</td>`;
-      }
+        }
+      });
+      html+=`<td class='total-cell'>${rowTotal}</td></tr>`;
     });
-    html+=`<td class='total-cell'>${rowTotal}</td></tr>`;
   });
 
   html+="</tbody>";
