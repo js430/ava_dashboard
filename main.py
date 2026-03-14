@@ -205,6 +205,7 @@ async def get_restocks(
             "store":     row["store_name"],
             "region":    channel_to_region.get(row["channel_name"], "NOVA"),
             "date":      local_dt.strftime("%Y-%m-%d"),
+            "datetime":  local_dt.strftime("%b %d %I:%M %p"),
             "slot":      time_slot(local_dt),
         })
 
