@@ -1,4 +1,5 @@
 import os
+import logging
 import httpx
 import asyncpg
 from datetime import datetime, timedelta
@@ -8,15 +9,14 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from dotenv import load_dotenv
-import logging
+
+load_dotenv()
 
 logger = logging.getLogger("dashboard")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s"
 )
-
-load_dotenv()
 
 app = FastAPI()
 
@@ -28,13 +28,16 @@ app.add_middleware(
 
 templates = Jinja2Templates(directory="templates")
 
-# ---- Config from environment ----
-DATABASE_URL        = os.getenv("DATABASE_URL")
-DISCORD_CLIENT_ID   = os.getenv("DISCORD_CLIENT_ID")
+# ---- Config ----
+DATABASE_URL          = os.getenv("DATABASE_URL")
+DISCORD_CLIENT_ID     = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
-DISCORD_REDIRECT_URI  = os.getenv("DISCORD_REDIRECT_URI")   # e.g. https://yourdomain.up.railway.app/callback
-DISCORD_GUILD_ID    = os.getenv("DISCORD_GUILD_ID")          # your server ID
-REQUIRED_ROLE_ID    = os.getenv("REQUIRED_ROLE_ID")          # role ID that gates access
+DISCORD_REDIRECT_URI  = os.getenv("DISCORD_REDIRECT_URI")
+DISCORD_GUILD_ID      = os.getenv("DISCORD_GUILD_ID")
+REQUIRED_ROLE_ID      = os.getenv("REQUIRED_ROLE_ID")
+ADMIN_USER_IDS        = {
+    int(uid) for uid in os.getenv("ADMIN_USER_IDS", "").split(",") if uid.strip()
+}
 
 DISCORD_API = "https://discord.com/api/v10"
 DISCORD_OAUTH_URL = (
@@ -64,7 +67,6 @@ def get_current_user(request: Request):
 async def check_discord_role(access_token: str) -> tuple[bool, dict]:
     """Returns (has_role, user_info)"""
     async with httpx.AsyncClient() as client:
-        # Get user info
         user_resp = await client.get(
             f"{DISCORD_API}/users/@me",
             headers={"Authorization": f"Bearer {access_token}"}
@@ -73,13 +75,12 @@ async def check_discord_role(access_token: str) -> tuple[bool, dict]:
             return False, {}
         user = user_resp.json()
 
-        # Get guild member info (includes roles)
         member_resp = await client.get(
             f"{DISCORD_API}/users/@me/guilds/{DISCORD_GUILD_ID}/member",
             headers={"Authorization": f"Bearer {access_token}"}
         )
         if member_resp.status_code != 200:
-            return False, user  # not in server
+            return False, user
 
         member = member_resp.json()
         roles = member.get("roles", [])
@@ -136,7 +137,7 @@ async def callback(request: Request, code: str = None, error: str = None):
 
     if not has_role:
         return HTMLResponse(
-            f"<h3>Access denied.</h3><p>You need the required role in the server to view this dashboard.</p>",
+            "<h3>Access denied.</h3><p>You need the required role in the server to view this dashboard.</p>",
             status_code=403
         )
 
@@ -145,8 +146,10 @@ async def callback(request: Request, code: str = None, error: str = None):
         "username": user["username"],
         "avatar": user.get("avatar")
     }
+
+    # Log the session
     try:
-        async with request.app.state.db.acquire() as conn:
+        async with app.state.db.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO dashboard_sessions (user_id, username, ip_address)
@@ -156,14 +159,62 @@ async def callback(request: Request, code: str = None, error: str = None):
                 user["username"],
                 request.client.host
             )
+        logger.info(f"Dashboard login: {user['username']} ({user['id']}) from {request.client.host}")
     except Exception as e:
         logger.error(f"Failed to log dashboard session: {e}")
+
     return RedirectResponse("/")
 
 @app.get("/logout")
 async def logout(request: Request):
     request.session.clear()
     return RedirectResponse("/login")
+
+# ---- Admin ----
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_page(request: Request, user=Depends(get_current_user)):
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return templates.TemplateResponse("admin.html", {
+        "request": request,
+        "username": user["username"],
+        "avatar": user.get("avatar"),
+        "user_id": user["id"]
+    })
+
+@app.get("/admin/api")
+async def admin_api(
+    request: Request,
+    limit: int = 100,
+    user=Depends(get_current_user)
+):
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    if limit not in (50, 100, 250, 500):
+        limit = 100
+
+    async with request.app.state.db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT user_id, username, logged_in_at, ip_address
+            FROM dashboard_sessions
+            ORDER BY logged_in_at DESC
+            LIMIT $1
+            """,
+            limit
+        )
+
+    return JSONResponse([
+        {
+            "user_id": str(r["user_id"]),
+            "username": r["username"],
+            "logged_in_at": r["logged_in_at"].isoformat(),
+            "ip_address": r["ip_address"]
+        }
+        for r in rows
+    ])
 
 # ---- Data API ----
 
@@ -200,19 +251,18 @@ async def get_restocks(
             since
         )
 
-    # Map channel_name → region key
     channel_to_region = {
-        "nova-restock-information":    "NOVA",
-        "md-restock-information":      "MD",
-        "dc-restock-information":      "DC",
-        "rva-central-va-restock-information":     "RVA",
+        "nova-restock-information": "NOVA",
+        "md-restock-information":   "MD",
+        "dc-restock-information":   "DC",
+        "rva-central-va-restock-information":  "RVA",
     }
 
     def time_slot(dt):
         h = dt.hour
         if h < 12:
             return "Morning"
-        elif h < 18:
+        elif h < 17:
             return "Afternoon"
         else:
             return "Evening"
@@ -221,31 +271,12 @@ async def get_restocks(
     for row in rows:
         local_dt = row["local_date"]
         result.append({
-            "location":  row["location"],
-            "store":     row["store_name"],
-            "region":    channel_to_region.get(row["channel_name"], "NOVA"),
-            "date":      local_dt.strftime("%Y-%m-%d"),
-            "datetime":  local_dt.strftime("%b %d %I:%M %p"),
-            "slot":      time_slot(local_dt),
+            "location": row["location"],
+            "store":    row["store_name"],
+            "region":   channel_to_region.get(row["channel_name"], "NOVA"),
+            "date":     local_dt.strftime("%Y-%m-%d"),
+            "datetime": local_dt.strftime("%b %d %I:%M %p"),
+            "slot":     time_slot(local_dt),
         })
 
     return JSONResponse(result)
-
-ADMIN_USER_IDS = {138165719211835392,96718322170597376,1085970316490199040}
-@app.get("/admin", response_class=HTMLResponse)
-async def admin(request: Request, user=Depends(get_current_user)):
-    if int(user["id"]) not in ADMIN_USER_IDS:
-        raise HTTPException(status_code=403)
-    
-    async with request.app.state.db.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT username, user_id, logged_in_at, ip_address
-            FROM dashboard_sessions
-            ORDER BY logged_in_at DESC
-            LIMIT 100
-        """)
-    
-    return templates.TemplateResponse("admin.html", {
-        "request": request,
-        "sessions": rows
-    })
