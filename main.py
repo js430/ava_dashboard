@@ -153,8 +153,8 @@ async def get_restocks(
     request: Request = None,
     user=Depends(get_current_user)
 ):
-    if days not in (7, 30, 60):
-        raise HTTPException(status_code=400, detail="days must be 7, 30, or 60")
+    if days not in (7, 28, 56):
+        raise HTTPException(status_code=400, detail="days must be 7, 28, or 56")
 
     eastern = ZoneInfo("America/New_York")
     now = datetime.now(eastern)
@@ -192,7 +192,7 @@ async def get_restocks(
         h = dt.hour
         if h < 12:
             return "Morning"
-        elif h < 17:
+        elif h < 18:
             return "Afternoon"
         else:
             return "Evening"
