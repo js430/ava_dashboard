@@ -185,7 +185,7 @@ async def get_restocks(
         "nova-restock-information":    "NOVA",
         "md-restock-information":      "MD",
         "dc-restock-information":      "DC",
-        "rva-restock-information":     "RVA",
+        "rva-central-va-restock-information":     "RVA",
     }
 
     def time_slot(dt):
