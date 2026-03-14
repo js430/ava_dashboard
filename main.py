@@ -272,8 +272,8 @@ async def get_restocks(
     request: Request = None,
     user=Depends(get_current_user)
 ):
-    if days not in (7, 28, 56):
-        raise HTTPException(status_code=400, detail="days must be 7, 28, or 56")
+    if days not in (7, 14, 21, 28, 35, 42, 49, 56):
+        raise HTTPException(status_code=400, detail="Invalid days value")
 
     eastern = ZoneInfo("America/New_York")
     now = datetime.now(eastern)
@@ -303,7 +303,7 @@ async def get_restocks(
     "nova-restock-information":             "NOVA",
     "md-restock-information":               "MD",
     "dc-restock-information":               "DC",
-    "rva-central-va-restock-information":   "RVA",  # ← was "rva-restock-information"
+    "rva-central-va-restock-information":   "RVA",  
 }
 
     def time_slot(dt):

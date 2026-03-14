@@ -15,10 +15,8 @@
   .logout { font-size: 12px; color: #888; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; }
   .logout:hover { background: #f4f4f5; }
 
-  /* Layout */
   .body-wrap { display: flex; align-items: flex-start; gap: 0; min-height: calc(100vh - 57px); }
 
-  /* Sidebar */
   .sidebar {
     width: 220px; flex-shrink: 0;
     background: #fff; border-right: 1px solid #e4e4e7;
@@ -61,7 +59,6 @@
   .loc-link.has-link { color: #5865F2; }
   .loc-link.has-link:hover { text-decoration: underline; }
 
-  /* Main content */
   .main { flex: 1; padding: 20px 24px; min-width: 0; }
   .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 20px; }
   .controls label { font-size: 12px; color: #666; }
@@ -73,6 +70,14 @@
   .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
   .ctrl-divider { width: 1px; height: 20px; background: #e4e4e7; margin: 0 4px; }
   .loading-msg { font-size: 13px; color: #888; }
+
+  /* Slider */
+  .slider-wrap { display: flex; flex-direction: column; gap: 4px; }
+  .slider-row { display: flex; align-items: center; gap: 10px; }
+  .slider-row input[type=range] { width: 160px; }
+  .slider-label { font-size: 12px; font-weight: 500; color: #111; min-width: 72px; }
+  .slider-ticks { display: flex; justify-content: space-between; width: 160px; padding: 0 2px; }
+  .slider-tick { font-size: 9px; color: #bbb; }
 
   .table-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; padding: 16px; position: relative; overflow: hidden; }
   .wm-canvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 999; }
@@ -90,6 +95,7 @@
   .total-head { font-size: 10px; color: #888; text-align: center; padding: 2px 8px; }
   .total-cell { font-size: 11px; font-weight: 600; text-align: center; padding: 0 8px; }
   .store-group-header { cursor: pointer; user-select: none; }
+  .store-group-header:hover .store-header-inner { background: #f9f9f9; }
   .store-header-inner { display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 0; border-top: 2px solid #e4e4e7; margin-top: 8px; }
   .store-header-name { font-size: 13px; font-weight: 700; color: #111; letter-spacing: 0.01em; }
   .store-header-count { font-size: 11px; color: #999; font-weight: 400; }
@@ -124,7 +130,6 @@
 
 <div class="body-wrap">
 
-  <!-- Sidebar -->
   <div class="sidebar">
     <div class="sidebar-header">
       <span class="sidebar-title">Locations</span>
@@ -138,15 +143,28 @@
     </div>
   </div>
 
-  <!-- Main -->
   <div class="main">
     <div class="controls">
+
       <label>Period:</label>
-      <div class="btn-group">
-        <button class="active" onclick="setPeriod('week',this)">This week</button>
-        <button onclick="setPeriod('4weeks',this)">Last 4 weeks</button>
-        <button onclick="setPeriod('8weeks',this)">Last 8 weeks</button>
+      <div class="slider-wrap">
+        <div class="slider-row">
+          <input type="range" id="periodSlider" min="1" max="8" step="1" value="1"
+            oninput="onSliderChange(this.value)">
+          <span class="slider-label" id="periodLabel">This week</span>
+        </div>
+        <div class="slider-ticks">
+          <span class="slider-tick">1w</span>
+          <span class="slider-tick">2w</span>
+          <span class="slider-tick">3w</span>
+          <span class="slider-tick">4w</span>
+          <span class="slider-tick">5w</span>
+          <span class="slider-tick">6w</span>
+          <span class="slider-tick">7w</span>
+          <span class="slider-tick">8w</span>
+        </div>
       </div>
+
       <div class="ctrl-divider"></div>
       <label>Region:</label>
       <div class="btn-group" id="regionBtns">
@@ -155,6 +173,7 @@
         <button onclick="setRegion('DC',this)">DC</button>
         <button onclick="setRegion('RVA',this)">RVA</button>
       </div>
+
       <div class="ctrl-divider"></div>
       <label>Time split:</label>
       <div class="btn-group">
@@ -199,15 +218,19 @@ const SLOT_S          = ["AM","PM","Eve"];
 const DOW_ORDER       = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 const STORE_ORDER     = ["Target","Walmart","Best Buy","5 Below","Barnes and Noble"];
 const EXCLUDED_STORES = ["Costco","Sams Club"];
+const PERIOD_LABELS   = {
+  1:"This week", 2:"2 weeks", 3:"3 weeks", 4:"4 weeks",
+  5:"5 weeks",   6:"6 weeks", 7:"7 weeks", 8:"8 weeks"
+};
 
-let currentPeriod  = 'week';
-let currentRegion  = 'NOVA';
-let showSlots      = true;
-let rawData        = [];
-let expandedStores = new Set();
-let locationMeta   = {};  // location name -> { store, link }
-let selectedLocs   = new Set(); // location names currently checked
-let sidebarOpen    = {};  // store -> bool (sidebar group open/closed)
+let currentWeeks  = 1;
+let currentRegion = 'NOVA';
+let showSlots     = true;
+let rawData       = [];
+let expandedStores= new Set();
+let locationMeta  = {};
+let selectedLocs  = new Set();
+let sidebarOpen   = {};
 
 function getHeatColor(val, max){
   if(val===0) return {bg:"#f4f4f5", fg:"#bbb"};
@@ -234,7 +257,7 @@ function getDOW(dateStr){
 }
 
 function buildDayList(){
-  if(currentPeriod==='week'){
+  if(currentWeeks===1){
     const list=[];
     const now=new Date();
     const monday=new Date(now);
@@ -255,7 +278,7 @@ function aggregateData(){
   const dayList=buildDayList();
   const locs={};
 
-  if(currentPeriod==='week'){
+  if(currentWeeks===1){
     const dayKeys=new Set(dayList.map(d=>d.key));
     rawData.forEach(row=>{
       if(!dayKeys.has(row.date)) return;
@@ -286,47 +309,47 @@ function aggregateData(){
     if(oa!==ob) return oa-ob;
     return a.location.localeCompare(b.location);
   });
-
   return {dayList, locs:sorted};
 }
 
-// ---- Sidebar ----
+// ---- Slider ----
+function onSliderChange(val){
+  currentWeeks=parseInt(val);
+  document.getElementById("periodLabel").textContent=PERIOD_LABELS[currentWeeks];
+  fetchData();
+}
 
+// ---- Sidebar ----
 async function loadLocations(){
   try {
-    const resp = await fetch(`/api/locations?region=${currentRegion}`);
-    const data = await resp.json();
-
-    locationMeta = {};
-    data.forEach(d=>{ locationMeta[d.location] = { store: d.store, link: d.link }; });
-
-    // Default: all selected
-    selectedLocs = new Set(data.map(d=>d.location));
-
+    const resp=await fetch(`/api/locations?region=${currentRegion}`);
+    const data=await resp.json();
+    locationMeta={};
+    data.forEach(d=>{ locationMeta[d.location]={store:d.store, link:d.link}; });
+    selectedLocs=new Set(data.map(d=>d.location));
     renderSidebar(data);
   } catch(e){
-    document.getElementById("sidebarBody").innerHTML =
+    document.getElementById("sidebarBody").innerHTML=
       '<div style="padding:16px;font-size:12px;color:#aaa;">Failed to load locations.</div>';
   }
 }
 
 function renderSidebar(data){
-  // Group by store
-  const groups = {};
+  const groups={};
   data.forEach(d=>{
     if(EXCLUDED_STORES.includes(d.store)) return;
     if(!groups[d.store]) groups[d.store]=[];
     groups[d.store].push(d);
   });
 
-  let html = '';
+  let html='';
   STORE_ORDER.forEach(store=>{
-    const items = groups[store];
+    const items=groups[store];
     if(!items||!items.length) return;
-    const isOpen = sidebarOpen[store] !== false; // default open
-    const checkedCount = items.filter(i=>selectedLocs.has(i.location)).length;
+    const isOpen=sidebarOpen[store]!==false;
+    const checkedCount=items.filter(i=>selectedLocs.has(i.location)).length;
 
-    html += `<div class="store-group">
+    html+=`<div class="store-group">
       <button class="store-group-toggle" onclick="toggleSidebarGroup('${store}')">
         <span class="sg-chevron${isOpen?' open':''}">&#9654;</span>
         ${store}
@@ -335,35 +358,33 @@ function renderSidebar(data){
       <div class="store-group-items" id="sg-${store.replace(/\s/g,'_')}" style="display:${isOpen?'block':'none'}">`;
 
     items.forEach(item=>{
-      const checked = selectedLocs.has(item.location);
-      const hasLink = item.link && item.link.trim();
-      const locLabel = hasLink
+      const checked=selectedLocs.has(item.location);
+      const hasLink=item.link&&item.link.trim();
+      const locLabel=hasLink
         ? `<a class="loc-link has-link" href="${item.link}" target="_blank" rel="noopener">${item.location}</a>`
         : `<span class="loc-link">${item.location}</span>`;
-      html += `<label class="loc-item">
+      html+=`<label class="loc-item">
         <input type="checkbox" ${checked?'checked':''} onchange="toggleLocation('${item.location.replace(/'/g,"\\'")}', this.checked)">
         ${locLabel}
       </label>`;
     });
 
-    html += `</div></div>`;
+    html+=`</div></div>`;
   });
 
-  document.getElementById("sidebarBody").innerHTML = html;
+  document.getElementById("sidebarBody").innerHTML=html;
 }
 
 function toggleSidebarGroup(store){
-  const key = store.replace(/\s/g,'_');
-  const el = document.getElementById(`sg-${key}`);
-  const isOpen = el.style.display !== 'none';
-  el.style.display = isOpen ? 'none' : 'block';
-  sidebarOpen[store] = !isOpen;
-  // Update chevron
-  renderSidebar(Object.keys(locationMeta).map(loc=>({
-    location: loc,
-    store: locationMeta[loc].store,
-    link: locationMeta[loc].link
-  })));
+  const key=store.replace(/\s/g,'_');
+  const el=document.getElementById(`sg-${key}`);
+  const isOpen=el.style.display!=='none';
+  el.style.display=isOpen?'none':'block';
+  sidebarOpen[store]=!isOpen;
+  const data=Object.keys(locationMeta).map(loc=>({
+    location:loc, store:locationMeta[loc].store, link:locationMeta[loc].link
+  }));
+  renderSidebar(data);
 }
 
 function toggleLocation(locName, checked){
@@ -374,41 +395,30 @@ function toggleLocation(locName, checked){
 }
 
 function updateSidebarCounts(){
-  STORE_ORDER.forEach(store=>{
-    const items = Object.entries(locationMeta)
-      .filter(([,v])=>v.store===store)
-      .map(([k])=>k);
+  document.querySelectorAll('.store-group-toggle').forEach(btn=>{
+    const storeName=btn.textContent.trim().split('\n')[0].trim();
+    const items=Object.entries(locationMeta).filter(([,v])=>v.store===storeName).map(([k])=>k);
     if(!items.length) return;
-    const checkedCount = items.filter(l=>selectedLocs.has(l)).length;
-    const toggle = document.querySelector(`button.store-group-toggle`);
-    // Update count spans
-    document.querySelectorAll('.store-group-toggle').forEach(btn=>{
-      if(btn.textContent.includes(store)){
-        const span = btn.querySelector('.sg-count');
-        if(span) span.textContent = `${checkedCount}/${items.length}`;
-      }
-    });
+    const span=btn.querySelector('.sg-count');
+    if(span) span.textContent=`${items.filter(l=>selectedLocs.has(l)).length}/${items.length}`;
   });
 }
 
 function selectAll(){
   Object.keys(locationMeta).forEach(l=>selectedLocs.add(l));
-  renderSidebar(Object.keys(locationMeta).map(loc=>({
-    location:loc, store:locationMeta[loc].store, link:locationMeta[loc].link
-  })));
+  const data=Object.keys(locationMeta).map(loc=>({location:loc,store:locationMeta[loc].store,link:locationMeta[loc].link}));
+  renderSidebar(data);
   render();
 }
 
 function selectNone(){
   selectedLocs.clear();
-  renderSidebar(Object.keys(locationMeta).map(loc=>({
-    location:loc, store:locationMeta[loc].store, link:locationMeta[loc].link
-  })));
+  const data=Object.keys(locationMeta).map(loc=>({location:loc,store:locationMeta[loc].store,link:locationMeta[loc].link}));
+  renderSidebar(data);
   render();
 }
 
 // ---- Heatmap ----
-
 function toggleStore(storeName){
   if(expandedStores.has(storeName)) expandedStores.delete(storeName);
   else expandedStores.add(storeName);
@@ -417,7 +427,6 @@ function toggleStore(storeName){
 
 function render(){
   const {dayList,locs}=aggregateData();
-  const hex=REGIONS.find(r=>r.key===currentRegion)?.color||"#185FA5";
 
   let maxVal=0;
   locs.forEach(loc=>{
@@ -431,7 +440,7 @@ function render(){
 
   const ht=document.getElementById("ht");
   if(!locs.length){
-    ht.innerHTML=`<tr><td class="empty">No restocks found — try selecting more locations or a different period.</td></tr>`;
+    ht.innerHTML=`<tr><td class="empty">No restocks found — try selecting more locations or adjusting the period.</td></tr>`;
     drawWatermark(); return;
   }
 
@@ -479,9 +488,9 @@ function render(){
 
     group.forEach(loc=>{
       let rowTotal=0;
-      const meta = locationMeta[loc.location];
-      const link = meta?.link;
-      const nameHtml = link
+      const meta=locationMeta[loc.location];
+      const link=meta?.link;
+      const nameHtml=link
         ? `<a class="loc-name-link" href="${link}" target="_blank" rel="noopener">${loc.location}</a>`
         : `<span class="loc-name">${loc.location}</span>`;
 
@@ -567,21 +576,15 @@ function drawWatermark(){
 
 async function fetchData(){
   document.getElementById("loadMsg").style.display="inline";
-  const daysMap={'week':7,'4weeks':28,'8weeks':56};
+  const days=currentWeeks*7;
   try{
-    const resp=await fetch(`/api/restocks?days=${daysMap[currentPeriod]}`);
+    const resp=await fetch(`/api/restocks?days=${days}`);
     rawData=await resp.json();
   } catch(e){ rawData=[]; }
   document.getElementById("loadMsg").style.display="none";
   render();
 }
 
-function setPeriod(p,btn){
-  currentPeriod=p;
-  btn.closest(".btn-group").querySelectorAll("button").forEach(b=>b.classList.remove("active"));
-  btn.classList.add("active");
-  fetchData();
-}
 function setRegion(r,btn){
   currentRegion=r;
   btn.closest(".btn-group").querySelectorAll("button").forEach(b=>b.classList.remove("active"));
