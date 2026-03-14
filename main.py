@@ -328,3 +328,28 @@ async def get_restocks(
         })
 
     return JSONResponse(result)
+
+@app.get("/api/locations")
+async def get_locations(
+    request: Request,
+    region: str = "NOVA",
+    user=Depends(get_current_user)
+):
+    async with request.app.state.db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT location, store_type, location_link
+            FROM locations
+            WHERE state = $1
+            ORDER BY store_type ASC, location ASC
+            """,
+            region
+        )
+    return JSONResponse([
+        {
+            "location": r["location"],
+            "store": r["store_type"],
+            "link": r["location_link"]
+        }
+        for r in rows
+    ])

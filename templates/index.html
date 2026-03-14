@@ -14,7 +14,55 @@
   .user-info { font-size: 13px; color: #555; }
   .logout { font-size: 12px; color: #888; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; }
   .logout:hover { background: #f4f4f5; }
-  .main { padding: 24px; max-width: 1400px; margin: 0 auto; }
+
+  /* Layout */
+  .body-wrap { display: flex; align-items: flex-start; gap: 0; min-height: calc(100vh - 57px); }
+
+  /* Sidebar */
+  .sidebar {
+    width: 220px; flex-shrink: 0;
+    background: #fff; border-right: 1px solid #e4e4e7;
+    min-height: calc(100vh - 57px);
+    display: flex; flex-direction: column;
+  }
+  .sidebar-header {
+    padding: 12px 14px 8px;
+    border-bottom: 1px solid #f0f0f0;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .sidebar-title { font-size: 12px; font-weight: 600; color: #111; }
+  .sidebar-actions { display: flex; gap: 6px; }
+  .sidebar-action { font-size: 11px; color: #5865F2; cursor: pointer; background: none; border: none; padding: 0; }
+  .sidebar-action:hover { text-decoration: underline; }
+  .sidebar-body { flex: 1; overflow-y: auto; padding: 8px 0; }
+
+  .store-group { margin-bottom: 2px; }
+  .store-group-toggle {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 14px; cursor: pointer;
+    font-size: 11px; font-weight: 700; color: #111;
+    letter-spacing: 0.03em; user-select: none;
+    background: none; border: none; width: 100%; text-align: left;
+  }
+  .store-group-toggle:hover { background: #f9f9f9; }
+  .sg-chevron { font-size: 9px; color: #aaa; transition: transform 0.15s; flex-shrink: 0; }
+  .sg-chevron.open { transform: rotate(90deg); }
+  .sg-count { font-size: 10px; color: #aaa; font-weight: 400; margin-left: auto; }
+  .store-group-items { padding: 0 0 4px 0; }
+
+  .loc-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 14px 4px 28px;
+    font-size: 12px; color: #333;
+  }
+  .loc-item input[type=checkbox] { width: 13px; height: 13px; cursor: pointer; accent-color: #5865F2; flex-shrink: 0; }
+  .loc-link { color: #333; text-decoration: none; flex: 1; line-height: 1.4; }
+  .loc-link:hover { color: #5865F2; text-decoration: underline; }
+  .loc-link.has-link { color: #5865F2; }
+  .loc-link.has-link:hover { text-decoration: underline; }
+
+  /* Main content */
+  .main { flex: 1; padding: 20px 24px; min-width: 0; }
   .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 20px; }
   .controls label { font-size: 12px; color: #666; }
   .btn-group { display: flex; }
@@ -23,14 +71,17 @@
   .btn-group button:last-child  { border-radius: 0 6px 6px 0; }
   .btn-group button:not(:first-child) { border-left: none; }
   .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
-  .divider { width: 1px; height: 20px; background: #e4e4e7; margin: 0 4px; }
+  .ctrl-divider { width: 1px; height: 20px; background: #e4e4e7; margin: 0 4px; }
   .loading-msg { font-size: 13px; color: #888; }
+
   .table-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; padding: 16px; position: relative; overflow: hidden; }
   .wm-canvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 999; }
   .table-scroll { overflow-x: auto; }
-  table { border-collapse: collapse; font-size: 11px; width: 100%; }
+  table { border-collapse: collapse; font-size: 11px; }
   .loc-cell { font-size: 11px; white-space: nowrap; padding: 3px 10px 3px 0; text-align: right; min-width: 130px; }
   .loc-name { color: #111; font-weight: 500; }
+  .loc-name-link { color: #5865F2; font-weight: 500; text-decoration: none; }
+  .loc-name-link:hover { text-decoration: underline; }
   .col-head { font-size: 10px; color: #888; text-align: center; padding: 2px 1px; min-width: 28px; }
   .sub-head { font-size: 9px; color: #aaa; text-align: center; padding: 1px; }
   .cell { width: 28px; height: 24px; text-align: center; vertical-align: middle; cursor: default; font-size: 10px; font-weight: 500; border-radius: 3px; border: 1px solid transparent; transition: border-color 0.1s; }
@@ -38,35 +89,18 @@
   .day-divider { border-left: 2px solid #d1d5db !important; }
   .total-head { font-size: 10px; color: #888; text-align: center; padding: 2px 8px; }
   .total-cell { font-size: 11px; font-weight: 600; text-align: center; padding: 0 8px; }
+  .store-group-header { cursor: pointer; user-select: none; }
+  .store-header-inner { display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 0; border-top: 2px solid #e4e4e7; margin-top: 8px; }
+  .store-header-name { font-size: 13px; font-weight: 700; color: #111; letter-spacing: 0.01em; }
+  .store-header-count { font-size: 11px; color: #999; font-weight: 400; }
+  .store-chevron { margin-left: auto; font-size: 11px; color: #aaa; transition: transform 0.2s; display: inline-block; }
+  .store-chevron.open { transform: rotate(90deg); }
   .legend { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 11px; color: #888; }
   .legend-swatch { width: 18px; height: 11px; border-radius: 2px; }
   .tip { position: fixed; background: #fff; border: 1px solid #e4e4e7; border-radius: 8px; padding: 8px 12px; font-size: 11px; color: #111; pointer-events: none; z-index: 1000; display: none; box-shadow: 0 2px 8px rgba(0,0,0,0.08); max-width: 280px; line-height: 1.6; }
   .tip-title { font-weight: 600; margin-bottom: 4px; font-size: 12px; }
   .tip-dates { color: #555; font-size: 10px; white-space: pre-line; }
   .empty { text-align: center; padding: 40px; color: #aaa; font-size: 14px; }
-
-  /* Store group header row */
-  .store-group-header { cursor: pointer; user-select: none; }
-  .store-group-header:hover .store-header-inner { background: #f9f9f9; }
-  .store-header-inner {
-    display: flex; align-items: center; gap: 8px;
-    padding: 8px 10px 8px 0;
-    border-top: 2px solid #e4e4e7;
-    margin-top: 8px;
-  }
-  .store-header-name {
-    font-size: 13px; font-weight: 700; color: #111; letter-spacing: 0.01em;
-  }
-  .store-header-count {
-    font-size: 11px; color: #999; font-weight: 400;
-  }
-  .store-chevron {
-    margin-left: auto;
-    font-size: 11px; color: #aaa;
-    transition: transform 0.2s;
-    display: inline-block;
-  }
-  .store-chevron.open { transform: rotate(90deg); }
 </style>
 </head>
 <body>
@@ -88,43 +122,62 @@
   <a href="/logout" class="logout">Log out</a>
 </div>
 
-<div class="main">
-  <div class="controls">
-    <label>Period:</label>
-    <div class="btn-group">
-      <button class="active" onclick="setPeriod('week',this)">This week</button>
-      <button onclick="setPeriod('4weeks',this)">Last 4 weeks</button>
-      <button onclick="setPeriod('8weeks',this)">Last 8 weeks</button>
-    </div>
-    <div class="divider"></div>
-    <label>Region:</label>
-    <div class="btn-group" id="regionBtns">
-      <button class="active" onclick="setRegion('NOVA',this)">NOVA</button>
-      <button onclick="setRegion('MD',this)">MD</button>
-      <button onclick="setRegion('DC',this)">DC</button>
-      <button onclick="setRegion('RVA',this)">RVA</button>
-    </div>
-    <div class="divider"></div>
-    <label>Time split:</label>
-    <div class="btn-group">
-      <button id="btnSlot" class="active" onclick="setSlot(true,this)">AM / PM / Eve</button>
-      <button id="btnDay" onclick="setSlot(false,this)">Day total</button>
-    </div>
-    <span class="loading-msg" id="loadMsg" style="display:none;">Loading...</span>
-  </div>
+<div class="body-wrap">
 
-  <div class="table-card" id="tableCard">
-    <canvas class="wm-canvas" id="wmCanvas"></canvas>
-    <div class="table-scroll">
-      <table id="ht"><tr><td class="empty">Loading data...</td></tr></table>
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <span class="sidebar-title">Locations</span>
+      <div class="sidebar-actions">
+        <button class="sidebar-action" onclick="selectAll()">All</button>
+        <button class="sidebar-action" onclick="selectNone()">None</button>
+      </div>
+    </div>
+    <div class="sidebar-body" id="sidebarBody">
+      <div style="padding:20px;text-align:center;font-size:12px;color:#aaa;">Loading...</div>
     </div>
   </div>
 
-  <div class="legend">
-    <span>None</span>
-    <div style="display:flex;gap:2px;" id="legendBar"></div>
-    <span>High</span>
+  <!-- Main -->
+  <div class="main">
+    <div class="controls">
+      <label>Period:</label>
+      <div class="btn-group">
+        <button class="active" onclick="setPeriod('week',this)">This week</button>
+        <button onclick="setPeriod('4weeks',this)">Last 4 weeks</button>
+        <button onclick="setPeriod('8weeks',this)">Last 8 weeks</button>
+      </div>
+      <div class="ctrl-divider"></div>
+      <label>Region:</label>
+      <div class="btn-group" id="regionBtns">
+        <button class="active" onclick="setRegion('NOVA',this)">NOVA</button>
+        <button onclick="setRegion('MD',this)">MD</button>
+        <button onclick="setRegion('DC',this)">DC</button>
+        <button onclick="setRegion('RVA',this)">RVA</button>
+      </div>
+      <div class="ctrl-divider"></div>
+      <label>Time split:</label>
+      <div class="btn-group">
+        <button id="btnSlot" class="active" onclick="setSlot(true,this)">AM / PM / Eve</button>
+        <button id="btnDay" onclick="setSlot(false,this)">Day total</button>
+      </div>
+      <span class="loading-msg" id="loadMsg" style="display:none;">Loading...</span>
+    </div>
+
+    <div class="table-card" id="tableCard">
+      <canvas class="wm-canvas" id="wmCanvas"></canvas>
+      <div class="table-scroll">
+        <table id="ht"><tr><td class="empty">Loading data...</td></tr></table>
+      </div>
+    </div>
+
+    <div class="legend">
+      <span>None</span>
+      <div style="display:flex;gap:2px;" id="legendBar"></div>
+      <span>High</span>
+    </div>
   </div>
+
 </div>
 
 <div class="tip" id="tip">
@@ -135,13 +188,12 @@
 <script>
 const DISCORD_USERNAME = {{ username | tojson }};
 
-const REGIONS = [
+const REGIONS     = [
   { key:"NOVA", label:"Northern Virginia", color:"#185FA5" },
   { key:"MD",   label:"Maryland",          color:"#0F6E56" },
   { key:"DC",   label:"DC",                color:"#854F0B" },
   { key:"RVA",  label:"Central VA",        color:"#993556" },
 ];
-
 const SLOTS           = ["Morning","Afternoon","Evening"];
 const SLOT_S          = ["AM","PM","Eve"];
 const DOW_ORDER       = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
@@ -152,8 +204,10 @@ let currentPeriod  = 'week';
 let currentRegion  = 'NOVA';
 let showSlots      = true;
 let rawData        = [];
-// Track which store groups are expanded — all collapsed by default
 let expandedStores = new Set();
+let locationMeta   = {};  // location name -> { store, link }
+let selectedLocs   = new Set(); // location names currently checked
+let sidebarOpen    = {};  // store -> bool (sidebar group open/closed)
 
 function getHeatColor(val, max){
   if(val===0) return {bg:"#f4f4f5", fg:"#bbb"};
@@ -207,6 +261,7 @@ function aggregateData(){
       if(!dayKeys.has(row.date)) return;
       if(row.region!==currentRegion) return;
       if(EXCLUDED_STORES.includes(row.store)) return;
+      if(!selectedLocs.has(row.location)) return;
       const k=`${row.location}||${row.store}`;
       if(!locs[k]) locs[k]={location:row.location,store:row.store,region:row.region,days:{}};
       if(!locs[k].days[row.date]) locs[k].days[row.date]={Morning:[],Afternoon:[],Evening:[]};
@@ -216,6 +271,7 @@ function aggregateData(){
     rawData.forEach(row=>{
       if(row.region!==currentRegion) return;
       if(EXCLUDED_STORES.includes(row.store)) return;
+      if(!selectedLocs.has(row.location)) return;
       const dow=getDOW(row.date);
       const k=`${row.location}||${row.store}`;
       if(!locs[k]) locs[k]={location:row.location,store:row.store,region:row.region,days:{}};
@@ -234,17 +290,134 @@ function aggregateData(){
   return {dayList, locs:sorted};
 }
 
-function toggleStore(storeName){
-  if(expandedStores.has(storeName)){
-    expandedStores.delete(storeName);
-  } else {
-    expandedStores.add(storeName);
+// ---- Sidebar ----
+
+async function loadLocations(){
+  try {
+    const resp = await fetch(`/api/locations?region=${currentRegion}`);
+    const data = await resp.json();
+
+    locationMeta = {};
+    data.forEach(d=>{ locationMeta[d.location] = { store: d.store, link: d.link }; });
+
+    // Default: all selected
+    selectedLocs = new Set(data.map(d=>d.location));
+
+    renderSidebar(data);
+  } catch(e){
+    document.getElementById("sidebarBody").innerHTML =
+      '<div style="padding:16px;font-size:12px;color:#aaa;">Failed to load locations.</div>';
   }
+}
+
+function renderSidebar(data){
+  // Group by store
+  const groups = {};
+  data.forEach(d=>{
+    if(EXCLUDED_STORES.includes(d.store)) return;
+    if(!groups[d.store]) groups[d.store]=[];
+    groups[d.store].push(d);
+  });
+
+  let html = '';
+  STORE_ORDER.forEach(store=>{
+    const items = groups[store];
+    if(!items||!items.length) return;
+    const isOpen = sidebarOpen[store] !== false; // default open
+    const checkedCount = items.filter(i=>selectedLocs.has(i.location)).length;
+
+    html += `<div class="store-group">
+      <button class="store-group-toggle" onclick="toggleSidebarGroup('${store}')">
+        <span class="sg-chevron${isOpen?' open':''}">&#9654;</span>
+        ${store}
+        <span class="sg-count">${checkedCount}/${items.length}</span>
+      </button>
+      <div class="store-group-items" id="sg-${store.replace(/\s/g,'_')}" style="display:${isOpen?'block':'none'}">`;
+
+    items.forEach(item=>{
+      const checked = selectedLocs.has(item.location);
+      const hasLink = item.link && item.link.trim();
+      const locLabel = hasLink
+        ? `<a class="loc-link has-link" href="${item.link}" target="_blank" rel="noopener">${item.location}</a>`
+        : `<span class="loc-link">${item.location}</span>`;
+      html += `<label class="loc-item">
+        <input type="checkbox" ${checked?'checked':''} onchange="toggleLocation('${item.location.replace(/'/g,"\\'")}', this.checked)">
+        ${locLabel}
+      </label>`;
+    });
+
+    html += `</div></div>`;
+  });
+
+  document.getElementById("sidebarBody").innerHTML = html;
+}
+
+function toggleSidebarGroup(store){
+  const key = store.replace(/\s/g,'_');
+  const el = document.getElementById(`sg-${key}`);
+  const isOpen = el.style.display !== 'none';
+  el.style.display = isOpen ? 'none' : 'block';
+  sidebarOpen[store] = !isOpen;
+  // Update chevron
+  renderSidebar(Object.keys(locationMeta).map(loc=>({
+    location: loc,
+    store: locationMeta[loc].store,
+    link: locationMeta[loc].link
+  })));
+}
+
+function toggleLocation(locName, checked){
+  if(checked) selectedLocs.add(locName);
+  else selectedLocs.delete(locName);
+  updateSidebarCounts();
+  render();
+}
+
+function updateSidebarCounts(){
+  STORE_ORDER.forEach(store=>{
+    const items = Object.entries(locationMeta)
+      .filter(([,v])=>v.store===store)
+      .map(([k])=>k);
+    if(!items.length) return;
+    const checkedCount = items.filter(l=>selectedLocs.has(l)).length;
+    const toggle = document.querySelector(`button.store-group-toggle`);
+    // Update count spans
+    document.querySelectorAll('.store-group-toggle').forEach(btn=>{
+      if(btn.textContent.includes(store)){
+        const span = btn.querySelector('.sg-count');
+        if(span) span.textContent = `${checkedCount}/${items.length}`;
+      }
+    });
+  });
+}
+
+function selectAll(){
+  Object.keys(locationMeta).forEach(l=>selectedLocs.add(l));
+  renderSidebar(Object.keys(locationMeta).map(loc=>({
+    location:loc, store:locationMeta[loc].store, link:locationMeta[loc].link
+  })));
+  render();
+}
+
+function selectNone(){
+  selectedLocs.clear();
+  renderSidebar(Object.keys(locationMeta).map(loc=>({
+    location:loc, store:locationMeta[loc].store, link:locationMeta[loc].link
+  })));
+  render();
+}
+
+// ---- Heatmap ----
+
+function toggleStore(storeName){
+  if(expandedStores.has(storeName)) expandedStores.delete(storeName);
+  else expandedStores.add(storeName);
   render();
 }
 
 function render(){
   const {dayList,locs}=aggregateData();
+  const hex=REGIONS.find(r=>r.key===currentRegion)?.color||"#185FA5";
 
   let maxVal=0;
   locs.forEach(loc=>{
@@ -258,47 +431,32 @@ function render(){
 
   const ht=document.getElementById("ht");
   if(!locs.length){
-    ht.innerHTML=`<tr><td class="empty">No restocks found for this region and period.</td></tr>`;
+    ht.innerHTML=`<tr><td class="empty">No restocks found — try selecting more locations or a different period.</td></tr>`;
     drawWatermark(); return;
   }
 
-  // Build thead
   let html="<thead>";
   if(showSlots){
     html+="<tr><th class='loc-cell'></th>";
-    dayList.forEach(({label},i)=>{
-      html+=`<th class='col-head${i>0?" day-divider":""}' colspan='3'>${label}</th>`;
-    });
+    dayList.forEach(({label},i)=>{ html+=`<th class='col-head${i>0?" day-divider":""}' colspan='3'>${label}</th>`; });
     html+="<th class='total-head'>Total</th></tr>";
     html+="<tr><th class='loc-cell'></th>";
-    dayList.forEach((_,i)=>{
-      SLOT_S.forEach((s,si)=>{
-        html+=`<th class='sub-head${si===0&&i>0?" day-divider":""}'>${s}</th>`;
-      });
-    });
+    dayList.forEach((_,i)=>{ SLOT_S.forEach((s,si)=>{ html+=`<th class='sub-head${si===0&&i>0?" day-divider":""}'>${s}</th>`; }); });
     html+="<th></th></tr>";
   } else {
     html+="<tr><th class='loc-cell'></th>";
-    dayList.forEach(({label},i)=>{
-      html+=`<th class='col-head${i>0?" day-divider":""}'>${label}</th>`;
-    });
+    dayList.forEach(({label},i)=>{ html+=`<th class='col-head${i>0?" day-divider":""}'>${label}</th>`; });
     html+="<th class='total-head'>Total</th></tr>";
   }
   html+="</thead><tbody>";
 
-  // Group locs by store
   const groups={};
-  locs.forEach(loc=>{
-    if(!groups[loc.store]) groups[loc.store]=[];
-    groups[loc.store].push(loc);
-  });
-
+  locs.forEach(loc=>{ if(!groups[loc.store]) groups[loc.store]=[]; groups[loc.store].push(loc); });
   const spanCols=showSlots?dayList.length*3:dayList.length;
 
   STORE_ORDER.forEach(storeName=>{
     const group=groups[storeName];
     if(!group||!group.length) return;
-
     const isOpen=expandedStores.has(storeName);
     const totalRestocks=group.reduce((sum,loc)=>{
       return sum+dayList.reduce((s,{key})=>{
@@ -307,7 +465,6 @@ function render(){
       },0);
     },0);
 
-    // Store group header row — clicking toggles
     html+=`<tr class='store-group-header' onclick='toggleStore(${JSON.stringify(storeName)})'>
       <td colspan='${spanCols+2}'>
         <div class='store-header-inner'>
@@ -322,15 +479,19 @@ function render(){
 
     group.forEach(loc=>{
       let rowTotal=0;
-      html+=`<tr><td class='loc-cell'><span class='loc-name'>${loc.location}</span></td>`;
+      const meta = locationMeta[loc.location];
+      const link = meta?.link;
+      const nameHtml = link
+        ? `<a class="loc-name-link" href="${link}" target="_blank" rel="noopener">${loc.location}</a>`
+        : `<span class="loc-name">${loc.location}</span>`;
+
+      html+=`<tr><td class='loc-cell'>${nameHtml}</td>`;
 
       dayList.forEach(({key,label},dayIdx)=>{
         const d=loc.days[key]||{Morning:[],Afternoon:[],Evening:[]};
         if(showSlots){
           SLOTS.forEach((sl,slIdx)=>{
-            const times=d[sl];
-            const count=times.length;
-            rowTotal+=count;
+            const times=d[sl]; const count=times.length; rowTotal+=count;
             const {bg,fg}=getHeatColor(count,maxVal);
             const divClass=slIdx===0&&dayIdx>0?" day-divider":"";
             const safeTitle=`${loc.location} · ${label} ${sl} (${count})`;
@@ -338,9 +499,7 @@ function render(){
             html+=`<td class='cell${divClass}' style='background:${bg};color:${fg}' data-title="${safeTitle.replace(/"/g,'&quot;')}" data-dates="${safeDates.replace(/"/g,'&quot;')}">${count>0?count:`<span style='opacity:0.3'>·</span>`}</td>`;
           });
         } else {
-          const allTimes=SLOTS.flatMap(sl=>d[sl]);
-          const count=allTimes.length;
-          rowTotal+=count;
+          const allTimes=SLOTS.flatMap(sl=>d[sl]); const count=allTimes.length; rowTotal+=count;
           const {bg,fg}=getHeatColor(count,maxVal);
           const divClass=dayIdx>0?" day-divider":"";
           const safeTitle=`${loc.location} · ${label} (${count})`;
@@ -392,7 +551,6 @@ function drawWatermark(){
   ctx.font=`400 ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
   ctx.fillStyle="rgba(80,80,80,0.18)";
   ctx.textBaseline="middle";
-  ctx.textRendering="geometricPrecision";
   const angle=-28*Math.PI/180;
   const spacing=fontSize*9;
   const steps=Math.ceil(Math.sqrt(W*W+H*H)/spacing)+2;
@@ -428,7 +586,7 @@ function setRegion(r,btn){
   currentRegion=r;
   btn.closest(".btn-group").querySelectorAll("button").forEach(b=>b.classList.remove("active"));
   btn.classList.add("active");
-  render();
+  loadLocations().then(()=>fetchData());
 }
 function setSlot(v,btn){
   showSlots=v;
@@ -439,7 +597,8 @@ function setSlot(v,btn){
 
 window.addEventListener("resize",()=>requestAnimationFrame(drawWatermark));
 window.addEventListener("scroll",()=>requestAnimationFrame(drawWatermark));
-fetchData();
+
+loadLocations().then(()=>fetchData());
 </script>
 </body>
 </html>
