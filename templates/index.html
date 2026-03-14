@@ -8,7 +8,6 @@
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
 
-  /* ---- Header ---- */
   .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 200; }
   .header-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .avatar { width: 30px; height: 30px; border-radius: 50%; background: #5865F2; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: #fff; overflow: hidden; flex-shrink: 0; }
@@ -17,35 +16,16 @@
   .header-user { font-size: 11px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
   .header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
   .logout { font-size: 12px; color: #888; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; white-space: nowrap; }
-  .locations-btn {
-    display: none;
-    align-items: center; gap: 6px;
-    font-size: 12px; font-weight: 500; color: #5865F2;
-    background: #f0f1ff; border: 1px solid #c7caff;
-    border-radius: 6px; padding: 5px 10px; cursor: pointer;
-    white-space: nowrap;
-  }
-  .locations-btn-dot {
-    width: 7px; height: 7px; border-radius: 50%;
-    background: #5865F2; flex-shrink: 0;
-  }
+  .locations-btn { display: none; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: #5865F2; background: #f0f1ff; border: 1px solid #c7caff; border-radius: 6px; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
+  .locations-btn-dot { width: 7px; height: 7px; border-radius: 50%; background: #5865F2; flex-shrink: 0; }
 
-  /* ---- Overlay ---- */
   .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 300; }
   .overlay.visible { display: block; }
 
-  /* ---- Sidebar ---- */
-  .sidebar {
-    width: 240px; flex-shrink: 0;
-    background: #fff; border-right: 1px solid #e4e4e7;
-    display: flex; flex-direction: column;
-    height: calc(100vh - 51px);
-    position: sticky; top: 51px;
-    overflow: hidden;
-  }
+  .sidebar { width: 240px; flex-shrink: 0; background: #fff; border-right: 1px solid #e4e4e7; display: flex; flex-direction: column; height: calc(100vh - 51px); position: sticky; top: 51px; overflow: hidden; }
   .sidebar-header { padding: 10px 14px 8px; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
   .sidebar-title { font-size: 12px; font-weight: 600; color: #111; }
-  .sidebar-actions { display: flex; gap: 8px; }
+  .sidebar-actions { display: flex; gap: 8px; align-items: center; }
   .sidebar-action { font-size: 11px; color: #5865F2; cursor: pointer; background: none; border: none; padding: 0; }
   .sidebar-action:hover { text-decoration: underline; }
   .sidebar-close { display: none; font-size: 18px; color: #888; background: none; border: none; cursor: pointer; padding: 0 0 0 8px; line-height: 1; }
@@ -64,13 +44,9 @@
   .loc-link.has-link { color: #5865F2; }
   .loc-link.has-link:hover { text-decoration: underline; }
 
-  /* ---- Body wrap ---- */
   .body-wrap { display: flex; align-items: flex-start; }
-
-  /* ---- Main ---- */
   .main { flex: 1; padding: 16px; min-width: 0; }
 
-  /* ---- Controls ---- */
   .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 16px; background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px 14px; }
   .ctrl-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .controls label { font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
@@ -83,7 +59,6 @@
   .ctrl-divider { width: 100%; height: 1px; background: #f0f0f0; }
   .loading-msg { font-size: 12px; color: #888; }
 
-  /* Slider */
   .slider-wrap { display: flex; flex-direction: column; gap: 3px; }
   .slider-row { display: flex; align-items: center; gap: 10px; }
   .slider-row input[type=range] { width: 140px; }
@@ -91,7 +66,6 @@
   .slider-ticks { display: flex; justify-content: space-between; width: 140px; padding: 0 2px; }
   .slider-tick { font-size: 9px; color: #bbb; }
 
-  /* ---- Table ---- */
   .table-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px; position: relative; overflow: hidden; }
   .wm-canvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 999; }
   .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
@@ -108,6 +82,7 @@
   .total-head { font-size: 10px; color: #888; text-align: center; padding: 2px 6px; }
   .total-cell { font-size: 11px; font-weight: 600; text-align: center; padding: 0 6px; }
   .store-group-header { cursor: pointer; user-select: none; }
+  .store-group-header:hover .store-header-inner { background: #f9f9f9; }
   .store-header-inner { display: flex; align-items: center; gap: 8px; padding: 7px 8px 7px 0; border-top: 2px solid #e4e4e7; margin-top: 6px; }
   .store-header-name { font-size: 13px; font-weight: 700; color: #111; }
   .store-header-count { font-size: 11px; color: #999; font-weight: 400; }
@@ -120,18 +95,9 @@
   .tip-dates { color: #555; font-size: 10px; white-space: pre-line; }
   .empty { text-align: center; padding: 32px; color: #aaa; font-size: 13px; }
 
-  /* ---- Mobile ---- */
   @media (max-width: 768px) {
     .locations-btn { display: flex; }
-    .sidebar {
-      position: fixed;
-      top: 0; left: -260px;
-      width: 260px; height: 100vh;
-      z-index: 400;
-      transition: left 0.25s ease;
-      border-right: 1px solid #e4e4e7;
-      box-shadow: 2px 0 12px rgba(0,0,0,0.1);
-    }
+    .sidebar { position: fixed; top: 0; left: -260px; width: 260px; height: 100vh; z-index: 400; transition: left 0.25s ease; box-shadow: 2px 0 12px rgba(0,0,0,0.1); }
     .sidebar.open { left: 0; }
     .sidebar-close { display: block; }
     .main { padding: 12px; }
@@ -160,8 +126,7 @@
   </div>
   <div class="header-right">
     <button class="locations-btn" onclick="toggleSidebar()">
-      <span class="locations-btn-dot"></span>
-      Locations
+      <span class="locations-btn-dot"></span>Locations
     </button>
     <a href="/logout" class="logout">Log out</a>
   </div>
@@ -170,7 +135,6 @@
 <div class="overlay" id="overlay" onclick="closeSidebar()"></div>
 
 <div class="body-wrap">
-
   <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <span class="sidebar-title">Locations</span>
@@ -187,30 +151,21 @@
 
   <div class="main">
     <div class="controls">
-
       <div class="ctrl-row">
         <label>Period</label>
         <div class="slider-wrap">
           <div class="slider-row">
-            <input type="range" id="periodSlider" min="1" max="8" step="1" value="1"
-              oninput="onSliderChange(this.value)">
+            <input type="range" id="periodSlider" min="1" max="8" step="1" value="1" oninput="onSliderChange(this.value)">
             <span class="slider-label" id="periodLabel">This week</span>
           </div>
           <div class="slider-ticks">
-            <span class="slider-tick">1w</span>
-            <span class="slider-tick">2w</span>
-            <span class="slider-tick">3w</span>
-            <span class="slider-tick">4w</span>
-            <span class="slider-tick">5w</span>
-            <span class="slider-tick">6w</span>
-            <span class="slider-tick">7w</span>
-            <span class="slider-tick">8w</span>
+            <span class="slider-tick">1w</span><span class="slider-tick">2w</span><span class="slider-tick">3w</span>
+            <span class="slider-tick">4w</span><span class="slider-tick">5w</span><span class="slider-tick">6w</span>
+            <span class="slider-tick">7w</span><span class="slider-tick">8w</span>
           </div>
         </div>
       </div>
-
       <div class="ctrl-divider"></div>
-
       <div class="ctrl-row">
         <label>Region</label>
         <div class="btn-group" id="regionBtns">
@@ -220,9 +175,7 @@
           <button onclick="setRegion('RVA',this)">RVA</button>
         </div>
       </div>
-
       <div class="ctrl-divider"></div>
-
       <div class="ctrl-row">
         <label>Time</label>
         <div class="btn-group">
@@ -231,7 +184,6 @@
         </div>
         <span class="loading-msg" id="loadMsg" style="display:none;">Loading...</span>
       </div>
-
     </div>
 
     <div class="table-card" id="tableCard">
@@ -247,7 +199,6 @@
       <span>High</span>
     </div>
   </div>
-
 </div>
 
 <div class="tip" id="tip">
@@ -280,13 +231,12 @@ let showSlots     = true;
 let rawData       = [];
 let expandedStores= new Set();
 let locationMeta  = {};
+let locationList  = []; // master sorted list — never mutated after load
 let selectedLocs  = new Set();
 let sidebarOpen   = {};
 
-// ---- Mobile sidebar ----
 function toggleSidebar(){
-  const sb=document.getElementById("sidebar");
-  const ov=document.getElementById("overlay");
+  const sb=document.getElementById("sidebar"),ov=document.getElementById("overlay");
   if(sb.classList.contains("open")){ closeSidebar(); }
   else { sb.classList.add("open"); ov.classList.add("visible"); }
 }
@@ -301,8 +251,8 @@ function getHeatColor(val,max){
   let r,g,b;
   if(t<0.5){ const p=t/0.5; r=Math.round(52+p*(230-52)); g=Math.round(168+p*(210-168)); b=Math.round(83+p*(40-83)); }
   else { const p=(t-0.5)/0.5; r=Math.round(230+p*(220-230)); g=Math.round(210+p*(50-210)); b=Math.round(40+p*(50-40)); }
-  const brightness=(r*299+g*587+b*114)/1000;
-  return {bg:`rgb(${r},${g},${b})`,fg:brightness>140?"#111":"#fff"};
+  const br=(r*299+g*587+b*114)/1000;
+  return {bg:`rgb(${r},${g},${b})`,fg:br>140?"#111":"#fff"};
 }
 
 function getDOW(dateStr){
@@ -366,7 +316,13 @@ async function loadLocations(){
     locationMeta={};
     data.forEach(d=>{ locationMeta[d.location]={store:d.store,link:d.link}; });
     selectedLocs=new Set(data.map(d=>d.location));
-    renderSidebar(data);
+    // Build master sorted list once — store order then alpha within store
+    locationList=[...data].sort((a,b)=>{
+      const oa=STORE_ORDER.indexOf(a.store)===-1?999:STORE_ORDER.indexOf(a.store);
+      const ob=STORE_ORDER.indexOf(b.store)===-1?999:STORE_ORDER.indexOf(b.store);
+      return oa!==ob?oa-ob:a.location.localeCompare(b.location);
+    });
+    renderSidebar(locationList);
   } catch(e){
     document.getElementById("sidebarBody").innerHTML='<div style="padding:16px;font-size:12px;color:#aaa;">Failed to load.</div>';
   }
@@ -405,7 +361,7 @@ function toggleSidebarGroup(store){
   const isOpen=el.style.display!=='none';
   el.style.display=isOpen?'none':'block';
   sidebarOpen[store]=!isOpen;
-  renderSidebar(Object.keys(locationMeta).map(loc=>({location:loc,store:locationMeta[loc].store,link:locationMeta[loc].link})));
+  renderSidebar(locationList);
 }
 
 function toggleLocation(locName,checked){
@@ -422,12 +378,13 @@ function toggleLocation(locName,checked){
 
 function selectAll(){
   Object.keys(locationMeta).forEach(l=>selectedLocs.add(l));
-  renderSidebar(Object.keys(locationMeta).map(loc=>({location:loc,store:locationMeta[loc].store,link:locationMeta[loc].link})));
+  renderSidebar(locationList);
   render();
 }
+
 function selectNone(){
   selectedLocs.clear();
-  renderSidebar(Object.keys(locationMeta).map(loc=>({location:loc,store:locationMeta[loc].store,link:locationMeta[loc].link})));
+  renderSidebar(locationList);
   render();
 }
 
