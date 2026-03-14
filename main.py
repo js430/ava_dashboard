@@ -95,6 +95,19 @@ async def index(request: Request):
     user = request.session.get("user")
     if not user:
         return RedirectResponse("/login")
+    try:
+        async with app.state.db.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO dashboard_sessions (user_id, username, ip_address)
+                VALUES ($1, $2, $3)
+                """,
+                int(user["id"]),
+                user["username"],
+                request.client.host
+            )
+    except Exception as e:
+        logger.error(f"Failed to log visit: {e}")
     return templates.TemplateResponse("index.html", {
         "request": request,
         "username": user["username"],
