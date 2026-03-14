@@ -7,106 +7,139 @@
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
-  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
-  .header-left { display: flex; align-items: center; gap: 10px; }
-  .avatar { width: 32px; height: 32px; border-radius: 50%; background: #5865F2; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; color: #fff; overflow: hidden; flex-shrink: 0; }
+
+  /* ---- Header ---- */
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 200; }
+  .header-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .avatar { width: 30px; height: 30px; border-radius: 50%; background: #5865F2; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: #fff; overflow: hidden; flex-shrink: 0; }
   .avatar img { width: 100%; height: 100%; object-fit: cover; }
-  .user-info { font-size: 13px; color: #555; }
-  .logout { font-size: 12px; color: #888; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; }
-  .logout:hover { background: #f4f4f5; }
+  .header-title { font-size: 15px; font-weight: 600; color: #111; white-space: nowrap; }
+  .header-user { font-size: 11px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+  .header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .logout { font-size: 12px; color: #888; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; white-space: nowrap; }
+  .locations-btn {
+    display: none;
+    align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 500; color: #5865F2;
+    background: #f0f1ff; border: 1px solid #c7caff;
+    border-radius: 6px; padding: 5px 10px; cursor: pointer;
+    white-space: nowrap;
+  }
+  .locations-btn-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #5865F2; flex-shrink: 0;
+  }
 
-  .body-wrap { display: flex; align-items: flex-start; gap: 0; min-height: calc(100vh - 57px); }
+  /* ---- Overlay ---- */
+  .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 300; }
+  .overlay.visible { display: block; }
 
+  /* ---- Sidebar ---- */
   .sidebar {
-    width: 220px; flex-shrink: 0;
+    width: 240px; flex-shrink: 0;
     background: #fff; border-right: 1px solid #e4e4e7;
-    min-height: calc(100vh - 57px);
     display: flex; flex-direction: column;
+    height: calc(100vh - 51px);
+    position: sticky; top: 51px;
+    overflow: hidden;
   }
-  .sidebar-header {
-    padding: 12px 14px 8px;
-    border-bottom: 1px solid #f0f0f0;
-    display: flex; align-items: center; justify-content: space-between;
-  }
+  .sidebar-header { padding: 10px 14px 8px; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
   .sidebar-title { font-size: 12px; font-weight: 600; color: #111; }
-  .sidebar-actions { display: flex; gap: 6px; }
+  .sidebar-actions { display: flex; gap: 8px; }
   .sidebar-action { font-size: 11px; color: #5865F2; cursor: pointer; background: none; border: none; padding: 0; }
   .sidebar-action:hover { text-decoration: underline; }
-  .sidebar-body { flex: 1; overflow-y: auto; padding: 8px 0; }
+  .sidebar-close { display: none; font-size: 18px; color: #888; background: none; border: none; cursor: pointer; padding: 0 0 0 8px; line-height: 1; }
+  .sidebar-body { flex: 1; overflow-y: auto; padding: 6px 0; }
 
   .store-group { margin-bottom: 2px; }
-  .store-group-toggle {
-    display: flex; align-items: center; gap: 6px;
-    padding: 6px 14px; cursor: pointer;
-    font-size: 11px; font-weight: 700; color: #111;
-    letter-spacing: 0.03em; user-select: none;
-    background: none; border: none; width: 100%; text-align: left;
-  }
+  .store-group-toggle { display: flex; align-items: center; gap: 6px; padding: 7px 14px; cursor: pointer; font-size: 11px; font-weight: 700; color: #111; letter-spacing: 0.03em; user-select: none; background: none; border: none; width: 100%; text-align: left; }
   .store-group-toggle:hover { background: #f9f9f9; }
   .sg-chevron { font-size: 9px; color: #aaa; transition: transform 0.15s; flex-shrink: 0; }
   .sg-chevron.open { transform: rotate(90deg); }
   .sg-count { font-size: 10px; color: #aaa; font-weight: 400; margin-left: auto; }
   .store-group-items { padding: 0 0 4px 0; }
-
-  .loc-item {
-    display: flex; align-items: center; gap: 8px;
-    padding: 4px 14px 4px 28px;
-    font-size: 12px; color: #333;
-  }
-  .loc-item input[type=checkbox] { width: 13px; height: 13px; cursor: pointer; accent-color: #5865F2; flex-shrink: 0; }
+  .loc-item { display: flex; align-items: center; gap: 8px; padding: 5px 14px 5px 28px; font-size: 12px; color: #333; }
+  .loc-item input[type=checkbox] { width: 14px; height: 14px; cursor: pointer; accent-color: #5865F2; flex-shrink: 0; }
   .loc-link { color: #333; text-decoration: none; flex: 1; line-height: 1.4; }
-  .loc-link:hover { color: #5865F2; text-decoration: underline; }
   .loc-link.has-link { color: #5865F2; }
   .loc-link.has-link:hover { text-decoration: underline; }
 
-  .main { flex: 1; padding: 20px 24px; min-width: 0; }
-  .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 20px; }
-  .controls label { font-size: 12px; color: #666; }
+  /* ---- Body wrap ---- */
+  .body-wrap { display: flex; align-items: flex-start; }
+
+  /* ---- Main ---- */
+  .main { flex: 1; padding: 16px; min-width: 0; }
+
+  /* ---- Controls ---- */
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 16px; background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px 14px; }
+  .ctrl-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .controls label { font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
   .btn-group { display: flex; }
-  .btn-group button { font-size: 12px; height: 30px; padding: 0 12px; border: 1px solid #ddd; background: #fff; color: #333; cursor: pointer; transition: background 0.1s; }
+  .btn-group button { font-size: 12px; height: 30px; padding: 0 11px; border: 1px solid #ddd; background: #fff; color: #333; cursor: pointer; transition: background 0.1s; white-space: nowrap; }
   .btn-group button:first-child { border-radius: 6px 0 0 6px; }
   .btn-group button:last-child  { border-radius: 0 6px 6px 0; }
   .btn-group button:not(:first-child) { border-left: none; }
   .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
-  .ctrl-divider { width: 1px; height: 20px; background: #e4e4e7; margin: 0 4px; }
-  .loading-msg { font-size: 13px; color: #888; }
+  .ctrl-divider { width: 100%; height: 1px; background: #f0f0f0; }
+  .loading-msg { font-size: 12px; color: #888; }
 
   /* Slider */
-  .slider-wrap { display: flex; flex-direction: column; gap: 4px; }
+  .slider-wrap { display: flex; flex-direction: column; gap: 3px; }
   .slider-row { display: flex; align-items: center; gap: 10px; }
-  .slider-row input[type=range] { width: 160px; }
-  .slider-label { font-size: 12px; font-weight: 500; color: #111; min-width: 72px; }
-  .slider-ticks { display: flex; justify-content: space-between; width: 160px; padding: 0 2px; }
+  .slider-row input[type=range] { width: 140px; }
+  .slider-label { font-size: 12px; font-weight: 500; color: #111; min-width: 70px; }
+  .slider-ticks { display: flex; justify-content: space-between; width: 140px; padding: 0 2px; }
   .slider-tick { font-size: 9px; color: #bbb; }
 
-  .table-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; padding: 16px; position: relative; overflow: hidden; }
+  /* ---- Table ---- */
+  .table-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px; position: relative; overflow: hidden; }
   .wm-canvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 999; }
-  .table-scroll { overflow-x: auto; }
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   table { border-collapse: collapse; font-size: 11px; }
-  .loc-cell { font-size: 11px; white-space: nowrap; padding: 3px 10px 3px 0; text-align: right; min-width: 130px; }
+  .loc-cell { font-size: 11px; white-space: nowrap; padding: 3px 8px 3px 0; text-align: right; min-width: 110px; }
   .loc-name { color: #111; font-weight: 500; }
   .loc-name-link { color: #5865F2; font-weight: 500; text-decoration: none; }
   .loc-name-link:hover { text-decoration: underline; }
-  .col-head { font-size: 10px; color: #888; text-align: center; padding: 2px 1px; min-width: 28px; }
+  .col-head { font-size: 10px; color: #888; text-align: center; padding: 2px 1px; min-width: 26px; }
   .sub-head { font-size: 9px; color: #aaa; text-align: center; padding: 1px; }
-  .cell { width: 28px; height: 24px; text-align: center; vertical-align: middle; cursor: default; font-size: 10px; font-weight: 500; border-radius: 3px; border: 1px solid transparent; transition: border-color 0.1s; }
+  .cell { width: 26px; height: 22px; text-align: center; vertical-align: middle; cursor: default; font-size: 10px; font-weight: 500; border-radius: 3px; border: 1px solid transparent; }
   .cell:hover { border-color: #999; }
   .day-divider { border-left: 2px solid #d1d5db !important; }
-  .total-head { font-size: 10px; color: #888; text-align: center; padding: 2px 8px; }
-  .total-cell { font-size: 11px; font-weight: 600; text-align: center; padding: 0 8px; }
+  .total-head { font-size: 10px; color: #888; text-align: center; padding: 2px 6px; }
+  .total-cell { font-size: 11px; font-weight: 600; text-align: center; padding: 0 6px; }
   .store-group-header { cursor: pointer; user-select: none; }
-  .store-group-header:hover .store-header-inner { background: #f9f9f9; }
-  .store-header-inner { display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 0; border-top: 2px solid #e4e4e7; margin-top: 8px; }
-  .store-header-name { font-size: 13px; font-weight: 700; color: #111; letter-spacing: 0.01em; }
+  .store-header-inner { display: flex; align-items: center; gap: 8px; padding: 7px 8px 7px 0; border-top: 2px solid #e4e4e7; margin-top: 6px; }
+  .store-header-name { font-size: 13px; font-weight: 700; color: #111; }
   .store-header-count { font-size: 11px; color: #999; font-weight: 400; }
   .store-chevron { margin-left: auto; font-size: 11px; color: #aaa; transition: transform 0.2s; display: inline-block; }
   .store-chevron.open { transform: rotate(90deg); }
-  .legend { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 11px; color: #888; }
-  .legend-swatch { width: 18px; height: 11px; border-radius: 2px; }
-  .tip { position: fixed; background: #fff; border: 1px solid #e4e4e7; border-radius: 8px; padding: 8px 12px; font-size: 11px; color: #111; pointer-events: none; z-index: 1000; display: none; box-shadow: 0 2px 8px rgba(0,0,0,0.08); max-width: 280px; line-height: 1.6; }
+  .legend { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 11px; color: #888; }
+  .legend-swatch { width: 16px; height: 10px; border-radius: 2px; }
+  .tip { position: fixed; background: #fff; border: 1px solid #e4e4e7; border-radius: 8px; padding: 8px 12px; font-size: 11px; color: #111; pointer-events: none; z-index: 1000; display: none; box-shadow: 0 2px 8px rgba(0,0,0,0.1); max-width: 260px; line-height: 1.6; }
   .tip-title { font-weight: 600; margin-bottom: 4px; font-size: 12px; }
   .tip-dates { color: #555; font-size: 10px; white-space: pre-line; }
-  .empty { text-align: center; padding: 40px; color: #aaa; font-size: 14px; }
+  .empty { text-align: center; padding: 32px; color: #aaa; font-size: 13px; }
+
+  /* ---- Mobile ---- */
+  @media (max-width: 768px) {
+    .locations-btn { display: flex; }
+    .sidebar {
+      position: fixed;
+      top: 0; left: -260px;
+      width: 260px; height: 100vh;
+      z-index: 400;
+      transition: left 0.25s ease;
+      border-right: 1px solid #e4e4e7;
+      box-shadow: 2px 0 12px rgba(0,0,0,0.1);
+    }
+    .sidebar.open { left: 0; }
+    .sidebar-close { display: block; }
+    .main { padding: 12px; }
+    .controls { padding: 10px 12px; gap: 8px; }
+    .slider-row input[type=range] { width: 120px; }
+    .slider-ticks { width: 120px; }
+    .btn-group button { font-size: 11px; height: 28px; padding: 0 9px; }
+  }
 </style>
 </head>
 <body>
@@ -121,21 +154,30 @@
       {% endif %}
     </div>
     <div>
-      <div style="font-size:16px;font-weight:600;color:#111;">Restock Dashboard</div>
-      <div class="user-info">{{ username }}</div>
+      <div class="header-title">Restock Dashboard</div>
+      <div class="header-user">{{ username }}</div>
     </div>
   </div>
-  <a href="/logout" class="logout">Log out</a>
+  <div class="header-right">
+    <button class="locations-btn" onclick="toggleSidebar()">
+      <span class="locations-btn-dot"></span>
+      Locations
+    </button>
+    <a href="/logout" class="logout">Log out</a>
+  </div>
 </div>
+
+<div class="overlay" id="overlay" onclick="closeSidebar()"></div>
 
 <div class="body-wrap">
 
-  <div class="sidebar">
+  <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <span class="sidebar-title">Locations</span>
       <div class="sidebar-actions">
         <button class="sidebar-action" onclick="selectAll()">All</button>
         <button class="sidebar-action" onclick="selectNone()">None</button>
+        <button class="sidebar-close" onclick="closeSidebar()">&#x2715;</button>
       </div>
     </div>
     <div class="sidebar-body" id="sidebarBody">
@@ -146,41 +188,50 @@
   <div class="main">
     <div class="controls">
 
-      <label>Period:</label>
-      <div class="slider-wrap">
-        <div class="slider-row">
-          <input type="range" id="periodSlider" min="1" max="8" step="1" value="1"
-            oninput="onSliderChange(this.value)">
-          <span class="slider-label" id="periodLabel">This week</span>
-        </div>
-        <div class="slider-ticks">
-          <span class="slider-tick">1w</span>
-          <span class="slider-tick">2w</span>
-          <span class="slider-tick">3w</span>
-          <span class="slider-tick">4w</span>
-          <span class="slider-tick">5w</span>
-          <span class="slider-tick">6w</span>
-          <span class="slider-tick">7w</span>
-          <span class="slider-tick">8w</span>
+      <div class="ctrl-row">
+        <label>Period</label>
+        <div class="slider-wrap">
+          <div class="slider-row">
+            <input type="range" id="periodSlider" min="1" max="8" step="1" value="1"
+              oninput="onSliderChange(this.value)">
+            <span class="slider-label" id="periodLabel">This week</span>
+          </div>
+          <div class="slider-ticks">
+            <span class="slider-tick">1w</span>
+            <span class="slider-tick">2w</span>
+            <span class="slider-tick">3w</span>
+            <span class="slider-tick">4w</span>
+            <span class="slider-tick">5w</span>
+            <span class="slider-tick">6w</span>
+            <span class="slider-tick">7w</span>
+            <span class="slider-tick">8w</span>
+          </div>
         </div>
       </div>
 
       <div class="ctrl-divider"></div>
-      <label>Region:</label>
-      <div class="btn-group" id="regionBtns">
-        <button class="active" onclick="setRegion('NOVA',this)">NOVA</button>
-        <button onclick="setRegion('MD',this)">MD</button>
-        <button onclick="setRegion('DC',this)">DC</button>
-        <button onclick="setRegion('RVA',this)">RVA</button>
+
+      <div class="ctrl-row">
+        <label>Region</label>
+        <div class="btn-group" id="regionBtns">
+          <button class="active" onclick="setRegion('NOVA',this)">NOVA</button>
+          <button onclick="setRegion('MD',this)">MD</button>
+          <button onclick="setRegion('DC',this)">DC</button>
+          <button onclick="setRegion('RVA',this)">RVA</button>
+        </div>
       </div>
 
       <div class="ctrl-divider"></div>
-      <label>Time split:</label>
-      <div class="btn-group">
-        <button id="btnSlot" class="active" onclick="setSlot(true,this)">AM / PM / Eve</button>
-        <button id="btnDay" onclick="setSlot(false,this)">Day total</button>
+
+      <div class="ctrl-row">
+        <label>Time</label>
+        <div class="btn-group">
+          <button id="btnSlot" class="active" onclick="setSlot(true,this)">AM / PM / Eve</button>
+          <button id="btnDay" onclick="setSlot(false,this)">Day total</button>
+        </div>
+        <span class="loading-msg" id="loadMsg" style="display:none;">Loading...</span>
       </div>
-      <span class="loading-msg" id="loadMsg" style="display:none;">Loading...</span>
+
     </div>
 
     <div class="table-card" id="tableCard">
@@ -219,8 +270,8 @@ const DOW_ORDER       = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 const STORE_ORDER     = ["Target","Walmart","Best Buy","5 Below","Barnes and Noble"];
 const EXCLUDED_STORES = ["Costco","Sams Club"];
 const PERIOD_LABELS   = {
-  1:"This week", 2:"2 weeks", 3:"3 weeks", 4:"4 weeks",
-  5:"5 weeks",   6:"6 weeks", 7:"7 weeks", 8:"8 weeks"
+  1:"This week",2:"2 weeks",3:"3 weeks",4:"4 weeks",
+  5:"5 weeks",6:"6 weeks",7:"7 weeks",8:"8 weeks"
 };
 
 let currentWeeks  = 1;
@@ -232,23 +283,26 @@ let locationMeta  = {};
 let selectedLocs  = new Set();
 let sidebarOpen   = {};
 
-function getHeatColor(val, max){
-  if(val===0) return {bg:"#f4f4f5", fg:"#bbb"};
-  const t=Math.min(val/max, 1);
+// ---- Mobile sidebar ----
+function toggleSidebar(){
+  const sb=document.getElementById("sidebar");
+  const ov=document.getElementById("overlay");
+  if(sb.classList.contains("open")){ closeSidebar(); }
+  else { sb.classList.add("open"); ov.classList.add("visible"); }
+}
+function closeSidebar(){
+  document.getElementById("sidebar").classList.remove("open");
+  document.getElementById("overlay").classList.remove("visible");
+}
+
+function getHeatColor(val,max){
+  if(val===0) return {bg:"#f4f4f5",fg:"#bbb"};
+  const t=Math.min(val/max,1);
   let r,g,b;
-  if(t<0.5){
-    const p=t/0.5;
-    r=Math.round(52  + p*(230-52));
-    g=Math.round(168 + p*(210-168));
-    b=Math.round(83  + p*(40-83));
-  } else {
-    const p=(t-0.5)/0.5;
-    r=Math.round(230 + p*(220-230));
-    g=Math.round(210 + p*(50-210));
-    b=Math.round(40  + p*(50-40));
-  }
+  if(t<0.5){ const p=t/0.5; r=Math.round(52+p*(230-52)); g=Math.round(168+p*(210-168)); b=Math.round(83+p*(40-83)); }
+  else { const p=(t-0.5)/0.5; r=Math.round(230+p*(220-230)); g=Math.round(210+p*(50-210)); b=Math.round(40+p*(50-40)); }
   const brightness=(r*299+g*587+b*114)/1000;
-  return { bg:`rgb(${r},${g},${b})`, fg: brightness>140 ? "#111" : "#fff" };
+  return {bg:`rgb(${r},${g},${b})`,fg:brightness>140?"#111":"#fff"};
 }
 
 function getDOW(dateStr){
@@ -258,33 +312,25 @@ function getDOW(dateStr){
 
 function buildDayList(){
   if(currentWeeks===1){
-    const list=[];
-    const now=new Date();
-    const monday=new Date(now);
+    const list=[],now=new Date(),monday=new Date(now);
     monday.setDate(now.getDate()-((now.getDay()+6)%7));
     for(let i=0;i<7;i++){
-      const d=new Date(monday);
-      d.setDate(monday.getDate()+i);
+      const d=new Date(monday); d.setDate(monday.getDate()+i);
       if(d>now) break;
-      list.push({key:d.toISOString().slice(0,10), label:d.toLocaleDateString("en-US",{weekday:"short"})});
+      list.push({key:d.toISOString().slice(0,10),label:d.toLocaleDateString("en-US",{weekday:"short"})});
     }
     return list;
-  } else {
-    return DOW_ORDER.map(d=>({key:d, label:d}));
   }
+  return DOW_ORDER.map(d=>({key:d,label:d}));
 }
 
 function aggregateData(){
   const dayList=buildDayList();
   const locs={};
-
   if(currentWeeks===1){
     const dayKeys=new Set(dayList.map(d=>d.key));
     rawData.forEach(row=>{
-      if(!dayKeys.has(row.date)) return;
-      if(row.region!==currentRegion) return;
-      if(EXCLUDED_STORES.includes(row.store)) return;
-      if(!selectedLocs.has(row.location)) return;
+      if(!dayKeys.has(row.date)||row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)||!selectedLocs.has(row.location)) return;
       const k=`${row.location}||${row.store}`;
       if(!locs[k]) locs[k]={location:row.location,store:row.store,region:row.region,days:{}};
       if(!locs[k].days[row.date]) locs[k].days[row.date]={Morning:[],Afternoon:[],Evening:[]};
@@ -292,9 +338,7 @@ function aggregateData(){
     });
   } else {
     rawData.forEach(row=>{
-      if(row.region!==currentRegion) return;
-      if(EXCLUDED_STORES.includes(row.store)) return;
-      if(!selectedLocs.has(row.location)) return;
+      if(row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)||!selectedLocs.has(row.location)) return;
       const dow=getDOW(row.date);
       const k=`${row.location}||${row.store}`;
       if(!locs[k]) locs[k]={location:row.location,store:row.store,region:row.region,days:{}};
@@ -302,154 +346,114 @@ function aggregateData(){
       locs[k].days[dow][row.slot].push(row.datetime);
     });
   }
-
-  const sorted=Object.values(locs).sort((a,b)=>{
-    const sa=STORE_ORDER.indexOf(a.store); const sb=STORE_ORDER.indexOf(b.store);
-    const oa=sa===-1?999:sa; const ob=sb===-1?999:sb;
-    if(oa!==ob) return oa-ob;
-    return a.location.localeCompare(b.location);
-  });
-  return {dayList, locs:sorted};
+  return {dayList,locs:Object.values(locs).sort((a,b)=>{
+    const oa=STORE_ORDER.indexOf(a.store)===-1?999:STORE_ORDER.indexOf(a.store);
+    const ob=STORE_ORDER.indexOf(b.store)===-1?999:STORE_ORDER.indexOf(b.store);
+    return oa!==ob?oa-ob:a.location.localeCompare(b.location);
+  })};
 }
 
-// ---- Slider ----
 function onSliderChange(val){
   currentWeeks=parseInt(val);
   document.getElementById("periodLabel").textContent=PERIOD_LABELS[currentWeeks];
   fetchData();
 }
 
-// ---- Sidebar ----
 async function loadLocations(){
   try {
     const resp=await fetch(`/api/locations?region=${currentRegion}`);
     const data=await resp.json();
     locationMeta={};
-    data.forEach(d=>{ locationMeta[d.location]={store:d.store, link:d.link}; });
+    data.forEach(d=>{ locationMeta[d.location]={store:d.store,link:d.link}; });
     selectedLocs=new Set(data.map(d=>d.location));
     renderSidebar(data);
   } catch(e){
-    document.getElementById("sidebarBody").innerHTML=
-      '<div style="padding:16px;font-size:12px;color:#aaa;">Failed to load locations.</div>';
+    document.getElementById("sidebarBody").innerHTML='<div style="padding:16px;font-size:12px;color:#aaa;">Failed to load.</div>';
   }
 }
 
 function renderSidebar(data){
   const groups={};
-  data.forEach(d=>{
-    if(EXCLUDED_STORES.includes(d.store)) return;
-    if(!groups[d.store]) groups[d.store]=[];
-    groups[d.store].push(d);
-  });
-
+  data.forEach(d=>{ if(!EXCLUDED_STORES.includes(d.store)){ if(!groups[d.store]) groups[d.store]=[]; groups[d.store].push(d); }});
   let html='';
   STORE_ORDER.forEach(store=>{
     const items=groups[store];
     if(!items||!items.length) return;
     const isOpen=sidebarOpen[store]!==false;
-    const checkedCount=items.filter(i=>selectedLocs.has(i.location)).length;
-
+    const checked=items.filter(i=>selectedLocs.has(i.location)).length;
     html+=`<div class="store-group">
       <button class="store-group-toggle" onclick="toggleSidebarGroup('${store}')">
-        <span class="sg-chevron${isOpen?' open':''}">&#9654;</span>
-        ${store}
-        <span class="sg-count">${checkedCount}/${items.length}</span>
+        <span class="sg-chevron${isOpen?' open':''}">&#9654;</span>${store}
+        <span class="sg-count">${checked}/${items.length}</span>
       </button>
       <div class="store-group-items" id="sg-${store.replace(/\s/g,'_')}" style="display:${isOpen?'block':'none'}">`;
-
     items.forEach(item=>{
-      const checked=selectedLocs.has(item.location);
+      const chk=selectedLocs.has(item.location);
       const hasLink=item.link&&item.link.trim();
-      const locLabel=hasLink
-        ? `<a class="loc-link has-link" href="${item.link}" target="_blank" rel="noopener">${item.location}</a>`
-        : `<span class="loc-link">${item.location}</span>`;
-      html+=`<label class="loc-item">
-        <input type="checkbox" ${checked?'checked':''} onchange="toggleLocation('${item.location.replace(/'/g,"\\'")}', this.checked)">
-        ${locLabel}
-      </label>`;
+      const lbl=hasLink
+        ?`<a class="loc-link has-link" href="${item.link}" target="_blank" rel="noopener">${item.location}</a>`
+        :`<span class="loc-link">${item.location}</span>`;
+      html+=`<label class="loc-item"><input type="checkbox" ${chk?'checked':''} onchange="toggleLocation('${item.location.replace(/'/g,"\\'")}',this.checked)">${lbl}</label>`;
     });
-
     html+=`</div></div>`;
   });
-
   document.getElementById("sidebarBody").innerHTML=html;
 }
 
 function toggleSidebarGroup(store){
-  const key=store.replace(/\s/g,'_');
-  const el=document.getElementById(`sg-${key}`);
+  const el=document.getElementById(`sg-${store.replace(/\s/g,'_')}`);
   const isOpen=el.style.display!=='none';
   el.style.display=isOpen?'none':'block';
   sidebarOpen[store]=!isOpen;
-  const data=Object.keys(locationMeta).map(loc=>({
-    location:loc, store:locationMeta[loc].store, link:locationMeta[loc].link
-  }));
-  renderSidebar(data);
+  renderSidebar(Object.keys(locationMeta).map(loc=>({location:loc,store:locationMeta[loc].store,link:locationMeta[loc].link})));
 }
 
-function toggleLocation(locName, checked){
-  if(checked) selectedLocs.add(locName);
-  else selectedLocs.delete(locName);
-  updateSidebarCounts();
-  render();
-}
-
-function updateSidebarCounts(){
+function toggleLocation(locName,checked){
+  if(checked) selectedLocs.add(locName); else selectedLocs.delete(locName);
   document.querySelectorAll('.store-group-toggle').forEach(btn=>{
-    const storeName=btn.textContent.trim().split('\n')[0].trim();
-    const items=Object.entries(locationMeta).filter(([,v])=>v.store===storeName).map(([k])=>k);
-    if(!items.length) return;
+    const store=btn.childNodes[1]?.textContent?.trim();
+    if(!store) return;
+    const items=Object.entries(locationMeta).filter(([,v])=>v.store===store).map(([k])=>k);
     const span=btn.querySelector('.sg-count');
-    if(span) span.textContent=`${items.filter(l=>selectedLocs.has(l)).length}/${items.length}`;
+    if(span&&items.length) span.textContent=`${items.filter(l=>selectedLocs.has(l)).length}/${items.length}`;
   });
+  render();
 }
 
 function selectAll(){
   Object.keys(locationMeta).forEach(l=>selectedLocs.add(l));
-  const data=Object.keys(locationMeta).map(loc=>({location:loc,store:locationMeta[loc].store,link:locationMeta[loc].link}));
-  renderSidebar(data);
+  renderSidebar(Object.keys(locationMeta).map(loc=>({location:loc,store:locationMeta[loc].store,link:locationMeta[loc].link})));
   render();
 }
-
 function selectNone(){
   selectedLocs.clear();
-  const data=Object.keys(locationMeta).map(loc=>({location:loc,store:locationMeta[loc].store,link:locationMeta[loc].link}));
-  renderSidebar(data);
+  renderSidebar(Object.keys(locationMeta).map(loc=>({location:loc,store:locationMeta[loc].store,link:locationMeta[loc].link})));
   render();
 }
 
-// ---- Heatmap ----
 function toggleStore(storeName){
-  if(expandedStores.has(storeName)) expandedStores.delete(storeName);
-  else expandedStores.add(storeName);
+  if(expandedStores.has(storeName)) expandedStores.delete(storeName); else expandedStores.add(storeName);
   render();
 }
 
 function render(){
   const {dayList,locs}=aggregateData();
-
   let maxVal=0;
-  locs.forEach(loc=>{
-    dayList.forEach(({key})=>{
-      const d=loc.days[key]||{Morning:[],Afternoon:[],Evening:[]};
-      if(showSlots){ SLOTS.forEach(sl=>{ if(d[sl].length>maxVal) maxVal=d[sl].length; }); }
-      else { const t=SLOTS.reduce((s,sl)=>s+d[sl].length,0); if(t>maxVal) maxVal=t; }
-    });
-  });
+  locs.forEach(loc=>{ dayList.forEach(({key})=>{
+    const d=loc.days[key]||{Morning:[],Afternoon:[],Evening:[]};
+    if(showSlots){ SLOTS.forEach(sl=>{ if(d[sl].length>maxVal) maxVal=d[sl].length; }); }
+    else { const t=SLOTS.reduce((s,sl)=>s+d[sl].length,0); if(t>maxVal) maxVal=t; }
+  });});
   if(maxVal===0) maxVal=1;
 
   const ht=document.getElementById("ht");
-  if(!locs.length){
-    ht.innerHTML=`<tr><td class="empty">No restocks found — try selecting more locations or adjusting the period.</td></tr>`;
-    drawWatermark(); return;
-  }
+  if(!locs.length){ ht.innerHTML=`<tr><td class="empty">No restocks found — select locations or adjust period.</td></tr>`; drawWatermark(); return; }
 
   let html="<thead>";
   if(showSlots){
     html+="<tr><th class='loc-cell'></th>";
     dayList.forEach(({label},i)=>{ html+=`<th class='col-head${i>0?" day-divider":""}' colspan='3'>${label}</th>`; });
-    html+="<th class='total-head'>Total</th></tr>";
-    html+="<tr><th class='loc-cell'></th>";
+    html+="<th class='total-head'>Total</th></tr><tr><th class='loc-cell'></th>";
     dayList.forEach((_,i)=>{ SLOT_S.forEach((s,si)=>{ html+=`<th class='sub-head${si===0&&i>0?" day-divider":""}'>${s}</th>`; }); });
     html+="<th></th></tr>";
   } else {
@@ -467,53 +471,44 @@ function render(){
     const group=groups[storeName];
     if(!group||!group.length) return;
     const isOpen=expandedStores.has(storeName);
-    const totalRestocks=group.reduce((sum,loc)=>{
-      return sum+dayList.reduce((s,{key})=>{
-        const d=loc.days[key]||{Morning:[],Afternoon:[],Evening:[]};
-        return s+SLOTS.reduce((ss,sl)=>ss+d[sl].length,0);
-      },0);
-    },0);
+    const totalRestocks=group.reduce((sum,loc)=>sum+dayList.reduce((s,{key})=>{
+      const d=loc.days[key]||{Morning:[],Afternoon:[],Evening:[]};
+      return s+SLOTS.reduce((ss,sl)=>ss+d[sl].length,0);
+    },0),0);
 
     html+=`<tr class='store-group-header' onclick='toggleStore(${JSON.stringify(storeName)})'>
-      <td colspan='${spanCols+2}'>
-        <div class='store-header-inner'>
-          <span class='store-header-name'>${storeName}</span>
-          <span class='store-header-count'>${group.length} location${group.length!==1?"s":""} · ${totalRestocks} restock${totalRestocks!==1?"s":""}</span>
-          <span class='store-chevron${isOpen?" open":""}'>&#9654;</span>
-        </div>
-      </td>
-    </tr>`;
-
+      <td colspan='${spanCols+2}'><div class='store-header-inner'>
+        <span class='store-header-name'>${storeName}</span>
+        <span class='store-header-count'>${group.length} loc · ${totalRestocks} restocks</span>
+        <span class='store-chevron${isOpen?" open":""}'>&#9654;</span>
+      </div></td></tr>`;
     if(!isOpen) return;
 
     group.forEach(loc=>{
       let rowTotal=0;
-      const meta=locationMeta[loc.location];
-      const link=meta?.link;
+      const link=locationMeta[loc.location]?.link;
       const nameHtml=link
-        ? `<a class="loc-name-link" href="${link}" target="_blank" rel="noopener">${loc.location}</a>`
-        : `<span class="loc-name">${loc.location}</span>`;
-
+        ?`<a class="loc-name-link" href="${link}" target="_blank" rel="noopener">${loc.location}</a>`
+        :`<span class="loc-name">${loc.location}</span>`;
       html+=`<tr><td class='loc-cell'>${nameHtml}</td>`;
-
       dayList.forEach(({key,label},dayIdx)=>{
         const d=loc.days[key]||{Morning:[],Afternoon:[],Evening:[]};
         if(showSlots){
           SLOTS.forEach((sl,slIdx)=>{
-            const times=d[sl]; const count=times.length; rowTotal+=count;
+            const times=d[sl],count=times.length; rowTotal+=count;
             const {bg,fg}=getHeatColor(count,maxVal);
-            const divClass=slIdx===0&&dayIdx>0?" day-divider":"";
-            const safeTitle=`${loc.location} · ${label} ${sl} (${count})`;
-            const safeDates=times.length?times.join("\n"):"No restocks";
-            html+=`<td class='cell${divClass}' style='background:${bg};color:${fg}' data-title="${safeTitle.replace(/"/g,'&quot;')}" data-dates="${safeDates.replace(/"/g,'&quot;')}">${count>0?count:`<span style='opacity:0.3'>·</span>`}</td>`;
+            const div=slIdx===0&&dayIdx>0?" day-divider":"";
+            const st=`${loc.location} · ${label} ${sl} (${count})`;
+            const sd=times.length?times.join("\n"):"No restocks";
+            html+=`<td class='cell${div}' style='background:${bg};color:${fg}' data-title="${st.replace(/"/g,'&quot;')}" data-dates="${sd.replace(/"/g,'&quot;')}">${count>0?count:`<span style='opacity:0.3'>·</span>`}</td>`;
           });
         } else {
-          const allTimes=SLOTS.flatMap(sl=>d[sl]); const count=allTimes.length; rowTotal+=count;
+          const allTimes=SLOTS.flatMap(sl=>d[sl]),count=allTimes.length; rowTotal+=count;
           const {bg,fg}=getHeatColor(count,maxVal);
-          const divClass=dayIdx>0?" day-divider":"";
-          const safeTitle=`${loc.location} · ${label} (${count})`;
-          const safeDates=allTimes.length?allTimes.join("\n"):"No restocks";
-          html+=`<td class='cell${divClass}' style='background:${bg};color:${fg}' data-title="${safeTitle.replace(/"/g,'&quot;')}" data-dates="${safeDates.replace(/"/g,'&quot;')}">${count>0?count:`<span style='opacity:0.3'>·</span>`}</td>`;
+          const div=dayIdx>0?" day-divider":"";
+          const st=`${loc.location} · ${label} (${count})`;
+          const sd=allTimes.length?allTimes.join("\n"):"No restocks";
+          html+=`<td class='cell${div}' style='background:${bg};color:${fg}' data-title="${st.replace(/"/g,'&quot;')}" data-dates="${sd.replace(/"/g,'&quot;')}">${count>0?count:`<span style='opacity:0.3'>·</span>`}</td>`;
         }
       });
       html+=`<td class='total-cell'>${rowTotal}</td></tr>`;
@@ -530,10 +525,9 @@ function render(){
       document.getElementById("tip").style.display="block";
     });
     cell.addEventListener("mousemove",e=>{
-      const tip=document.getElementById("tip");
-      const vw=window.innerWidth;
+      const tip=document.getElementById("tip"),vw=window.innerWidth;
       let left=e.clientX+14;
-      if(left+290>vw) left=e.clientX-304;
+      if(left+270>vw) left=e.clientX-284;
       tip.style.left=left+"px";
       tip.style.top=Math.max(8,e.clientY-tip.offsetHeight/2)+"px";
     });
@@ -549,36 +543,25 @@ function render(){
 
 function drawWatermark(){
   const canvas=document.getElementById("wmCanvas");
-  const dpr=window.devicePixelRatio||1;
-  const W=window.innerWidth, H=window.innerHeight;
+  const dpr=window.devicePixelRatio||1,W=window.innerWidth,H=window.innerHeight;
   canvas.width=W*dpr; canvas.height=H*dpr;
   canvas.style.width=W+"px"; canvas.style.height=H+"px";
   const ctx=canvas.getContext("2d");
-  ctx.scale(dpr,dpr);
-  ctx.clearRect(0,0,W,H);
+  ctx.scale(dpr,dpr); ctx.clearRect(0,0,W,H);
   const fontSize=Math.max(13,Math.min(16,W/32));
   ctx.font=`400 ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
-  ctx.fillStyle="rgba(80,80,80,0.18)";
-  ctx.textBaseline="middle";
-  const angle=-28*Math.PI/180;
-  const spacing=fontSize*9;
+  ctx.fillStyle="rgba(80,80,80,0.18)"; ctx.textBaseline="middle";
+  const angle=-28*Math.PI/180,spacing=fontSize*9;
   const steps=Math.ceil(Math.sqrt(W*W+H*H)/spacing)+2;
-  ctx.save();
-  ctx.translate(W/2,H/2);
-  ctx.rotate(angle);
-  for(let row=-steps;row<=steps;row++){
-    for(let col=-steps;col<=steps;col++){
-      ctx.fillText(DISCORD_USERNAME,col*spacing,row*spacing*1.8);
-    }
-  }
+  ctx.save(); ctx.translate(W/2,H/2); ctx.rotate(angle);
+  for(let row=-steps;row<=steps;row++) for(let col=-steps;col<=steps;col++) ctx.fillText(DISCORD_USERNAME,col*spacing,row*spacing*1.8);
   ctx.restore();
 }
 
 async function fetchData(){
   document.getElementById("loadMsg").style.display="inline";
-  const days=currentWeeks*7;
   try{
-    const resp=await fetch(`/api/restocks?days=${days}`);
+    const resp=await fetch(`/api/restocks?days=${currentWeeks*7}`);
     rawData=await resp.json();
   } catch(e){ rawData=[]; }
   document.getElementById("loadMsg").style.display="none";
@@ -600,7 +583,6 @@ function setSlot(v,btn){
 
 window.addEventListener("resize",()=>requestAnimationFrame(drawWatermark));
 window.addEventListener("scroll",()=>requestAnimationFrame(drawWatermark));
-
 loadLocations().then(()=>fetchData());
 </script>
 </body>
