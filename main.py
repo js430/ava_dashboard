@@ -95,25 +95,51 @@ async def index(request: Request):
     user = request.session.get("user")
     if not user:
         return RedirectResponse("/login")
-    try:
-        async with app.state.db.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO dashboard_sessions (user_id, username, ip_address)
-                VALUES ($1, $2, $3)
-                """,
-                int(user["id"]),
-                user["username"],
-                request.client.host
-            )
-    except Exception as e:
-        logger.error(f"Failed to log visit: {e}")
+    if not request.session.get("terms_accepted"):
+        return RedirectResponse("/terms")
     return templates.TemplateResponse("index.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
         "user_id": user["id"]
     })
+
+@app.get("/terms", response_class=HTMLResponse)
+async def terms_page(request: Request):
+    user = request.session.get("user")
+    if not user:
+        return RedirectResponse("/login")
+    if request.session.get("terms_accepted"):
+        return RedirectResponse("/")
+    from datetime import date
+    return templates.TemplateResponse("terms.html", {
+        "request": request,
+        "current_date": date.today().strftime("%B %d, %Y")
+    })
+
+@app.post("/accept-terms")
+async def accept_terms(request: Request):
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401)
+    request.session["terms_accepted"] = True
+    try:
+        async with app.state.db.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO terms_acceptance (user_id, username, accepted_at, ip_address)
+                VALUES ($1, $2, NOW(), $3)
+                ON CONFLICT (user_id) DO UPDATE
+                SET accepted_at = NOW(), ip_address = EXCLUDED.ip_address
+                """,
+                int(user["id"]),
+                user["username"],
+                request.client.host
+            )
+        logger.info(f"Terms accepted: {user['username']} ({user['id']})")
+    except Exception as e:
+        logger.error(f"Failed to log terms acceptance: {e}")
+    return JSONResponse({"ok": True})
 
 @app.get("/login")
 async def login():
@@ -268,7 +294,7 @@ async def get_restocks(
         "nova-restock-information": "NOVA",
         "md-restock-information":   "MD",
         "dc-restock-information":   "DC",
-        "rva-central-va-restock-information":  "RVA",
+        "rva-restock-information":  "RVA",
     }
 
     def time_slot(dt):

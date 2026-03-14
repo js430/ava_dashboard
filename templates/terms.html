@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Terms of Use — Restock Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .card { background: #fff; border: 1px solid #e4e4e7; border-radius: 14px; max-width: 680px; width: 100%; padding: 36px 40px; }
+  h1 { font-size: 20px; font-weight: 700; color: #111; margin-bottom: 6px; }
+  .subtitle { font-size: 13px; color: #888; margin-bottom: 28px; }
+  .section { margin-bottom: 20px; }
+  .section h2 { font-size: 13px; font-weight: 700; color: #111; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px; }
+  .section p { font-size: 13px; color: #444; line-height: 1.7; }
+  .section ul { font-size: 13px; color: #444; line-height: 1.7; padding-left: 18px; margin-top: 6px; }
+  .section ul li { margin-bottom: 4px; }
+  .divider { height: 1px; background: #f0f0f0; margin: 20px 0; }
+  .accept-block { margin-top: 28px; padding-top: 24px; border-top: 1px solid #e4e4e7; }
+  .checkbox-row { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 16px; cursor: pointer; }
+  .checkbox-row input[type=checkbox] { width: 16px; height: 16px; margin-top: 2px; flex-shrink: 0; cursor: pointer; accent-color: #5865F2; }
+  .checkbox-label { font-size: 13px; color: #333; line-height: 1.5; }
+  .checkbox-label a { color: #5865F2; text-decoration: none; }
+  .checkbox-label a:hover { text-decoration: underline; }
+  .btn-row { display: flex; gap: 10px; }
+  .btn-accept { flex: 1; height: 40px; background: #5865F2; color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; opacity: 0.4; transition: opacity 0.15s, background 0.15s; }
+  .btn-accept.enabled { opacity: 1; }
+  .btn-accept.enabled:hover { background: #4752c4; }
+  .btn-decline { height: 40px; padding: 0 20px; background: #fff; color: #888; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; cursor: pointer; text-decoration: none; display: flex; align-items: center; }
+  .btn-decline:hover { background: #f4f4f5; }
+  .highlight-box { background: #fff8e1; border: 1px solid #ffe082; border-radius: 8px; padding: 12px 14px; margin-bottom: 20px; font-size: 12px; color: #5d4037; line-height: 1.6; }
+  .highlight-box strong { font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Terms of Use &amp; Privacy Notice</h1>
+  <p class="subtitle">Last updated: {{ current_date }} &nbsp;·&nbsp; Please read carefully before accessing the dashboard.</p>
+
+  <div class="highlight-box">
+    <strong>Important:</strong> By accessing this dashboard you acknowledge that your Discord username, Discord user ID, and public IP address are logged each time you authenticate. This data is used solely for access control and security purposes.
+  </div>
+
+  <div class="section">
+    <h2>1. Access &amp; Eligibility</h2>
+    <p>Access to this dashboard is provided exclusively to individuals who have been granted permission by the service operator ("Operator"). Access may be revoked at any time, for any reason, without prior notice. You must not share your access, credentials, or any content displayed within this dashboard with any third party.</p>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="section">
+    <h2>2. Data We Collect</h2>
+    <p>When you log in, the following information is automatically recorded:</p>
+    <ul>
+      <li>Your Discord username and Discord user ID</li>
+      <li>Your public IPv4 address</li>
+      <li>The date and time of your login</li>
+    </ul>
+    <p style="margin-top:8px;">This data is stored securely and is accessible only to the Operator. It is not sold, shared, or disclosed to third parties except as required by law.</p>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="section">
+    <h2>3. Prohibited Use</h2>
+    <p>You agree not to:</p>
+    <ul>
+      <li>Share, distribute, screenshot, or reproduce any data, charts, or information displayed within this dashboard</li>
+      <li>Use any automated tools, bots, or scripts to access or scrape data from this service</li>
+      <li>Attempt to circumvent access controls or authentication mechanisms</li>
+      <li>Use information obtained from this dashboard for commercial resale or redistribution</li>
+      <li>Share your login access with any other person</li>
+    </ul>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="section">
+    <h2>4. Intellectual Property</h2>
+    <p>All data, visualizations, and content displayed within this dashboard are the property of the Operator. Unauthorized reproduction or distribution of any content is strictly prohibited and may result in immediate termination of access and legal action.</p>
+  </div>
+<div class="divider"></div>
+
+  <div class="section">
+    <h2>5. Data Rights &amp; Ownership</h2>
+    <p>By accessing this dashboard, you acknowledge and agree to the following regarding data rights:</p>
+     <ul>
+     <li><strong>Service data ownership:</strong> All restock data, analytics, visualizations, and derived insights presented through this service are owned exclusively by the Operator. You are granted a limited, non-exclusive, non-transferable, revocable license to view this data solely for your own personal, non-commercial use.</li>
+     <li><strong>No data portability:</strong> You have no right to export, download, copy, or otherwise extract data from this service in bulk or in part, except as explicitly permitted in writing by the Operator.</li>
+     <li><strong>Derived works:</strong> You may not create any product, service, dataset, or tool that is derived from, trained on, or informed by data obtained through this service.</li>
+     <li><strong>Your account data:</strong> You may request deletion of your personal data (Discord username, user ID, IP address, and login records) at any time by contacting the Operator. Deletion requests will be honored within a reasonable timeframe. Note that deletion of your data will result in immediate termination of your access.</li>
+     <li><strong>Data retention:</strong> The Operator retains your login and session data for as long as your subscription is active, and for up to 12 months following termination of access.</li>
+     <li><strong>No data warranty:</strong> The Operator makes no representation that the data displayed is complete, accurate, or current. Restock information is provided on a best-effort basis and should not be relied upon as a guarantee of product availability.</li>
+   </ul> 
+ </div>
+  <div class="divider"></div>
+
+  <div class="section">
+    <h2>5. Watermarking &amp; Monitoring</h2>
+    <p>All dashboard content is dynamically watermarked with your Discord username. Your activity within this dashboard may be monitored for security and compliance purposes. Attempts to remove, obscure, or circumvent watermarks are prohibited.</p>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="section">
+    <h2>6. Termination</h2>
+    <p>The Operator reserves the right to suspend or permanently revoke your access at any time without notice or refund, including but not limited to cases of suspected misuse, violation of these terms, or at the Operator's sole discretion.</p>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="section">
+    <h2>7. Disclaimer of Warranties</h2>
+    <p>This dashboard is provided "as is" without warranties of any kind. The Operator does not guarantee the accuracy, completeness, or timeliness of any data displayed. You use this service at your own risk.</p>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="section">
+    <h2>8. Limitation of Liability</h2>
+    <p>To the fullest extent permitted by law, the Operator shall not be liable for any direct, indirect, incidental, or consequential damages arising from your use of or inability to use this service, including any decisions made based on data displayed herein.</p>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="section">
+    <h2>9. Governing Law</h2>
+    <p>These terms are governed by the laws of the Commonwealth of Virginia, United States. Any disputes shall be resolved in the courts of Virginia.</p>
+  </div>
+
+  <div class="accept-block">
+    <label class="checkbox-row" id="checkRow">
+      <input type="checkbox" id="agreeCheck" onchange="toggleAccept()">
+      <span class="checkbox-label">I have read and agree to the Terms of Use and Privacy Notice. I understand that my Discord username, user ID, and IP address are logged on each login.</span>
+    </label>
+    <div class="btn-row">
+      <a href="/logout" class="btn-decline">Decline</a>
+      <button class="btn-accept" id="acceptBtn" disabled onclick="acceptTerms()">Accept &amp; Continue</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function toggleAccept(){
+  const checked = document.getElementById("agreeCheck").checked;
+  const btn = document.getElementById("acceptBtn");
+  btn.disabled = !checked;
+  btn.classList.toggle("enabled", checked);
+}
+
+async function acceptTerms(){
+  const btn = document.getElementById("acceptBtn");
+  btn.disabled = true;
+  btn.textContent = "Saving...";
+  try {
+    const resp = await fetch("/accept-terms", { method: "POST" });
+    if(resp.ok){
+      window.location.href = "/";
+    } else {
+      btn.textContent = "Error — try again";
+      btn.disabled = false;
+    }
+  } catch(e){
+    btn.textContent = "Error — try again";
+    btn.disabled = false;
+    document.getElementById("agreeCheck").checked = false;
+    toggleAccept();
+  }
+}
+</script>
+</body>
+</html>
