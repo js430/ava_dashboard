@@ -300,11 +300,11 @@ async def get_restocks(
         )
 
     channel_to_region = {
-        "nova-restock-information": "NOVA",
-        "md-restock-information":   "MD",
-        "dc-restock-information":   "DC",
-        "rva-restock-information":  "RVA",
-    }
+    "nova-restock-information":             "NOVA",
+    "md-restock-information":               "MD",
+    "dc-restock-information":               "DC",
+    "rva-central-va-restock-information":   "RVA",  # ← was "rva-restock-information"
+}
 
     def time_slot(dt):
         h = dt.hour
@@ -335,6 +335,15 @@ async def get_locations(
     region: str = "NOVA",
     user=Depends(get_current_user)
 ):
+    # Map dashboard region keys → database state values
+    region_to_state = {
+        "NOVA": "VA",
+        "MD":   "MD",
+        "DC":   "DC",
+        "RVA":  "CVA",
+    }
+    state = region_to_state.get(region, "VA")
+
     async with request.app.state.db.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -343,13 +352,13 @@ async def get_locations(
             WHERE state = $1
             ORDER BY store_type ASC, location ASC
             """,
-            region
+            state
         )
     return JSONResponse([
         {
             "location": r["location"],
-            "store": r["store_type"],
-            "link": r["location_link"]
+            "store":    r["store_type"],
+            "link":     r["location_link"]
         }
         for r in rows
     ])
