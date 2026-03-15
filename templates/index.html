@@ -231,7 +231,7 @@ let showSlots     = true;
 let rawData       = [];
 let expandedStores= new Set();
 let locationMeta  = {};
-let locationList  = []; // master sorted list — never mutated after load
+let locationList  = [];
 let selectedLocs  = new Set();
 let sidebarOpen   = {};
 
@@ -316,7 +316,6 @@ async function loadLocations(){
     locationMeta={};
     data.forEach(d=>{ locationMeta[d.location]={store:d.store,link:d.link}; });
     selectedLocs=new Set(data.map(d=>d.location));
-    // Build master sorted list once — store order then alpha within store
     locationList=[...data].sort((a,b)=>{
       const oa=STORE_ORDER.indexOf(a.store)===-1?999:STORE_ORDER.indexOf(a.store);
       const ob=STORE_ORDER.indexOf(b.store)===-1?999:STORE_ORDER.indexOf(b.store);
@@ -500,18 +499,33 @@ function render(){
 
 function drawWatermark(){
   const canvas=document.getElementById("wmCanvas");
-  const dpr=window.devicePixelRatio||1,W=window.innerWidth,H=window.innerHeight;
+  const dpr=window.devicePixelRatio||1;
+  const vv=window.visualViewport;
+  const W=vv?vv.width:window.innerWidth;
+  const H=vv?vv.height:window.innerHeight;
+  const offsetX=vv?vv.offsetLeft:0;
+  const offsetY=vv?vv.offsetTop:0;
   canvas.width=W*dpr; canvas.height=H*dpr;
   canvas.style.width=W+"px"; canvas.style.height=H+"px";
+  canvas.style.left=offsetX+"px";
+  canvas.style.top=offsetY+"px";
   const ctx=canvas.getContext("2d");
   ctx.scale(dpr,dpr); ctx.clearRect(0,0,W,H);
-  const fontSize=Math.max(13,Math.min(16,W/32));
+  const fontSize=Math.max(11,Math.min(14,W/36));
   ctx.font=`400 ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
-  ctx.fillStyle="rgba(80,80,80,0.18)"; ctx.textBaseline="middle";
-  const angle=-28*Math.PI/180,spacing=fontSize*9;
-  const steps=Math.ceil(Math.sqrt(W*W+H*H)/spacing)+2;
+  ctx.fillStyle="rgba(80,80,80,0.2)";
+  ctx.textBaseline="middle";
+  // Tight spacing so zooming in always reveals a watermark
+  const spacingX=fontSize*6;
+  const spacingY=fontSize*4;
+  const angle=-28*Math.PI/180;
+  const steps=Math.ceil(Math.sqrt(W*W+H*H)/Math.min(spacingX,spacingY))+4;
   ctx.save(); ctx.translate(W/2,H/2); ctx.rotate(angle);
-  for(let row=-steps;row<=steps;row++) for(let col=-steps;col<=steps;col++) ctx.fillText(DISCORD_USERNAME,col*spacing,row*spacing*1.8);
+  for(let row=-steps;row<=steps;row++){
+    for(let col=-steps;col<=steps;col++){
+      ctx.fillText(DISCORD_USERNAME,col*spacingX,row*spacingY);
+    }
+  }
   ctx.restore();
 }
 
@@ -538,8 +552,14 @@ function setSlot(v,btn){
   render();
 }
 
-window.addEventListener("resize",()=>requestAnimationFrame(drawWatermark));
-window.addEventListener("scroll",()=>requestAnimationFrame(drawWatermark));
+const redraw=()=>requestAnimationFrame(drawWatermark);
+window.addEventListener("resize", redraw);
+window.addEventListener("scroll", redraw);
+if(window.visualViewport){
+  window.visualViewport.addEventListener('resize', redraw);
+  window.visualViewport.addEventListener('scroll', redraw);
+}
+
 loadLocations().then(()=>fetchData());
 </script>
 </body>
