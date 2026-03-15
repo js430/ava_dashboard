@@ -499,6 +499,7 @@ function render(){
 
 function drawWatermark(){
   const canvas=document.getElementById("wmCanvas");
+  if(!canvas) return;
   const dpr=window.devicePixelRatio||1;
   const vv=window.visualViewport;
   const W=vv?vv.width:window.innerWidth;
@@ -515,7 +516,6 @@ function drawWatermark(){
   ctx.font=`400 ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
   ctx.fillStyle="rgba(80,80,80,0.2)";
   ctx.textBaseline="middle";
-  // Tight spacing so zooming in always reveals a watermark
   const spacingX=fontSize*6;
   const spacingY=fontSize*4;
   const angle=-28*Math.PI/180;
@@ -527,6 +527,42 @@ function drawWatermark(){
     }
   }
   ctx.restore();
+}
+
+function guardWatermark(){
+  const canvas=document.getElementById("wmCanvas");
+  if(!canvas) return;
+
+  const observer=new MutationObserver(mutations=>{
+    for(const mutation of mutations){
+      if(mutation.type==='attributes'){
+        requestAnimationFrame(drawWatermark);
+      }
+    }
+  });
+
+  observer.observe(canvas,{
+    attributes: true,
+    attributeFilter: ['width','height','style','class']
+  });
+
+  setInterval(()=>{
+    const c=document.getElementById("wmCanvas");
+    if(!c){
+      const newCanvas=document.createElement("canvas");
+      newCanvas.id="wmCanvas";
+      newCanvas.className="wm-canvas";
+      const card=document.getElementById("tableCard");
+      if(card){ card.appendChild(newCanvas); drawWatermark(); guardWatermark(); }
+    } else {
+      const vv=window.visualViewport;
+      const expectedW=(vv?vv.width:window.innerWidth)*(window.devicePixelRatio||1);
+      const expectedH=(vv?vv.height:window.innerHeight)*(window.devicePixelRatio||1);
+      if(c.width<expectedW*0.5||c.height<expectedH*0.5){
+        drawWatermark();
+      }
+    }
+  }, 500);
 }
 
 async function fetchData(){
@@ -553,14 +589,15 @@ function setSlot(v,btn){
 }
 
 const redraw=()=>requestAnimationFrame(drawWatermark);
-window.addEventListener("resize", redraw);
-window.addEventListener("scroll", redraw);
+window.addEventListener("resize",redraw);
+window.addEventListener("scroll",redraw);
 if(window.visualViewport){
-  window.visualViewport.addEventListener('resize', redraw);
-  window.visualViewport.addEventListener('scroll', redraw);
+  window.visualViewport.addEventListener('resize',redraw);
+  window.visualViewport.addEventListener('scroll',redraw);
 }
 
 loadLocations().then(()=>fetchData());
+guardWatermark();
 </script>
 </body>
 </html>
