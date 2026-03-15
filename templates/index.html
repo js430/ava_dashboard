@@ -533,10 +533,14 @@ function guardWatermark(){
   const canvas=document.getElementById("wmCanvas");
   if(!canvas) return;
 
+  let drawing=false;
+
   const observer=new MutationObserver(mutations=>{
+    if(drawing) return;
     for(const mutation of mutations){
       if(mutation.type==='attributes'){
         requestAnimationFrame(drawWatermark);
+        break;
       }
     }
   });
@@ -546,6 +550,13 @@ function guardWatermark(){
     attributeFilter: ['width','height','style','class']
   });
 
+  const originalDraw=drawWatermark;
+  window.drawWatermark=function(){
+    drawing=true;
+    originalDraw();
+    requestAnimationFrame(()=>{ drawing=false; });
+  };
+
   setInterval(()=>{
     const c=document.getElementById("wmCanvas");
     if(!c){
@@ -554,15 +565,15 @@ function guardWatermark(){
       newCanvas.className="wm-canvas";
       const card=document.getElementById("tableCard");
       if(card){ card.appendChild(newCanvas); drawWatermark(); guardWatermark(); }
-    } else {
-      const vv=window.visualViewport;
-      const expectedW=(vv?vv.width:window.innerWidth)*(window.devicePixelRatio||1);
-      const expectedH=(vv?vv.height:window.innerHeight)*(window.devicePixelRatio||1);
-      if(c.width<expectedW*0.5||c.height<expectedH*0.5){
-        drawWatermark();
-      }
+      return;
     }
-  }, 500);
+    const vv=window.visualViewport;
+    const expectedW=(vv?vv.width:window.innerWidth)*(window.devicePixelRatio||1);
+    const expectedH=(vv?vv.height:window.innerHeight)*(window.devicePixelRatio||1);
+    if(c.width<expectedW*0.5||c.height<expectedH*0.5){
+      drawWatermark();
+    }
+  }, 1000);
 }
 
 async function fetchData(){
