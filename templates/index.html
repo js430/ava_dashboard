@@ -286,7 +286,8 @@ function aggregateData(){
   if(currentWeeks===1){
     const dayKeys=new Set(dayList.map(d=>d.key));
     rawData.forEach(row=>{
-      if(!dayKeys.has(row.date)||row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)||!selectedLocs.has(row.location)) return;
+      const compoundKey=`${row.store}||${row.location}`;
+      if(!dayKeys.has(row.date)||row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)||!selectedLocs.has(compoundKey)) return;
       const k=`${row.location}||${row.store}`;
       if(!locs[k]) locs[k]={location:row.location,store:row.store,region:row.region,days:{}};
       if(!locs[k].days[row.date]) locs[k].days[row.date]={Morning:[],Afternoon:[],Evening:[]};
@@ -294,7 +295,8 @@ function aggregateData(){
     });
   } else {
     rawData.forEach(row=>{
-      if(row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)||!selectedLocs.has(row.location)) return;
+      const compoundKey=`${row.store}||${row.location}`;
+      if(row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)||!selectedLocs.has(compoundKey)) return;
       const dow=getDOW(row.date);
       const k=`${row.location}||${row.store}`;
       if(!locs[k]) locs[k]={location:row.location,store:row.store,region:row.region,days:{}};
@@ -325,7 +327,7 @@ async function loadLocations(){
     const pref = await prefResp.json();
 
     locationMeta={};
-    data.forEach(d=>{ locationMeta[d.location]={store:d.store,link:d.link}; });
+    data.forEach(d=>{ locationMeta[`${d.store}||${d.location}`]={store:d.store,location:d.location,link:d.link}; });
 
     if (pref.found) {
       selectedLocs = new Set(pref.selected);
@@ -333,6 +335,9 @@ async function loadLocations(){
       // No saved prefs yet — default to none checked
       selectedLocs = new Set();
     }
+
+    // Default all store groups to collapsed unless user has toggled them
+    data.forEach(d=>{ if(!(d.store in sidebarOpen)) sidebarOpen[d.store]=false; });
 
     locationList=[...data].sort((a,b)=>{
       const oa=STORE_ORDER.indexOf(a.store)===-1?999:STORE_ORDER.indexOf(a.store);
@@ -352,8 +357,8 @@ function renderSidebar(data){
   STORE_ORDER.forEach(store=>{
     const items=groups[store];
     if(!items||!items.length) return;
-    const isOpen=sidebarOpen[store]!==false;
-    const checked=items.filter(i=>selectedLocs.has(i.location)).length;
+    const isOpen=sidebarOpen[store]===true;
+    const checked=items.filter(i=>selectedLocs.has(`${store}||${i.location}`)).length;
     html+=`<div class="store-group">
       <button class="store-group-toggle" onclick="toggleSidebarGroup('${store}')">
         <span class="sg-chevron${isOpen?' open':''}">&#9654;</span>${store}
@@ -361,12 +366,13 @@ function renderSidebar(data){
       </button>
       <div class="store-group-items" id="sg-${store.replace(/\s/g,'_')}" style="display:${isOpen?'block':'none'}">`;
     items.forEach(item=>{
-      const chk=selectedLocs.has(item.location);
+      const compoundKey=`${store}||${item.location}`;
+      const chk=selectedLocs.has(compoundKey);
       const hasLink=item.link&&item.link.trim();
       const lbl=hasLink
         ?`<a class="loc-link has-link" href="${item.link}" target="_blank" rel="noopener">${item.location}</a>`
         :`<span class="loc-link">${item.location}</span>`;
-      html+=`<label class="loc-item"><input type="checkbox" ${chk?'checked':''} onchange="toggleLocation('${item.location.replace(/'/g,"\\'")}',this.checked)">${lbl}</label>`;
+      html+=`<label class="loc-item"><input type="checkbox" ${chk?'checked':''} onchange="toggleLocation('${compoundKey.replace(/'/g,"\\'")}',this.checked)">${lbl}</label>`;
     });
     html+=`</div></div>`;
   });
@@ -385,24 +391,24 @@ function toggleSidebarGroup(store){
   const el=document.getElementById(`sg-${store.replace(/\s/g,'_')}`);
   const isOpen=el.style.display!=='none';
   el.style.display=isOpen?'none':'block';
-  sidebarOpen[store]=!isOpen;
+  sidebarOpen[store]=!isOpen;  // true = open, false = closed
   renderSidebar(locationList);
 }
 
-function toggleLocation(locName,checked){
-  if(checked) selectedLocs.add(locName); else selectedLocs.delete(locName);
+function toggleLocation(compoundKey,checked){
+  if(checked) selectedLocs.add(compoundKey); else selectedLocs.delete(compoundKey);
   document.querySelectorAll('.store-group-toggle').forEach(btn=>{
     const store=btn.childNodes[1]?.textContent?.trim();
     if(!store) return;
-    const items=Object.entries(locationMeta).filter(([,v])=>v.store===store).map(([k])=>k);
+    const items=Object.keys(locationMeta).filter(k=>k.startsWith(store+'||'));
     const span=btn.querySelector('.sg-count');
-    if(span&&items.length) span.textContent=`${items.filter(l=>selectedLocs.has(l)).length}/${items.length}`;
+    if(span&&items.length) span.textContent=`${items.filter(k=>selectedLocs.has(k)).length}/${items.length}`;
   });
   render();
 }
 
 function selectAll(){
-  Object.keys(locationMeta).forEach(l=>selectedLocs.add(l));
+  Object.keys(locationMeta).forEach(k=>selectedLocs.add(k));
   renderSidebar(locationList);
   render();
 }
@@ -498,7 +504,7 @@ function render(){
 
     group.forEach(loc=>{
       let rowTotal=0;
-      const link=locationMeta[loc.location]?.link;
+      const link=locationMeta[`${loc.store}||${loc.location}`]?.link;
       const nameHtml=link
         ?`<a class="loc-name-link" href="${link}" target="_blank" rel="noopener">${loc.location}</a>`
         :`<span class="loc-name">${loc.location}</span>`;
