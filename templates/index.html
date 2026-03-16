@@ -30,6 +30,9 @@
   .sidebar-action:hover { text-decoration: underline; }
   .sidebar-close { display: none; font-size: 18px; color: #888; background: none; border: none; cursor: pointer; padding: 0 0 0 8px; line-height: 1; }
   .sidebar-body { flex: 1; overflow-y: auto; padding: 6px 0; }
+  .sidebar-footer { padding: 10px 14px; border-top: 1px solid #f0f0f0; flex-shrink: 0; }
+  .save-prefs-btn { width: 100%; height: 32px; background: #5865F2; color: #fff; border: none; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; transition: background 0.15s; }
+  .save-prefs-btn:disabled { opacity: 0.7; cursor: not-allowed; }
 
   .store-group { margin-bottom: 2px; }
   .store-group-toggle { display: flex; align-items: center; gap: 6px; padding: 7px 14px; cursor: pointer; font-size: 11px; font-weight: 700; color: #111; letter-spacing: 0.03em; user-select: none; background: none; border: none; width: 100%; text-align: left; }
@@ -146,6 +149,9 @@
     </div>
     <div class="sidebar-body" id="sidebarBody">
       <div style="padding:20px;text-align:center;font-size:12px;color:#aaa;">Loading...</div>
+    </div>
+    <div class="sidebar-footer">
+      <button class="save-prefs-btn" id="savePrefsBtn" onclick="savePreferences()">Save Locations</button>
     </div>
   </div>
 
@@ -311,11 +317,23 @@ function onSliderChange(val){
 
 async function loadLocations(){
   try {
-    const resp=await fetch(`/api/locations?region=${currentRegion}`);
-    const data=await resp.json();
+    const [locResp, prefResp] = await Promise.all([
+      fetch(`/api/locations?region=${currentRegion}`),
+      fetch(`/api/preferences?region=${currentRegion}`)
+    ]);
+    const data = await locResp.json();
+    const pref = await prefResp.json();
+
     locationMeta={};
     data.forEach(d=>{ locationMeta[d.location]={store:d.store,link:d.link}; });
-    selectedLocs=new Set(data.map(d=>d.location));
+
+    if (pref.found) {
+      selectedLocs = new Set(pref.selected);
+    } else {
+      // No saved prefs yet — default to none checked
+      selectedLocs = new Set();
+    }
+
     locationList=[...data].sort((a,b)=>{
       const oa=STORE_ORDER.indexOf(a.store)===-1?999:STORE_ORDER.indexOf(a.store);
       const ob=STORE_ORDER.indexOf(b.store)===-1?999:STORE_ORDER.indexOf(b.store);
@@ -353,6 +371,14 @@ function renderSidebar(data){
     html+=`</div></div>`;
   });
   document.getElementById("sidebarBody").innerHTML=html;
+
+  // Reset save button state when region/locations reload
+  const btn=document.getElementById("savePrefsBtn");
+  if(btn){
+    btn.textContent="Save Locations";
+    btn.style.background="";
+    btn.disabled=false;
+  }
 }
 
 function toggleSidebarGroup(store){
@@ -385,6 +411,36 @@ function selectNone(){
   selectedLocs.clear();
   renderSidebar(locationList);
   render();
+}
+
+async function savePreferences(){
+  const btn=document.getElementById("savePrefsBtn");
+  if(!btn) return;
+  btn.disabled=true;
+  btn.textContent="Saving...";
+  try {
+    const resp=await fetch("/api/preferences",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ region:currentRegion, selected:[...selectedLocs] })
+    });
+    if(!resp.ok) throw new Error("Failed");
+    btn.textContent="Saved ✓";
+    btn.style.background="#16a34a";
+    setTimeout(()=>{
+      btn.textContent="Save Locations";
+      btn.style.background="";
+      btn.disabled=false;
+    },2000);
+  } catch(e){
+    btn.textContent="Error — Try Again";
+    btn.style.background="#dc2626";
+    setTimeout(()=>{
+      btn.textContent="Save Locations";
+      btn.style.background="";
+      btn.disabled=false;
+    },2000);
+  }
 }
 
 function toggleStore(storeName){

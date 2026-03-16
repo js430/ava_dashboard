@@ -56,12 +56,11 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     await app.state.db.close()
+
 # --- Public IPv4 address getter ---#
 def get_real_ip(request: Request) -> str:
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
-        # X-Forwarded-For can be a comma-separated list if there are multiple proxies
-        # The first one is the original client IP
         return forwarded_for.split(",")[0].strip()
     return request.client.host
 
@@ -131,7 +130,7 @@ async def accept_terms(request: Request):
     if not user:
         raise HTTPException(status_code=401)
     request.session["terms_accepted"] = True
-    ip_address=get_real_ip(request)
+    ip_address = get_real_ip(request)
     try:
         async with app.state.db.acquire() as conn:
             await conn.execute(
@@ -194,8 +193,7 @@ async def callback(request: Request, code: str = None, error: str = None):
         "username": user["username"],
         "avatar": user.get("avatar")
     }
-    ip_address=get_real_ip(request)
-    # Log the session
+    ip_address = get_real_ip(request)
     try:
         async with app.state.db.acquire() as conn:
             await conn.execute(
@@ -300,11 +298,11 @@ async def get_restocks(
         )
 
     channel_to_region = {
-    "nova-restock-information":             "NOVA",
-    "md-restock-information":               "MD",
-    "dc-restock-information":               "DC",
-    "rva-central-va-restock-information":   "RVA",  
-}
+        "nova-restock-information":           "NOVA",
+        "md-restock-information":             "MD",
+        "dc-restock-information":             "DC",
+        "rva-central-va-restock-information": "RVA",
+    }
 
     def time_slot(dt):
         h = dt.hour
@@ -335,7 +333,6 @@ async def get_locations(
     region: str = "NOVA",
     user=Depends(get_current_user)
 ):
-    # Map dashboard region keys → database state values
     region_to_state = {
         "NOVA": "VA",
         "MD":   "MD",
@@ -362,3 +359,49 @@ async def get_locations(
         }
         for r in rows
     ])
+
+# ---- Preferences API ----
+
+@app.get("/api/preferences")
+async def get_preferences(
+    request: Request,
+    region: str = "NOVA",
+    user=Depends(get_current_user)
+):
+    async with request.app.state.db.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT selected_locations FROM user_preferences
+            WHERE user_id = $1 AND region = $2
+            """,
+            int(user["id"]), region
+        )
+    if row is None:
+        return JSONResponse({"found": False, "selected": []})
+    return JSONResponse({"found": True, "selected": list(row["selected_locations"])})
+
+
+@app.post("/api/preferences")
+async def save_preferences(
+    request: Request,
+    user=Depends(get_current_user)
+):
+    body = await request.json()
+    region = body.get("region", "NOVA")
+    selected = body.get("selected", [])
+
+    if not isinstance(selected, list):
+        raise HTTPException(status_code=400, detail="Invalid payload")
+
+    async with request.app.state.db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO user_preferences (user_id, region, selected_locations, updated_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (user_id, region) DO UPDATE
+            SET selected_locations = EXCLUDED.selected_locations,
+                updated_at = NOW()
+            """,
+            int(user["id"]), region, selected
+        )
+    return JSONResponse({"ok": True})
