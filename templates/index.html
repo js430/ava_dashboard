@@ -144,6 +144,7 @@
       <div class="sidebar-actions">
         <button class="sidebar-action" onclick="selectAll()">All</button>
         <button class="sidebar-action" onclick="selectNone()">None</button>
+        <button class="sidebar-action" onclick="loadSaved()">Saved</button>
         <button class="sidebar-close" onclick="closeSidebar()">&#x2715;</button>
       </div>
     </div>
@@ -423,6 +424,22 @@ function selectNone(){
   selectedLocs.clear();
   renderSidebar(locationList);
   render();
+}
+
+async function loadSaved(){
+  try {
+    const resp=await fetch(`/api/preferences?region=${currentRegion}`);
+    const pref=await resp.json();
+    if(pref.found && pref.selected.length){
+      selectedLocs=new Set(pref.selected);
+    } else {
+      selectedLocs=new Set();
+    }
+    renderSidebar(locationList);
+    render();
+  } catch(e){
+    console.warn("Failed to load saved preferences",e);
+  }
 }
 
 async function savePreferences(){
