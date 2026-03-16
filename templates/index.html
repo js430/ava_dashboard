@@ -283,23 +283,41 @@ function buildDayList(){
 function aggregateData(){
   const dayList=buildDayList();
   const locs={};
+
+  // Build a lookup: location name -> store key as known by sidebar (from locationMeta)
+  // locationMeta keys are "Store||Location" so we reverse-map location -> store
+  const locToStore={};
+  Object.keys(locationMeta).forEach(k=>{
+    const sep=k.indexOf('||');
+    if(sep===-1) return;
+    const store=k.slice(0,sep), loc=k.slice(sep+2);
+    // A location could appear under multiple stores; store all mappings
+    if(!locToStore[loc]) locToStore[loc]=[];
+    locToStore[loc].push(store);
+  });
+
   if(currentWeeks===1){
     const dayKeys=new Set(dayList.map(d=>d.key));
     rawData.forEach(row=>{
-      const compoundKey=`${row.store}||${row.location}`;
-      if(!dayKeys.has(row.date)||row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)||!selectedLocs.has(compoundKey)) return;
-      const k=`${row.location}||${row.store}`;
-      if(!locs[k]) locs[k]={location:row.location,store:row.store,region:row.region,days:{}};
+      if(!dayKeys.has(row.date)||row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)) return;
+      // Find matching store key in locationMeta for this location
+      const storeKeys=locToStore[row.location]||[];
+      const matchedStore=storeKeys.find(s=>selectedLocs.has(`${s}||${row.location}`));
+      if(!matchedStore) return;
+      const k=`${row.location}||${matchedStore}`;
+      if(!locs[k]) locs[k]={location:row.location,store:matchedStore,region:row.region,days:{}};
       if(!locs[k].days[row.date]) locs[k].days[row.date]={Morning:[],Afternoon:[],Evening:[]};
       locs[k].days[row.date][row.slot].push(row.datetime);
     });
   } else {
     rawData.forEach(row=>{
-      const compoundKey=`${row.store}||${row.location}`;
-      if(row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)||!selectedLocs.has(compoundKey)) return;
+      if(row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)) return;
+      const storeKeys=locToStore[row.location]||[];
+      const matchedStore=storeKeys.find(s=>selectedLocs.has(`${s}||${row.location}`));
+      if(!matchedStore) return;
       const dow=getDOW(row.date);
-      const k=`${row.location}||${row.store}`;
-      if(!locs[k]) locs[k]={location:row.location,store:row.store,region:row.region,days:{}};
+      const k=`${row.location}||${matchedStore}`;
+      if(!locs[k]) locs[k]={location:row.location,store:matchedStore,region:row.region,days:{}};
       if(!locs[k].days[dow]) locs[k].days[dow]={Morning:[],Afternoon:[],Evening:[]};
       locs[k].days[dow][row.slot].push(row.datetime);
     });
