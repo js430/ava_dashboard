@@ -284,40 +284,28 @@ function aggregateData(){
   const dayList=buildDayList();
   const locs={};
 
-  // Build a lookup: location name -> store key as known by sidebar (from locationMeta)
-  // locationMeta keys are "Store||Location" so we reverse-map location -> store
-  const locToStore={};
-  Object.keys(locationMeta).forEach(k=>{
+  // Build a fast set of just location names that are selected (any store)
+  const selectedLocNames=new Set();
+  selectedLocs.forEach(k=>{
     const sep=k.indexOf('||');
-    if(sep===-1) return;
-    const store=k.slice(0,sep), loc=k.slice(sep+2);
-    // A location could appear under multiple stores; store all mappings
-    if(!locToStore[loc]) locToStore[loc]=[];
-    locToStore[loc].push(store);
+    if(sep!==-1) selectedLocNames.add(k.slice(sep+2));
   });
 
   if(currentWeeks===1){
     const dayKeys=new Set(dayList.map(d=>d.key));
     rawData.forEach(row=>{
-      if(!dayKeys.has(row.date)||row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)) return;
-      // Find matching store key in locationMeta for this location
-      const storeKeys=locToStore[row.location]||[];
-      const matchedStore=storeKeys.find(s=>selectedLocs.has(`${s}||${row.location}`));
-      if(!matchedStore) return;
-      const k=`${row.location}||${matchedStore}`;
-      if(!locs[k]) locs[k]={location:row.location,store:matchedStore,region:row.region,days:{}};
+      if(!dayKeys.has(row.date)||row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)||!selectedLocNames.has(row.location)) return;
+      const k=`${row.location}||${row.store}`;
+      if(!locs[k]) locs[k]={location:row.location,store:row.store,region:row.region,days:{}};
       if(!locs[k].days[row.date]) locs[k].days[row.date]={Morning:[],Afternoon:[],Evening:[]};
       locs[k].days[row.date][row.slot].push(row.datetime);
     });
   } else {
     rawData.forEach(row=>{
-      if(row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)) return;
-      const storeKeys=locToStore[row.location]||[];
-      const matchedStore=storeKeys.find(s=>selectedLocs.has(`${s}||${row.location}`));
-      if(!matchedStore) return;
+      if(row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)||!selectedLocNames.has(row.location)) return;
       const dow=getDOW(row.date);
-      const k=`${row.location}||${matchedStore}`;
-      if(!locs[k]) locs[k]={location:row.location,store:matchedStore,region:row.region,days:{}};
+      const k=`${row.location}||${row.store}`;
+      if(!locs[k]) locs[k]={location:row.location,store:row.store,region:row.region,days:{}};
       if(!locs[k].days[dow]) locs[k].days[dow]={Morning:[],Afternoon:[],Evening:[]};
       locs[k].days[dow][row.slot].push(row.datetime);
     });
@@ -522,7 +510,9 @@ function render(){
 
     group.forEach(loc=>{
       let rowTotal=0;
-      const link=locationMeta[`${loc.store}||${loc.location}`]?.link;
+      // Find link by location name (store keys may differ between restock_reports and locations tables)
+      const metaKey=Object.keys(locationMeta).find(k=>k.endsWith('||'+loc.location));
+      const link=metaKey?locationMeta[metaKey].link:null;
       const nameHtml=link
         ?`<a class="loc-name-link" href="${link}" target="_blank" rel="noopener">${loc.location}</a>`
         :`<span class="loc-name">${loc.location}</span>`;
