@@ -514,6 +514,7 @@ async def get_map_data(
                   'other-online-restocks',
                   'pokemon-center-drops'
               ))
+              AND store_name='Target'
             ORDER BY date ASC
             """,
             since
