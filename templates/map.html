@@ -75,6 +75,7 @@
   .summary-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 
   .wm-canvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 999; }
+  .wm-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 999; overflow: hidden; }
 
   @media (max-width: 640px) {
     .legend { display: none; }
@@ -154,10 +155,8 @@
     </div>
   </div>
 
-  <!-- Watermark -->
-  <canvas id="wmCanvas" class="wm-canvas"></canvas>
+  <!-- Watermark canvas lives outside map-wrap so it isn't clipped by the Maps iframe stacking context -->
 
-  <!-- Summary card -->
   <div class="summary-card" id="summaryCard" style="display:none;">
     <div class="summary-title" id="summaryTitle">Today</div>
     <div class="summary-row"><div class="summary-dot" style="background:#22c55e"></div><span id="sum0">—</span></div>
@@ -397,7 +396,8 @@ function guardWatermark(){
       const newCanvas=document.createElement("canvas");
       newCanvas.id="wmCanvas";
       newCanvas.className="wm-canvas";
-      document.body.appendChild(newCanvas);
+      const overlay=document.querySelector(".wm-overlay");
+      if(overlay){ overlay.appendChild(newCanvas); } else { document.body.appendChild(newCanvas); }
       drawWatermark(); guardWatermark();
       return;
     }
@@ -425,6 +425,8 @@ setInterval(() => {
   if (document.visibilityState === "visible") loadMapData();
 }, 120_000);
 </script>
+
+<div class="wm-overlay"><canvas id="wmCanvas" class="wm-canvas"></canvas></div>
 
 <script async defer
   src="https://maps.googleapis.com/maps/api/js?key={{ google_maps_api_key }}&callback=initMap">
