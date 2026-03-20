@@ -49,6 +49,7 @@ DISCORD_OAUTH_URL = (
 )
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 
+
 # ---- DB pool ----
 @app.on_event("startup")
 async def startup():
