@@ -128,11 +128,13 @@
     </div>
   </div>
   <div class="header-right">
-    <button class="locations-btn" onclick="toggleSidebar()">
-      <span class="locations-btn-dot"></span>Locations
-    </button>
-    <a href="/logout" class="logout">Log out</a>
-  </div>
+  <button class="locations-btn" onclick="toggleSidebar()">
+    <span class="locations-btn-dot"></span>Locations
+  </button>
+  <a href="/map" class="logout">Map</a>
+  {% if is_admin %}<a href="/admin" class="logout">Admin</a>{% endif %}
+  <a href="/logout" class="logout">Log out</a>
+</div>
 </div>
 
 <div class="overlay" id="overlay" onclick="closeSidebar()"></div>

@@ -571,3 +571,19 @@ async def get_map_data(
         })
 
     return JSONResponse(result)
+
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    user = request.session.get("user")
+    if not user:
+        return RedirectResponse("/login")
+    if not request.session.get("terms_accepted"):
+        return RedirectResponse("/terms")
+    is_admin = int(user["id"]) in ADMIN_USER_IDS
+    return templates.TemplateResponse("index.html", {
+        "request": request,
+        "username": user["username"],
+        "avatar": user.get("avatar"),
+        "user_id": user["id"],
+        "is_admin": is_admin,
+    })
