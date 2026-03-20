@@ -74,6 +74,8 @@
   .summary-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #444; padding: 2px 0; }
   .summary-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 
+  .wm-canvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 999; }
+
   @media (max-width: 640px) {
     .legend { display: none; }
     .info-panel { width: calc(100vw - 24px); right: 12px; }
@@ -151,6 +153,9 @@
       <a class="info-maps-link" id="infoMapsLink" href="#" target="_blank" rel="noopener">Open in Google Maps ↗</a>
     </div>
   </div>
+
+  <!-- Watermark -->
+  <canvas id="wmCanvas" class="wm-canvas"></canvas>
 
   <!-- Summary card -->
   <div class="summary-card" id="summaryCard" style="display:none;">
@@ -330,7 +335,92 @@ function setWindow(w, btn) {
   loadMapData();
 }
 
-// Auto-refresh every 2 minutes
+// ---- Watermark ----
+function drawWatermark(){
+  const canvas=document.getElementById("wmCanvas");
+  if(!canvas) return;
+  const dpr=window.devicePixelRatio||1;
+  const vv=window.visualViewport;
+  const W=vv?vv.width:window.innerWidth;
+  const H=vv?vv.height:window.innerHeight;
+  const offsetX=vv?vv.offsetLeft:0;
+  const offsetY=vv?vv.offsetTop:0;
+  canvas.width=W*dpr; canvas.height=H*dpr;
+  canvas.style.width=W+"px"; canvas.style.height=H+"px";
+  canvas.style.left=offsetX+"px";
+  canvas.style.top=offsetY+"px";
+  const ctx=canvas.getContext("2d");
+  ctx.scale(dpr,dpr); ctx.clearRect(0,0,W,H);
+  const fontSize=Math.max(11,Math.min(14,W/36));
+  ctx.font=`400 ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  ctx.fillStyle="rgba(80,80,80,0.2)";
+  ctx.textBaseline="middle";
+  const spacingX=fontSize*6;
+  const spacingY=fontSize*4;
+  const angle=-28*Math.PI/180;
+  const steps=Math.ceil(Math.sqrt(W*W+H*H)/Math.min(spacingX,spacingY))+4;
+  ctx.save(); ctx.translate(W/2,H/2); ctx.rotate(angle);
+  for(let row=-steps;row<=steps;row++){
+    for(let col=-steps;col<=steps;col++){
+      ctx.fillText(DISCORD_USERNAME,col*spacingX,row*spacingY);
+    }
+  }
+  ctx.restore();
+}
+
+function guardWatermark(){
+  const canvas=document.getElementById("wmCanvas");
+  if(!canvas) return;
+  let drawing=false;
+  const observer=new MutationObserver(mutations=>{
+    if(drawing) return;
+    for(const mutation of mutations){
+      if(mutation.type==='attributes'){
+        requestAnimationFrame(drawWatermark);
+        break;
+      }
+    }
+  });
+  observer.observe(canvas,{
+    attributes: true,
+    attributeFilter: ['width','height','style','class']
+  });
+  const originalDraw=drawWatermark;
+  window.drawWatermark=function(){
+    drawing=true;
+    originalDraw();
+    requestAnimationFrame(()=>{ drawing=false; });
+  };
+  setInterval(()=>{
+    const c=document.getElementById("wmCanvas");
+    if(!c){
+      const newCanvas=document.createElement("canvas");
+      newCanvas.id="wmCanvas";
+      newCanvas.className="wm-canvas";
+      document.body.appendChild(newCanvas);
+      drawWatermark(); guardWatermark();
+      return;
+    }
+    const vv=window.visualViewport;
+    const expectedW=(vv?vv.width:window.innerWidth)*(window.devicePixelRatio||1);
+    const expectedH=(vv?vv.height:window.innerHeight)*(window.devicePixelRatio||1);
+    if(c.width<expectedW*0.5||c.height<expectedH*0.5){
+      drawWatermark();
+    }
+  }, 1000);
+}
+
+const redraw=()=>requestAnimationFrame(drawWatermark);
+window.addEventListener("resize",redraw);
+window.addEventListener("scroll",redraw);
+if(window.visualViewport){
+  window.visualViewport.addEventListener('resize',redraw);
+  window.visualViewport.addEventListener('scroll',redraw);
+}
+
+drawWatermark();
+guardWatermark();
+
 setInterval(() => {
   if (document.visibilityState === "visible") loadMapData();
 }, 120_000);
