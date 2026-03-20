@@ -407,21 +407,7 @@ async def save_preferences(
             int(user["id"]), region, selected
         )
     return JSONResponse({"ok": True})
-
-# ============================================================
-# ADD TO main.py
-# ============================================================
-
-# 1. Add this import at the top of the file (with the other imports):
-#       import re
-#    and add GOOGLE_MAPS_API_KEY to your env + Config section:
-#       GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
-
-# 2. Add ADMIN_USER_IDS check helper (already exists, just used below)
-
-# ============================================================
-# NEW: Map page route
-# ============================================================
+# ---- Map page route ----#
 
 @app.get("/map", response_class=HTMLResponse)
 async def map_page(request: Request):
@@ -439,45 +425,36 @@ async def map_page(request: Request):
         "is_admin": is_admin,
         "google_maps_api_key": GOOGLE_MAPS_API_KEY,
     })
-
-
-# ============================================================
-# NEW: /api/map — locations with coords + today's restocks
-# ============================================================
-
-import re as _re
-
+ 
+ 
+# ---- Lat/lng extractor ----
+ 
 def _extract_latlng(maps_url: str):
     """
-    Pull lat/lng from a Google Maps URL.
-    Handles these common formats:
+    Pull lat/lng from a full Google Maps URL.
+    Handles:
       - /maps/place/.../@38.123,-77.456,...
       - /maps?q=38.123,-77.456
-      - /maps/search/.../@38.123,-77.456
-      - maps.app.goo.gl short links won't resolve server-side;
-        those need to be expanded first — warn and skip.
     Returns (lat, lng) floats or (None, None).
     """
     if not maps_url:
         return None, None
-
-    # Format: @lat,lng,zoom  (most common for place links)
     m = _re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", maps_url)
     if m:
         return float(m.group(1)), float(m.group(2))
-
-    # Format: q=lat,lng
     m = _re.search(r"[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)", maps_url)
     if m:
         return float(m.group(1)), float(m.group(2))
-
     return None, None
-
-
+ 
+ 
+# ---- /api/map ----
+ 
 @app.get("/api/map")
 async def get_map_data(
     request: Request,
     region: str = "NOVA",
+    window: str = "day",        # "day" = today only, "week" = last 7 days
     user=Depends(get_current_user)
 ):
     region_to_state = {
@@ -487,27 +464,30 @@ async def get_map_data(
         "RVA":  "CVA",
     }
     state = region_to_state.get(region, "VA")
-
+ 
     eastern = ZoneInfo("America/New_York")
     now = datetime.now(eastern)
-    # "today" window: midnight → now (Eastern)
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-
+ 
+    if window == "week":
+        since = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    else:
+        # Today from midnight Eastern
+        since = now.replace(hour=0, minute=0, second=0, microsecond=0)
+ 
     channel_to_region = {
         "nova-restock-information":           "NOVA",
         "md-restock-information":             "MD",
         "dc-restock-information":             "DC",
         "rva-central-va-restock-information": "RVA",
     }
-
+ 
     def time_slot(dt):
         h = dt.hour
         if h < 12:   return "Morning"
         elif h < 17: return "Afternoon"
         else:        return "Evening"
-
+ 
     async with request.app.state.db.acquire() as conn:
-        # All locations with a maps link for this region
         locations = await conn.fetch(
             """
             SELECT location, store_type, location_link
@@ -519,8 +499,7 @@ async def get_map_data(
             """,
             state
         )
-
-        # Today's restock reports for this region
+ 
         restocks = await conn.fetch(
             """
             SELECT
@@ -536,13 +515,12 @@ async def get_map_data(
               ))
             ORDER BY date ASC
             """,
-            today_start
+            since
         )
-
-    # Group today's restocks by location name
+ 
+    # Group restocks by location, filtered to the requested region
     restock_map: dict[str, list] = {}
     for r in restocks:
-        # Filter to the requested region via channel
         row_region = channel_to_region.get(r["channel_name"], "NOVA")
         if row_region != region:
             continue
@@ -554,12 +532,11 @@ async def get_map_data(
             "datetime": local_dt.strftime("%b %d %I:%M %p"),
             "slot": time_slot(local_dt),
         })
-
+ 
     result = []
     for loc in locations:
         lat, lng = _extract_latlng(loc["location_link"])
         if lat is None:
-            # Skip locations whose URL we can't parse for coordinates
             continue
         result.append({
             "location": loc["location"],
@@ -569,21 +546,6 @@ async def get_map_data(
             "lng":      lng,
             "restocks": restock_map.get(loc["location"], []),
         })
-
+ 
     return JSONResponse(result)
-
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    user = request.session.get("user")
-    if not user:
-        return RedirectResponse("/login")
-    if not request.session.get("terms_accepted"):
-        return RedirectResponse("/terms")
-    is_admin = int(user["id"]) in ADMIN_USER_IDS
-    return templates.TemplateResponse("index.html", {
-        "request": request,
-        "username": user["username"],
-        "avatar": user.get("avatar"),
-        "user_id": user["id"],
-        "is_admin": is_admin,
-    })
+ 
