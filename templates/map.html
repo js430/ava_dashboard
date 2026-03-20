@@ -205,6 +205,15 @@ function initMap() {
       { featureType: "transit", stylers: [{ visibility: "off" }] }
     ]
   });
+
+  // Redraw watermark after the map tiles fully render, since the
+  // iframe repaint would otherwise cover the canvas
+  google.maps.event.addListenerOnce(map, "idle", () => {
+    drawWatermark();
+    setTimeout(drawWatermark, 300);
+    setTimeout(drawWatermark, 800);
+  });
+
   loadMapData();
 }
 
