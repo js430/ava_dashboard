@@ -440,10 +440,10 @@ def _extract_latlng(maps_url: str):
     """
     if not maps_url:
         return None, None
-    m = _re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", maps_url)
+    m = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", maps_url)
     if m:
         return float(m.group(1)), float(m.group(2))
-    m = _re.search(r"[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)", maps_url)
+    m = re.search(r"[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)", maps_url)
     if m:
         return float(m.group(1)), float(m.group(2))
     return None, None
