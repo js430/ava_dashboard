@@ -53,20 +53,22 @@
 
   /* User list */
   .user-list { max-height: 500px; overflow-y: auto; }
-  .user-row { display: flex; align-items: center; gap: 10px; padding: 8px 16px; border-bottom: 1px solid #f5f5f5; cursor: pointer; transition: background 0.1s; }
+  .user-row { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-bottom: 1px solid #f5f5f5; cursor: pointer; transition: background 0.1s; }
   .user-row:last-child { border-bottom: none; }
   .user-row:hover { background: #fafafa; }
   .user-row.selected { background: #f0f1ff; }
   .user-color { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
   .user-name { font-size: 12px; font-weight: 500; color: #111; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .user-pts { font-size: 11px; color: #888; white-space: nowrap; }
-  .user-flags { display: flex; gap: 3px; margin-left: 4px; }
+  .user-flags { display: flex; gap: 3px; }
   .flag-badge { font-size: 10px; padding: 1px 5px; border-radius: 3px; font-weight: 600; white-space: nowrap; }
   .flag-spike { background: #fee2e2; color: #991b1b; }
   .flag-ratio { background: #ffedd5; color: #9a3412; }
   .flag-repeat { background: #fef9c3; color: #854d0e; }
   .flag-weekend { background: #f3f4f6; color: #4b5563; }
   .user-checkbox { width: 14px; height: 14px; cursor: pointer; accent-color: #5865F2; flex-shrink: 0; }
+  .detail-btn { font-size: 10px; color: #5865F2; background: none; border: 1px solid #c7caff; border-radius: 4px; padding: 1px 6px; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+  .detail-btn:hover { background: #f0f1ff; }
 
   /* Detail panel */
   .detail-panel { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; overflow: hidden; margin-top: 16px; display: none; }
@@ -77,7 +79,7 @@
   .detail-close:hover { color: #555; }
 
   /* Flags summary */
-  .flags-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; padding: 12px 16px; border-bottom: 1px solid #f0f0f0; }
+  .flags-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; padding: 12px 16px; border-bottom: 1px solid #f0f0f0; }
   .flag-card { border-radius: 8px; padding: 10px 12px; }
   .flag-card.spike { background: #fee2e2; }
   .flag-card.ratio { background: #ffedd5; }
@@ -205,7 +207,7 @@
     </div>
   </div>
 
-  <!-- Detail panel (shown on user click) -->
+  <!-- Detail panel -->
   <div class="detail-panel" id="detailPanel">
     <div class="detail-header">
       <div class="detail-title" id="detailTitle">User Detail</div>
@@ -235,12 +237,11 @@
 // ---- State ----
 let currentRange = 7;
 let currentMetric = 'total';
-let allData = null;       // full API response
+let allData = null;
 let chart = null;
 let selectedUsers = new Set();
 let allUsers = [];
 
-// Distinct color palette for lines
 const COLORS = [
   '#5865F2','#34a853','#f59e0b','#ef4444','#8b5cf6',
   '#06b6d4','#f97316','#10b981','#e11d48','#6366f1',
@@ -273,15 +274,13 @@ async function loadData() {
 function buildUserList() {
   allUsers = allData.users;
   // Default: select all
-  if (selectedUsers.size === 0) {
-    allUsers.forEach((u, i) => selectedUsers.add(u.user_id));
-  }
+  allUsers.forEach(u => selectedUsers.add(u.user_id));
   renderUserList(allUsers);
   document.getElementById('userCount').textContent = `${allUsers.length} users`;
 }
 
 function renderUserList(users) {
-  const html = users.map((u, i) => {
+  const html = users.map(u => {
     const colorIdx = allUsers.findIndex(x => x.user_id === u.user_id) % COLORS.length;
     const color = COLORS[colorIdx];
     const flags = buildFlagBadges(u.flags);
@@ -292,6 +291,7 @@ function renderUserList(users) {
       <div class="user-name" title="${u.username}">${u.username}</div>
       <div class="user-flags">${flags}</div>
       <div class="user-pts">${u.total_pts.toFixed(1)}pts</div>
+      <button class="detail-btn" onclick="event.stopPropagation(); showDetail('${u.user_id}')">detail</button>
     </div>`;
   }).join('');
   document.getElementById('userList').innerHTML = html || '<div class="empty-state">No users found.</div>';
@@ -330,32 +330,33 @@ function renderChart() {
   if (!allData) return;
 
   const labels = allData.dates;
-  const datasets = allData.users
-    .filter(u => selectedUsers.has(u.user_id))
-    .map((u, i) => {
-      const colorIdx = allUsers.findIndex(x => x.user_id === u.user_id) % COLORS.length;
-      const color = COLORS[colorIdx];
-      const data = labels.map(date => {
-        const day = u.daily[date];
-        if (!day) return 0;
-        if (currentMetric === 'total')    return day.total ?? 0;
-        if (currentMetric === 'restocks') return day.restock_pts ?? 0;
-        if (currentMetric === 'empty')    return day.empty_pts ?? 0;
-        if (currentMetric === 'plusones') return day.plusone_pts ?? 0;
-        return 0;
-      });
-      return {
-        label: u.username,
-        data,
-        borderColor: color,
-        backgroundColor: color + '18',
-        borderWidth: 2,
-        pointRadius: 3,
-        pointHoverRadius: 5,
-        tension: 0.3,
-        fill: false,
-      };
+  const visibleUsers = allData.users.filter(u => selectedUsers.has(u.user_id));
+
+  const datasets = visibleUsers.map(u => {
+    const colorIdx = allUsers.findIndex(x => x.user_id === u.user_id) % COLORS.length;
+    const color = COLORS[colorIdx];
+    const data = labels.map(date => {
+      const day = u.daily[date];
+      if (!day) return 0;
+      if (currentMetric === 'total')    return day.total ?? 0;
+      if (currentMetric === 'restocks') return day.restock_pts ?? 0;
+      if (currentMetric === 'empty')    return day.empty_pts ?? 0;
+      if (currentMetric === 'plusones') return day.plusone_pts ?? 0;
+      return 0;
     });
+    return {
+      label: u.username,
+      data,
+      borderColor: color,
+      backgroundColor: color + '18',
+      borderWidth: 2,
+      pointRadius: 3,
+      pointHoverRadius: 5,
+      tension: 0.3,
+      fill: false,
+      _userId: u.user_id,  // store directly on dataset object
+    };
+  });
 
   const metricLabel = {
     total: 'Total Points', restocks: 'Restock Points',
@@ -396,18 +397,11 @@ function renderChart() {
       },
       onClick: (evt, elements) => {
         if (elements.length > 0) {
-          const dsIdx = elements[0].datasetIndex;
-          const userId = datasets[dsIdx]?._userId;
-          if (userId) showDetail(userId);
+          const ds = chart.data.datasets[elements[0].datasetIndex];
+          if (ds?._userId) showDetail(ds._userId);
         }
       }
     }
-  });
-
-  // Store user_id on dataset for click handler
-  chart.data.datasets.forEach((ds, i) => {
-    const u = allData.users.filter(u => selectedUsers.has(u.user_id))[i];
-    if (u) ds._userId = u.user_id;
   });
 }
 
@@ -419,7 +413,6 @@ function showDetail(userId) {
   document.getElementById('detailTitle').textContent = `${user.username} — Activity Detail`;
   document.getElementById('detailPanel').classList.add('visible');
 
-  // Flags summary
   const f = user.flags;
   document.getElementById('flagsGrid').innerHTML = `
     <div class="flag-card spike">
@@ -444,20 +437,19 @@ function showDetail(userId) {
     </div>
   `;
 
-  // Activity table
   const rows = user.activity || [];
   if (!rows.length) {
     document.getElementById('detailBody').innerHTML =
       `<tr><td colspan="6" style="text-align:center;padding:20px;color:#aaa;">No activity in range.</td></tr>`;
+    document.getElementById('detailPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
     return;
   }
 
   document.getElementById('detailBody').innerHTML = rows.map(r => {
-    const isFlagged = r.flagged;
     const pts = parseFloat(r.points);
     const ptsCls = pts >= 1 ? 'pts-high' : pts >= 0.5 ? 'pts-med' : 'pts-low';
     const flagStr = r.flag_reasons?.join(', ') || '';
-    return `<tr class="${isFlagged ? 'flagged-row' : ''}">
+    return `<tr class="${r.flagged ? 'flagged-row' : ''}">
       <td>${r.date}</td>
       <td>${r.type}</td>
       <td>${r.store || '—'}</td>
