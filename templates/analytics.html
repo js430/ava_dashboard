@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Analytics — Restock Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
+
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 200; }
+  .header-left { display: flex; align-items: center; gap: 10px; }
+  .avatar { width: 30px; height: 30px; border-radius: 50%; background: #5865F2; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: #fff; overflow: hidden; flex-shrink: 0; }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .header-title { font-size: 15px; font-weight: 600; color: #111; }
+  .header-user { font-size: 11px; color: #888; }
+  .nav { display: flex; gap: 8px; align-items: center; }
+  .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; }
+  .nav a:hover { background: #f4f4f5; }
+  .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+
+  .main { padding: 20px; max-width: 1400px; margin: 0 auto; }
+
+  /* Toolbar */
+  .toolbar { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px 16px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+  .toolbar-label { font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
+  .toolbar-divider { width: 1px; height: 20px; background: #e4e4e7; flex-shrink: 0; }
+  .btn-group { display: flex; }
+  .btn-group button { font-size: 12px; height: 30px; padding: 0 11px; border: 1px solid #ddd; background: #fff; color: #333; cursor: pointer; transition: background 0.1s; white-space: nowrap; }
+  .btn-group button:first-child { border-radius: 6px 0 0 6px; }
+  .btn-group button:last-child { border-radius: 0 6px 6px 0; }
+  .btn-group button:not(:first-child) { border-left: none; }
+  .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .toolbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .search-input { font-size: 12px; height: 30px; padding: 0 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #111; width: 180px; }
+
+  /* Flag legend */
+  .flag-legend { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .flag-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #555; }
+  .flag-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+
+  /* Grid layout */
+  .grid { display: grid; grid-template-columns: 1fr 340px; gap: 16px; align-items: start; }
+
+  /* Chart card */
+  .card { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; overflow: hidden; }
+  .card-header { padding: 12px 16px; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; justify-content: space-between; }
+  .card-title { font-size: 13px; font-weight: 600; color: #111; }
+  .card-sub { font-size: 11px; color: #aaa; margin-top: 1px; }
+  .card-body { padding: 16px; }
+  .chart-wrap { position: relative; height: 380px; }
+
+  /* User list */
+  .user-list { max-height: 500px; overflow-y: auto; }
+  .user-row { display: flex; align-items: center; gap: 10px; padding: 8px 16px; border-bottom: 1px solid #f5f5f5; cursor: pointer; transition: background 0.1s; }
+  .user-row:last-child { border-bottom: none; }
+  .user-row:hover { background: #fafafa; }
+  .user-row.selected { background: #f0f1ff; }
+  .user-color { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .user-name { font-size: 12px; font-weight: 500; color: #111; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .user-pts { font-size: 11px; color: #888; white-space: nowrap; }
+  .user-flags { display: flex; gap: 3px; margin-left: 4px; }
+  .flag-badge { font-size: 10px; padding: 1px 5px; border-radius: 3px; font-weight: 600; white-space: nowrap; }
+  .flag-spike { background: #fee2e2; color: #991b1b; }
+  .flag-ratio { background: #ffedd5; color: #9a3412; }
+  .flag-repeat { background: #fef9c3; color: #854d0e; }
+  .flag-weekend { background: #f3f4f6; color: #4b5563; }
+  .user-checkbox { width: 14px; height: 14px; cursor: pointer; accent-color: #5865F2; flex-shrink: 0; }
+
+  /* Detail panel */
+  .detail-panel { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; overflow: hidden; margin-top: 16px; display: none; }
+  .detail-panel.visible { display: block; }
+  .detail-header { padding: 12px 16px; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; justify-content: space-between; }
+  .detail-title { font-size: 13px; font-weight: 600; color: #111; }
+  .detail-close { background: none; border: none; font-size: 16px; color: #aaa; cursor: pointer; }
+  .detail-close:hover { color: #555; }
+
+  /* Flags summary */
+  .flags-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; padding: 12px 16px; border-bottom: 1px solid #f0f0f0; }
+  .flag-card { border-radius: 8px; padding: 10px 12px; }
+  .flag-card.spike { background: #fee2e2; }
+  .flag-card.ratio { background: #ffedd5; }
+  .flag-card.repeat { background: #fef9c3; }
+  .flag-card.weekend { background: #f3f4f6; }
+  .flag-card-label { font-size: 10px; font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 3px; }
+  .flag-card-value { font-size: 18px; font-weight: 700; color: #111; }
+  .flag-card-desc { font-size: 10px; color: #888; margin-top: 2px; }
+
+  /* Activity table */
+  .detail-table-wrap { overflow-x: auto; max-height: 280px; overflow-y: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  thead th { font-size: 10px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.04em; padding: 8px 14px; text-align: left; border-bottom: 1px solid #e4e4e7; background: #fafafa; position: sticky; top: 0; white-space: nowrap; }
+  tbody tr { border-bottom: 1px solid #f5f5f5; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: #fafafa; }
+  tbody td { padding: 7px 14px; color: #333; vertical-align: middle; }
+  .flagged-row { background: #fff9f0 !important; }
+  .flagged-row:hover { background: #fff3e0 !important; }
+  .pts-pill { display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 10px; }
+  .pts-high { background: #dcfce7; color: #166534; }
+  .pts-med { background: #fef9c3; color: #854d0e; }
+  .pts-low { background: #f3f4f6; color: #6b7280; }
+
+  .empty-state { text-align: center; padding: 40px; color: #aaa; font-size: 13px; }
+  .loading { text-align: center; padding: 20px; font-size: 12px; color: #aaa; }
+
+  @media (max-width: 900px) {
+    .grid { grid-template-columns: 1fr; }
+    .flags-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <div class="avatar">
+      {% if avatar %}
+        <img src="https://cdn.discordapp.com/avatars/{{ user_id }}/{{ avatar }}.png" alt="">
+      {% else %}
+        {{ username[0] | upper }}
+      {% endif %}
+    </div>
+    <div>
+      <div class="header-title">Restock Dashboard</div>
+      <div class="header-user">{{ username }}</div>
+    </div>
+  </div>
+  <div class="nav">
+    <a href="/">Dashboard</a>
+    <a href="/map">Map</a>
+    <a href="/admin">Admin</a>
+    <a href="/analytics" class="active">Analytics</a>
+    <a href="/logout">Log out</a>
+  </div>
+</div>
+
+<div class="main">
+
+  <div class="toolbar">
+    <span class="toolbar-label">Range</span>
+    <div class="btn-group" id="rangeGroup">
+      <button class="active" onclick="setRange(7, this)">7d</button>
+      <button onclick="setRange(30, this)">30d</button>
+      <button onclick="setRange(60, this)">60d</button>
+      <button onclick="setRange(90, this)">90d</button>
+    </div>
+
+    <div class="toolbar-divider"></div>
+
+    <span class="toolbar-label">Show</span>
+    <select id="metricSelect" onchange="setMetric(this.value)" style="font-size:12px;height:30px;padding:0 8px;border:1px solid #ddd;border-radius:6px;background:#fff;color:#333;cursor:pointer;">
+      <option value="total" selected>Total Points</option>
+      <option value="restocks">Restock Points</option>
+      <option value="empty">Empty Ping Points</option>
+      <option value="plusones">+1 Points</option>
+    </select>
+
+    <div class="toolbar-divider"></div>
+
+    <div class="flag-legend">
+      <span class="toolbar-label">Flags</span>
+      <div class="flag-item"><div class="flag-dot" style="background:#ef4444"></div> Spike</div>
+      <div class="flag-item"><div class="flag-dot" style="background:#f97316"></div> High empty ratio</div>
+      <div class="flag-item"><div class="flag-dot" style="background:#eab308"></div> Repeat location</div>
+      <div class="flag-item"><div class="flag-dot" style="background:#9ca3af"></div> Weekend heavy</div>
+    </div>
+
+    <div class="toolbar-right">
+      <input class="search-input" type="text" id="userSearch" placeholder="Filter users..." oninput="filterUsers()">
+    </div>
+  </div>
+
+  <div class="grid">
+    <!-- Chart -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Daily Points — Active Informants</div>
+          <div class="card-sub" id="chartSub">Loading...</div>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="chart-wrap">
+          <canvas id="mainChart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- User list -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">Users</div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button onclick="selectAllUsers()" style="font-size:11px;color:#5865F2;background:none;border:none;cursor:pointer;padding:0;">All</button>
+          <span style="font-size:11px;color:#ddd;">|</span>
+          <button onclick="selectNoneUsers()" style="font-size:11px;color:#5865F2;background:none;border:none;cursor:pointer;padding:0;">None</button>
+          <span style="font-size:11px;color:#aaa;margin-left:4px;" id="userCount"></span>
+        </div>
+      </div>
+      <div class="user-list" id="userList">
+        <div class="loading">Loading...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Detail panel (shown on user click) -->
+  <div class="detail-panel" id="detailPanel">
+    <div class="detail-header">
+      <div class="detail-title" id="detailTitle">User Detail</div>
+      <button class="detail-close" onclick="closeDetail()">&#x2715;</button>
+    </div>
+    <div class="flags-grid" id="flagsGrid"></div>
+    <div class="detail-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Type</th>
+            <th>Store</th>
+            <th>Location</th>
+            <th>Points</th>
+            <th>Flags</th>
+          </tr>
+        </thead>
+        <tbody id="detailBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ---- State ----
+let currentRange = 7;
+let currentMetric = 'total';
+let allData = null;       // full API response
+let chart = null;
+let selectedUsers = new Set();
+let allUsers = [];
+
+// Distinct color palette for lines
+const COLORS = [
+  '#5865F2','#34a853','#f59e0b','#ef4444','#8b5cf6',
+  '#06b6d4','#f97316','#10b981','#e11d48','#6366f1',
+  '#84cc16','#f43f5e','#0ea5e9','#a855f7','#14b8a6',
+  '#fb923c','#4ade80','#818cf8','#fb7185','#facc15'
+];
+
+// ---- Init ----
+async function init() {
+  await loadData();
+}
+
+// ---- Data ----
+async function loadData() {
+  document.getElementById('chartSub').textContent = 'Loading...';
+  document.getElementById('userList').innerHTML = '<div class="loading">Loading...</div>';
+  try {
+    const resp = await fetch(`/api/analytics?days=${currentRange}`);
+    if (!resp.ok) throw new Error('fetch failed');
+    allData = await resp.json();
+    buildUserList();
+    renderChart();
+  } catch(e) {
+    document.getElementById('chartSub').textContent = 'Failed to load data.';
+    document.getElementById('userList').innerHTML = '<div class="empty-state">Error loading data.</div>';
+  }
+}
+
+// ---- User list ----
+function buildUserList() {
+  allUsers = allData.users;
+  // Default: select all
+  if (selectedUsers.size === 0) {
+    allUsers.forEach((u, i) => selectedUsers.add(u.user_id));
+  }
+  renderUserList(allUsers);
+  document.getElementById('userCount').textContent = `${allUsers.length} users`;
+}
+
+function renderUserList(users) {
+  const html = users.map((u, i) => {
+    const colorIdx = allUsers.findIndex(x => x.user_id === u.user_id) % COLORS.length;
+    const color = COLORS[colorIdx];
+    const flags = buildFlagBadges(u.flags);
+    const checked = selectedUsers.has(u.user_id) ? 'checked' : '';
+    return `<div class="user-row ${selectedUsers.has(u.user_id) ? 'selected' : ''}" onclick="toggleUser('${u.user_id}', this)">
+      <input type="checkbox" class="user-checkbox" ${checked} onclick="event.stopPropagation(); toggleUser('${u.user_id}', this.closest('.user-row'))">
+      <div class="user-color" style="background:${color}"></div>
+      <div class="user-name" title="${u.username}">${u.username}</div>
+      <div class="user-flags">${flags}</div>
+      <div class="user-pts">${u.total_pts.toFixed(1)}pts</div>
+    </div>`;
+  }).join('');
+  document.getElementById('userList').innerHTML = html || '<div class="empty-state">No users found.</div>';
+}
+
+function buildFlagBadges(flags) {
+  let out = '';
+  if (flags.spike)   out += `<span class="flag-badge flag-spike">spike</span>`;
+  if (flags.ratio)   out += `<span class="flag-badge flag-ratio">ratio</span>`;
+  if (flags.repeat)  out += `<span class="flag-badge flag-repeat">repeat</span>`;
+  if (flags.weekend) out += `<span class="flag-badge flag-weekend">wknd</span>`;
+  return out;
+}
+
+function filterUsers() {
+  const q = document.getElementById('userSearch').value.toLowerCase();
+  const filtered = q ? allUsers.filter(u => u.username.toLowerCase().includes(q)) : allUsers;
+  renderUserList(filtered);
+}
+
+function toggleUser(userId, row) {
+  if (selectedUsers.has(userId)) {
+    selectedUsers.delete(userId);
+    row.classList.remove('selected');
+    row.querySelector('.user-checkbox').checked = false;
+  } else {
+    selectedUsers.add(userId);
+    row.classList.add('selected');
+    row.querySelector('.user-checkbox').checked = true;
+  }
+  renderChart();
+}
+
+// ---- Chart ----
+function renderChart() {
+  if (!allData) return;
+
+  const labels = allData.dates;
+  const datasets = allData.users
+    .filter(u => selectedUsers.has(u.user_id))
+    .map((u, i) => {
+      const colorIdx = allUsers.findIndex(x => x.user_id === u.user_id) % COLORS.length;
+      const color = COLORS[colorIdx];
+      const data = labels.map(date => {
+        const day = u.daily[date];
+        if (!day) return 0;
+        if (currentMetric === 'total')    return day.total ?? 0;
+        if (currentMetric === 'restocks') return day.restock_pts ?? 0;
+        if (currentMetric === 'empty')    return day.empty_pts ?? 0;
+        if (currentMetric === 'plusones') return day.plusone_pts ?? 0;
+        return 0;
+      });
+      return {
+        label: u.username,
+        data,
+        borderColor: color,
+        backgroundColor: color + '18',
+        borderWidth: 2,
+        pointRadius: 3,
+        pointHoverRadius: 5,
+        tension: 0.3,
+        fill: false,
+      };
+    });
+
+  const metricLabel = {
+    total: 'Total Points', restocks: 'Restock Points',
+    empty: 'Empty Ping Points', plusones: '+1 Points'
+  }[currentMetric];
+
+  document.getElementById('chartSub').textContent =
+    `${selectedUsers.size} of ${allUsers.length} users · last ${currentRange} days · ${metricLabel}`;
+
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById('mainChart'), {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: ctx => ctx[0].label,
+            label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(2)}pts`
+          }
+        }
+      },
+      scales: {
+        x: {
+          ticks: { font: { size: 10 }, maxTicksLimit: 15, color: '#888' },
+          grid: { color: '#f0f0f0' }
+        },
+        y: {
+          ticks: { font: { size: 10 }, color: '#888' },
+          grid: { color: '#f0f0f0' },
+          beginAtZero: true,
+          title: { display: true, text: metricLabel, font: { size: 11 }, color: '#aaa' }
+        }
+      },
+      onClick: (evt, elements) => {
+        if (elements.length > 0) {
+          const dsIdx = elements[0].datasetIndex;
+          const userId = datasets[dsIdx]?._userId;
+          if (userId) showDetail(userId);
+        }
+      }
+    }
+  });
+
+  // Store user_id on dataset for click handler
+  chart.data.datasets.forEach((ds, i) => {
+    const u = allData.users.filter(u => selectedUsers.has(u.user_id))[i];
+    if (u) ds._userId = u.user_id;
+  });
+}
+
+// ---- Detail panel ----
+function showDetail(userId) {
+  const user = allData.users.find(u => u.user_id === userId);
+  if (!user) return;
+
+  document.getElementById('detailTitle').textContent = `${user.username} — Activity Detail`;
+  document.getElementById('detailPanel').classList.add('visible');
+
+  // Flags summary
+  const f = user.flags;
+  document.getElementById('flagsGrid').innerHTML = `
+    <div class="flag-card spike">
+      <div class="flag-card-label">Daily Spike</div>
+      <div class="flag-card-value">${f.spike_days ?? 0}</div>
+      <div class="flag-card-desc">Days with 3× avg points</div>
+    </div>
+    <div class="flag-card ratio">
+      <div class="flag-card-label">Empty / Restock Ratio</div>
+      <div class="flag-card-value">${f.empty_ratio != null ? f.empty_ratio.toFixed(1) + 'x' : '—'}</div>
+      <div class="flag-card-desc">Empty pings vs restocks</div>
+    </div>
+    <div class="flag-card repeat">
+      <div class="flag-card-label">Repeat Location</div>
+      <div class="flag-card-value">${f.repeat_max ?? 0}</div>
+      <div class="flag-card-desc">Max empties, same location</div>
+    </div>
+    <div class="flag-card weekend">
+      <div class="flag-card-label">Weekend Activity %</div>
+      <div class="flag-card-value">${f.weekend_pct != null ? f.weekend_pct.toFixed(0) + '%' : '—'}</div>
+      <div class="flag-card-desc">of empty pings on Sat/Sun</div>
+    </div>
+  `;
+
+  // Activity table
+  const rows = user.activity || [];
+  if (!rows.length) {
+    document.getElementById('detailBody').innerHTML =
+      `<tr><td colspan="6" style="text-align:center;padding:20px;color:#aaa;">No activity in range.</td></tr>`;
+    return;
+  }
+
+  document.getElementById('detailBody').innerHTML = rows.map(r => {
+    const isFlagged = r.flagged;
+    const pts = parseFloat(r.points);
+    const ptsCls = pts >= 1 ? 'pts-high' : pts >= 0.5 ? 'pts-med' : 'pts-low';
+    const flagStr = r.flag_reasons?.join(', ') || '';
+    return `<tr class="${isFlagged ? 'flagged-row' : ''}">
+      <td>${r.date}</td>
+      <td>${r.type}</td>
+      <td>${r.store || '—'}</td>
+      <td>${r.location || '—'}</td>
+      <td><span class="pts-pill ${ptsCls}">${pts.toFixed(2)}</span></td>
+      <td style="font-size:10px;color:#999;">${flagStr}</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('detailPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function closeDetail() {
+  document.getElementById('detailPanel').classList.remove('visible');
+}
+
+// ---- Controls ----
+function setRange(days, btn) {
+  currentRange = days;
+  btn.closest('.btn-group').querySelectorAll('button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  selectedUsers.clear();
+  closeDetail();
+  loadData();
+}
+
+function setMetric(metric) {
+  currentMetric = metric;
+  renderChart();
+}
+
+function selectAllUsers() {
+  allUsers.forEach(u => selectedUsers.add(u.user_id));
+  renderUserList(allUsers);
+  renderChart();
+}
+
+function selectNoneUsers() {
+  selectedUsers.clear();
+  renderUserList(allUsers);
+  renderChart();
+}
+
+init();
+</script>
+</body>
+</html>
