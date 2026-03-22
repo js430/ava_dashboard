@@ -550,4 +550,278 @@ async def get_map_data(
         })
  
     return JSONResponse(result)
+
+
+ACTIVE_INFORMANT_ROLE_ID = os.getenv("ACTIVE_INFORMANT_ROLE_ID", "")
+ 
+# ---- Analytics page route ----
+ 
+@app.get("/analytics", response_class=HTMLResponse)
+async def analytics_page(request: Request):
+    user = request.session.get("user")
+    if not user:
+        return RedirectResponse("/login")
+    if not request.session.get("terms_accepted"):
+        return RedirectResponse("/terms")
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return templates.TemplateResponse("analytics.html", {
+        "request": request,
+        "username": user["username"],
+        "avatar": user.get("avatar"),
+        "user_id": user["id"],
+    })
+ 
+ 
+# ---- /api/analytics ----
+ 
+@app.get("/api/analytics")
+async def get_analytics(
+    request: Request,
+    days: int = 30,
+    user=Depends(get_current_user)
+):
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+ 
+    if days not in (7, 30, 60, 90):
+        days = 30
+ 
+    eastern = ZoneInfo("America/New_York")
+    now = datetime.now(eastern)
+    since = now - timedelta(days=days)
+ 
+    async with request.app.state.db.acquire() as conn:
+ 
+        # --- Restock events in range ---
+        restock_rows = await conn.fetch(
+            """
+            SELECT
+                user_id,
+                store_name,
+                location,
+                date AT TIME ZONE 'America/New_York' AS local_date,
+                CASE WHEN store_name IN ('Costco', 'Sams Club') THEN 0.5 ELSE 1.0 END AS pts
+            FROM restock_reports
+            WHERE date >= $1
+              AND channel_name NOT IN (
+                  'online-restock-information',
+                  'other-online-restocks',
+                  'pokemon-center-drops'
+              )
+            ORDER BY date ASC
+            """,
+            since
+        )
+ 
+        # --- Empty ping events in range ---
+        empty_rows = await conn.fetch(
+            """
+            SELECT
+                user_id,
+                location,
+                timestamp AT TIME ZONE 'America/New_York' AS local_date,
+                EXTRACT(DOW FROM timestamp AT TIME ZONE 'America/New_York') AS dow
+            FROM command_logs
+            WHERE command_used = 'empty'
+              AND timestamp >= $1
+            ORDER BY timestamp ASC
+            """,
+            since
+        )
+ 
+        # --- Plus one events in range ---
+        plusone_rows = await conn.fetch(
+            """
+            SELECT
+                receiver_id AS user_id,
+                timestamp AT TIME ZONE 'America/New_York' AS local_date,
+                value AS pts
+            FROM plusones
+            WHERE timestamp >= $1
+            ORDER BY timestamp ASC
+            """,
+            since
+        )
+ 
+        # --- Username lookup ---
+        user_name_rows = await conn.fetch(
+            """
+            SELECT DISTINCT user_id, username
+            FROM dashboard_sessions
+            ORDER BY user_id
+            """
+        )
+ 
+    username_map = {r["user_id"]: r["username"] for r in user_name_rows}
+ 
+    # Build date range list (strings)
+    date_list = []
+    d = since.date()
+    while d <= now.date():
+        date_list.append(d.isoformat())
+        d += timedelta(days=1)
+ 
+    # Collect all user_ids that appear in any event
+    all_user_ids = set()
+    for r in restock_rows:
+        all_user_ids.add(r["user_id"])
+    for r in empty_rows:
+        all_user_ids.add(r["user_id"])
+    for r in plusone_rows:
+        all_user_ids.add(r["user_id"])
+ 
+    # Build per-user per-day data structures
+    # user_daily[uid][date_str] = {restock_pts, empty_pts, plusone_pts, total}
+    from collections import defaultdict
+ 
+    user_daily = {uid: {d: {"restock_pts": 0.0, "empty_pts": 0.0, "plusone_pts": 0.0, "total": 0.0}
+                        for d in date_list}
+                  for uid in all_user_ids}
+ 
+    # Raw activity log per user for the detail table
+    user_activity = defaultdict(list)
+ 
+    # --- Process restocks ---
+    for r in restock_rows:
+        uid = r["user_id"]
+        date_str = r["local_date"].date().isoformat()
+        pts = float(r["pts"])
+        if date_str in user_daily[uid]:
+            user_daily[uid][date_str]["restock_pts"] += pts
+            user_daily[uid][date_str]["total"] += pts
+        user_activity[uid].append({
+            "date": date_str,
+            "type": "Restock",
+            "store": r["store_name"],
+            "location": r["location"],
+            "points": pts,
+            "flagged": False,
+            "flag_reasons": [],
+        })
+ 
+    # --- Process empty pings ---
+    for r in empty_rows:
+        uid = r["user_id"]
+        date_str = r["local_date"].date().isoformat()
+        dow = int(r["dow"])  # 0=Sun, 6=Sat
+        is_weekend = dow in (0, 6)
+        pts = 0.05 if is_weekend else 0.1
+        if date_str in user_daily.get(uid, {}):
+            user_daily[uid][date_str]["empty_pts"] += pts
+            user_daily[uid][date_str]["total"] += pts
+        loc_parts = r["location"].split("|") if r["location"] else ["", ""]
+        user_activity[uid].append({
+            "date": date_str,
+            "type": "Empty" + (" (wknd)" if is_weekend else ""),
+            "store": loc_parts[1] if len(loc_parts) > 1 else "",
+            "location": loc_parts[0] if loc_parts else "",
+            "points": pts,
+            "flagged": False,
+            "flag_reasons": [],
+        })
+ 
+    # --- Process plusones ---
+    for r in plusone_rows:
+        uid = r["user_id"]
+        date_str = r["local_date"].date().isoformat()
+        pts = float(r["pts"])
+        if date_str in user_daily.get(uid, {}):
+            user_daily[uid][date_str]["plusone_pts"] += pts
+            user_daily[uid][date_str]["total"] += pts
+        user_activity[uid].append({
+            "date": date_str,
+            "type": "+1",
+            "store": "",
+            "location": "",
+            "points": pts,
+            "flagged": False,
+            "flag_reasons": [],
+        })
+ 
+    # --- Anomaly detection per user ---
+    def detect_flags(uid, daily, activity):
+        daily_totals = [v["total"] for v in daily.values() if v["total"] > 0]
+        avg = sum(daily_totals) / len(daily_totals) if daily_totals else 0
+ 
+        # Spike: days where total is 3x the average
+        spike_days = sum(1 for v in daily.values() if v["total"] >= max(avg * 3, 1.0))
+ 
+        # Empty/restock ratio
+        total_restocks = sum(v["restock_pts"] for v in daily.values())
+        total_empty = sum(v["empty_pts"] for v in daily.values())
+        restock_count = sum(
+            1 for a in activity if a["type"] == "Restock"
+        )
+        empty_count = sum(
+            1 for a in activity if a["type"].startswith("Empty")
+        )
+        empty_ratio = (empty_count / restock_count) if restock_count > 0 else (empty_count if empty_count > 0 else 0)
+ 
+        # Repeat location: max times same location reported empty
+        loc_counts = defaultdict(int)
+        for a in activity:
+            if a["type"].startswith("Empty") and a["location"]:
+                loc_counts[a["location"]] += 1
+        repeat_max = max(loc_counts.values()) if loc_counts else 0
+ 
+        # Weekend % of empty pings
+        weekend_empty = sum(1 for a in activity if a["type"] == "Empty (wknd)")
+        weekend_pct = (weekend_empty / empty_count * 100) if empty_count > 0 else 0
+ 
+        flags = {
+            "spike": spike_days > 0,
+            "ratio": empty_ratio > 5,
+            "repeat": repeat_max >= 5,
+            "weekend": weekend_pct >= 60,
+            "spike_days": spike_days,
+            "empty_ratio": empty_ratio,
+            "repeat_max": repeat_max,
+            "weekend_pct": weekend_pct,
+        }
+ 
+        # Mark individual activity rows
+        spike_threshold = max(avg * 3, 1.0)
+        daily_running = defaultdict(float)
+        for a in activity:
+            daily_running[a["date"]] += a["points"]
+ 
+        for a in activity:
+            reasons = []
+            if daily_running[a["date"]] >= spike_threshold and a["type"] != "+1":
+                reasons.append("spike day")
+            if a["type"].startswith("Empty") and empty_ratio > 5:
+                reasons.append("high ratio")
+            if a["type"].startswith("Empty") and loc_counts.get(a["location"], 0) >= 5:
+                reasons.append("repeat loc")
+            if reasons:
+                a["flagged"] = True
+                a["flag_reasons"] = reasons
+ 
+        return flags
+ 
+    # --- Assemble final response ---
+    users_out = []
+    for uid in all_user_ids:
+        daily = user_daily[uid]
+        activity = sorted(user_activity[uid], key=lambda x: x["date"], reverse=True)
+        flags = detect_flags(uid, daily, activity)
+        total_pts = sum(v["total"] for v in daily.values())
+ 
+        users_out.append({
+            "user_id": str(uid),
+            "username": username_map.get(uid, f"User {uid}"),
+            "total_pts": total_pts,
+            "daily": daily,
+            "flags": flags,
+            "activity": activity,
+        })
+ 
+    # Sort by total points descending
+    users_out.sort(key=lambda x: x["total_pts"], reverse=True)
+ 
+    return JSONResponse({
+        "dates": date_list,
+        "users": users_out,
+    })
  
