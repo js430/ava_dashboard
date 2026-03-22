@@ -592,7 +592,9 @@ async def get_analytics(
     since = now - timedelta(days=days)
  
     async with request.app.state.db.acquire() as conn:
- 
+        informant_rows = await conn.fetch("SELECT user_id FROM active_informants")
+        informant_ids = {r["user_id"] for r in informant_rows}
+
         # --- Restock events in range ---
         restock_rows = await conn.fetch(
             """
@@ -670,6 +672,9 @@ async def get_analytics(
         all_user_ids.add(r["user_id"])
     for r in plusone_rows:
         all_user_ids.add(r["user_id"])
+        
+    # Filter to only active informants
+    all_user_ids = all_user_ids & informant_ids
  
     # Build per-user per-day data structures
     # user_daily[uid][date_str] = {restock_pts, empty_pts, plusone_pts, total}
