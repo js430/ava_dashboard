@@ -380,7 +380,8 @@ function renderChart() {
           callbacks: {
             title: ctx => ctx[0].label,
             label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(2)}pts`
-          }
+          },
+          itemSort: (a, b) => b.parsed.y - a.parsed.y,  // ← add this line
         }
       },
       scales: {
