@@ -74,6 +74,20 @@ def get_current_user(request: Request):
         raise HTTPException(status_code=401, detail="Not authenticated")
     return user
 
+async def terms_current(request: Request, user: dict) -> bool:
+    """Return True if user accepted terms within the last 30 days."""
+    if request.session.get("terms_accepted"):
+        return True
+    async with request.app.state.db.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT accepted_at FROM terms_acceptance WHERE user_id = $1",
+            int(user["id"])
+        )
+    if row and row["accepted_at"] > datetime.utcnow() - timedelta(days=30):
+        request.session["terms_accepted"] = True
+        return True
+    return False
+
 async def check_discord_role(access_token: str) -> tuple[bool, dict]:
     """Returns (has_role, user_info)"""
     async with httpx.AsyncClient() as client:
@@ -123,7 +137,7 @@ async def index(request: Request):
     user = request.session.get("user")
     if not user:
         return RedirectResponse("/login")
-    if not request.session.get("terms_accepted"):
+    if not await terms_current(request, user):
         return RedirectResponse("/terms")
     is_admin = int(user["id"]) in ADMIN_USER_IDS
     return templates.TemplateResponse("index.html", {
@@ -139,7 +153,7 @@ async def terms_page(request: Request):
     user = request.session.get("user")
     if not user:
         return RedirectResponse("/login")
-    if request.session.get("terms_accepted"):
+    if await terms_current(request, user):
         return RedirectResponse("/")
     from datetime import date
     return templates.TemplateResponse("terms.html", {
@@ -292,7 +306,7 @@ async def analytics_page(request: Request):
     user = request.session.get("user")
     if not user:
         return RedirectResponse("/login")
-    if not request.session.get("terms_accepted"):
+    if not await terms_current(request, user):
         return RedirectResponse("/terms")
     if int(user["id"]) not in ADMIN_USER_IDS:
         raise HTTPException(status_code=403, detail="Not authorized")
@@ -553,7 +567,7 @@ async def map_page(request: Request):
     user = request.session.get("user")
     if not user:
         return RedirectResponse("/login")
-    if not request.session.get("terms_accepted"):
+    if not await terms_current(request, user):
         return RedirectResponse("/terms")
     is_admin = int(user["id"]) in ADMIN_USER_IDS
     return templates.TemplateResponse("map.html", {
