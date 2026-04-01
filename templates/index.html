@@ -276,7 +276,8 @@ function buildDayList(){
     for(let i=0;i<7;i++){
       const d=new Date(monday); d.setDate(monday.getDate()+i);
       if(d>now) break;
-      list.push({key:d.toISOString().slice(0,10),label:d.toLocaleDateString("en-US",{weekday:"short"})});
+      const yy=d.getFullYear(),mm=String(d.getMonth()+1).padStart(2,'0'),dd=String(d.getDate()).padStart(2,'0');
+      list.push({key:`${yy}-${mm}-${dd}`,label:d.toLocaleDateString("en-US",{weekday:"short"})});
     }
     return list;
   }
