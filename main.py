@@ -36,7 +36,7 @@ DISCORD_CLIENT_ID        = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET    = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_REDIRECT_URI     = os.getenv("DISCORD_REDIRECT_URI")
 DISCORD_GUILD_ID         = os.getenv("DISCORD_GUILD_ID")
-REQUIRED_ROLE_ID         = os.getenv("REQUIRED_ROLE_ID")
+REQUIRED_ROLE_IDS        = {r.strip() for r in os.getenv("REQUIRED_ROLE_ID", "").split(",") if r.strip()}
 GOOGLE_MAPS_API_KEY      = os.getenv("GOOGLE_MAPS_API_KEY", "")
 ACTIVE_INFORMANT_ROLE_ID = os.getenv("ACTIVE_INFORMANT_ROLE_ID", "")
 ADMIN_USER_IDS           = {
@@ -108,7 +108,7 @@ async def check_discord_role(access_token: str) -> tuple[bool, dict]:
 
         member = member_resp.json()
         roles = member.get("roles", [])
-        has_role = REQUIRED_ROLE_ID in roles
+        has_role = bool(REQUIRED_ROLE_IDS & set(roles))
 
         return has_role, user
 
