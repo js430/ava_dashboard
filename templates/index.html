@@ -530,8 +530,9 @@ function render(){
 
     group.forEach(loc=>{
       let rowTotal=0;
-      // Find link by location name (store keys may differ between restock_reports and locations tables)
-      const metaKey=Object.keys(locationMeta).find(k=>k.endsWith('||'+loc.location));
+      // Find link by location name — case-insensitive + trimmed to handle minor name mismatches
+      const locNorm=loc.location.trim().toLowerCase();
+      const metaKey=Object.keys(locationMeta).find(k=>k.toLowerCase().endsWith('||'+locNorm));
       const link=metaKey?locationMeta[metaKey].link:null;
       const nameHtml=link
         ?`<a class="loc-name-link" href="${link}" target="_blank" rel="noopener">${loc.location}</a>`
