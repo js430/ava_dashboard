@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Contributors — Restock Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
+
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 200; }
+  .header-left { display: flex; align-items: center; gap: 10px; }
+  .avatar { width: 30px; height: 30px; border-radius: 50%; background: #5865F2; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: #fff; overflow: hidden; flex-shrink: 0; }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .header-title { font-size: 15px; font-weight: 600; color: #111; }
+  .header-user { font-size: 11px; color: #888; }
+  .nav { display: flex; gap: 8px; align-items: center; }
+  .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; }
+  .nav a:hover { background: #f4f4f5; }
+  .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+
+  .main { padding: 20px; max-width: 1400px; margin: 0 auto; }
+
+  .toolbar { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 10px 14px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  .toolbar-label { font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
+  .search-input { font-size: 12px; height: 30px; padding: 0 10px; border: 1px solid #ddd; border-radius: 6px; color: #111; width: 200px; }
+  .row-count { font-size: 11px; color: #aaa; margin-left: auto; }
+
+  .card { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; overflow: hidden; }
+
+  .tbl-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  thead th { font-size: 10px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.04em; padding: 8px 10px; border-bottom: 1px solid #e4e4e7; text-align: right; white-space: nowrap; background: #fafafa; }
+  thead th.left { text-align: left; }
+  tbody tr { border-bottom: 1px solid #f5f5f5; transition: background 0.1s; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: #fafafa; }
+  tbody td { padding: 7px 10px; text-align: right; color: #333; white-space: nowrap; }
+  tbody td.left { text-align: left; }
+  .rank { color: #aaa; font-size: 11px; width: 36px; }
+  .username { font-weight: 600; color: #111; font-size: 12px; }
+  .pts { font-variant-numeric: tabular-nums; }
+  .total { font-weight: 700; color: #5865F2; }
+  .breakdown { font-size: 10px; color: #aaa; display: block; margin-top: 1px; }
+  .badge-top { display: inline-block; font-size: 9px; font-weight: 700; background: #fef9c3; color: #854d0e; border-radius: 3px; padding: 1px 5px; margin-left: 5px; vertical-align: middle; }
+  .empty-state { text-align: center; padding: 40px; color: #aaa; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <div class="avatar">
+      {% if avatar %}
+        <img src="https://cdn.discordapp.com/avatars/{{ user_id }}/{{ avatar }}.png" alt="">
+      {% else %}
+        {{ username[0] | upper }}
+      {% endif %}
+    </div>
+    <div>
+      <div class="header-title">Contributors</div>
+      <div class="header-user">{{ username }}</div>
+    </div>
+  </div>
+  <div class="nav">
+    <a href="/">Dashboard</a>
+    {% if is_admin %}<a href="/admin">Admin</a>{% endif %}
+    {% if is_admin %}<a href="/contributors" class="active">Contributors</a>{% endif %}
+    <a href="/logout">Log out</a>
+  </div>
+</div>
+
+<div class="main">
+
+  <div class="toolbar">
+    <span class="toolbar-label">Top Contributors</span>
+    <input class="search-input" type="text" placeholder="Search username…" oninput="filterTable(this.value)">
+    <span class="row-count" id="rowCount">Loading…</span>
+  </div>
+
+  <div class="card">
+    <div class="tbl-wrap">
+      <table id="contribTable">
+        <thead>
+          <tr>
+            <th class="left" style="width:36px">#</th>
+            <th class="left">Username</th>
+            <th>Restocks<br><span style="font-weight:400;text-transform:none;letter-spacing:0">pts</span></th>
+            <th>Empties<br><span style="font-weight:400;text-transform:none;letter-spacing:0">pts</span></th>
+            <th>+1s<br><span style="font-weight:400;text-transform:none;letter-spacing:0">pts</span></th>
+            <th>Manual<br><span style="font-weight:400;text-transform:none;letter-spacing:0">pts</span></th>
+            <th>Hope<br><span style="font-weight:400;text-transform:none;letter-spacing:0">pts</span></th>
+            <th>Total</th>
+          </tr>
+        </thead>
+        <tbody id="contribBody">
+          <tr><td colspan="8" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+let allRows = [];
+
+function fmt(n){ return n === 0 ? '—' : n % 1 === 0 ? n.toString() : n.toFixed(2); }
+
+function buildRow(r, rank){
+  const top = rank <= 25 ? '<span class="badge-top">TOP 25</span>' : '';
+  return `<tr>
+    <td class="left rank">${rank}</td>
+    <td class="left"><span class="username">${r.username}</span>${top}</td>
+    <td class="pts">${fmt(r.restock_pts)}<span class="breakdown">${r.r_30} / ${r.r_60} / ${r.r_90}</span></td>
+    <td class="pts">${fmt(r.empty_pts)}<span class="breakdown">${r.e_30} / ${r.e_60} / ${r.e_90}</span></td>
+    <td class="pts">${fmt(r.plusone_pts)}<span class="breakdown">${fmt(r.p_30)} / ${fmt(r.p_60)} / ${fmt(r.p_90)}</span></td>
+    <td class="pts">${fmt(r.manual_pts)}<span class="breakdown">${fmt(r.m_30)} / ${fmt(r.m_60)} / ${fmt(r.m_90)}</span></td>
+    <td class="pts">${fmt(r.hope_pts)}<span class="breakdown">${fmt(r.h_30)} / ${fmt(r.h_60)} / ${fmt(r.h_90)}</span></td>
+    <td class="total">${fmt(r.total_points)}</td>
+  </tr>`;
+}
+
+function filterTable(q){
+  const term = q.trim().toLowerCase();
+  const filtered = term ? allRows.filter(r => r.username.toLowerCase().includes(term)) : allRows;
+  render(filtered);
+}
+
+function render(rows){
+  const body = document.getElementById('contribBody');
+  document.getElementById('rowCount').textContent = `${rows.length} users`;
+  if(!rows.length){
+    body.innerHTML = '<tr><td colspan="8" class="empty-state">No results.</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map((r, i) => buildRow(r, i + 1)).join('');
+}
+
+async function load(){
+  try {
+    const resp = await fetch('/api/contributors');
+    if(!resp.ok) throw new Error(resp.status);
+    allRows = await resp.json();
+    render(allRows);
+  } catch(e) {
+    document.getElementById('contribBody').innerHTML = '<tr><td colspan="8" class="empty-state">Failed to load data.</td></tr>';
+    document.getElementById('rowCount').textContent = '';
+  }
+}
+
+load();
+</script>
+</body>
+</html>

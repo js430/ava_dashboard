@@ -560,6 +560,157 @@ async def get_analytics(
         "users": users_out,
     })
 
+# ---- Contributors ----
+
+@app.get("/contributors", response_class=HTMLResponse)
+async def contributors_page(request: Request):
+    user = request.session.get("user")
+    if not user:
+        return RedirectResponse("/login")
+    if not await terms_current(request, user):
+        return RedirectResponse("/terms")
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return templates.TemplateResponse("contributors.html", {
+        "request": request,
+        "username": user["username"],
+        "avatar": user.get("avatar"),
+        "user_id": user["id"],
+        "is_admin": True,
+    })
+
+@app.get("/api/contributors")
+async def get_contributors(request: Request, user=Depends(get_current_user)):
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # Cutoff = last day of the previous month
+    today = datetime.now(ZoneInfo("America/New_York")).date()
+    cutoff = (today.replace(day=1) - timedelta(days=1))
+
+    async with request.app.state.db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            WITH
+            restock_points AS (
+                SELECT user_id,
+                    SUM(CASE WHEN date >= $1 - INTERVAL '30 days' AND date <= $1
+                        THEN CASE WHEN store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 1 ELSE 0.5 END ELSE 0 END) +
+                    SUM(CASE WHEN date >= $1 - INTERVAL '60 days' AND date < $1 - INTERVAL '30 days'
+                        THEN CASE WHEN store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 0.8 ELSE 0.4 END ELSE 0 END) +
+                    SUM(CASE WHEN date >= $1 - INTERVAL '90 days' AND date < $1 - INTERVAL '60 days'
+                        THEN CASE WHEN store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 0.6 ELSE 0.3 END ELSE 0 END)
+                    AS restock_pts,
+                    SUM(CASE WHEN date >= $1 - INTERVAL '30 days' AND date <= $1
+                        THEN CASE WHEN store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 1 ELSE 0.5 END ELSE 0 END) AS r_30,
+                    SUM(CASE WHEN date >= $1 - INTERVAL '60 days' AND date < $1 - INTERVAL '30 days'
+                        THEN CASE WHEN store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 1 ELSE 0.5 END ELSE 0 END) AS r_60,
+                    SUM(CASE WHEN date >= $1 - INTERVAL '90 days' AND date < $1 - INTERVAL '60 days'
+                        THEN CASE WHEN store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 1 ELSE 0.5 END ELSE 0 END) AS r_90
+                FROM restock_reports
+                WHERE channel_name NOT IN ('online-restock-information','other-online-restocks','pokemon-center-drops')
+                GROUP BY user_id
+            ),
+            empty_points AS (
+                SELECT user_id,
+                    SUM(CASE WHEN timestamp >= $1 - INTERVAL '30 days' AND timestamp <= $1::timestamptz
+                        THEN CASE WHEN EXTRACT(DOW FROM timestamp AT TIME ZONE 'America/New_York') IN (0,6) THEN 0.05 ELSE 0.1 END ELSE 0 END) +
+                    SUM(CASE WHEN timestamp >= $1 - INTERVAL '60 days' AND timestamp < $1 - INTERVAL '30 days'
+                        THEN CASE WHEN EXTRACT(DOW FROM timestamp AT TIME ZONE 'America/New_York') IN (0,6) THEN 0.05 ELSE 0.1 END ELSE 0 END) +
+                    SUM(CASE WHEN timestamp >= $1 - INTERVAL '90 days' AND timestamp < $1 - INTERVAL '60 days'
+                        THEN CASE WHEN EXTRACT(DOW FROM timestamp AT TIME ZONE 'America/New_York') IN (0,6) THEN 0.05 ELSE 0.1 END ELSE 0 END)
+                    AS empty_pts,
+                    SUM(CASE WHEN timestamp >= $1 - INTERVAL '30 days' AND timestamp <= $1::timestamptz THEN 1 ELSE 0 END) AS e_30,
+                    SUM(CASE WHEN timestamp >= $1 - INTERVAL '60 days' AND timestamp < $1 - INTERVAL '30 days' THEN 1 ELSE 0 END) AS e_60,
+                    SUM(CASE WHEN timestamp >= $1 - INTERVAL '90 days' AND timestamp < $1 - INTERVAL '60 days' THEN 1 ELSE 0 END) AS e_90
+                FROM command_logs
+                WHERE command_used = 'empty'
+                  AND location NOT LIKE '%|Costco'
+                  AND location NOT LIKE '%|Sam''s Club'
+                  AND location NOT LIKE '%|CVS'
+                  AND location NOT LIKE '%|Walgreens'
+                GROUP BY user_id
+            ),
+            plusone_points AS (
+                SELECT receiver_id AS user_id,
+                    COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '30 days' AND timestamp <= $1::timestamptz THEN value ELSE 0 END), 0) AS p_30,
+                    COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '60 days' AND timestamp < $1 - INTERVAL '30 days' THEN value ELSE 0 END), 0) AS p_60,
+                    COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '90 days' AND timestamp < $1 - INTERVAL '60 days' THEN value ELSE 0 END), 0) AS p_90
+                FROM plusones
+                GROUP BY receiver_id
+            ),
+            manual_points_cte AS (
+                SELECT receiver_id AS user_id,
+                    COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '30 days' AND timestamp <= $1::timestamptz THEN value ELSE 0 END), 0) AS m_30,
+                    COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '60 days' AND timestamp < $1 - INTERVAL '30 days' THEN value ELSE 0 END), 0) AS m_60,
+                    COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '90 days' AND timestamp < $1 - INTERVAL '60 days' THEN value ELSE 0 END), 0) AS m_90
+                FROM manual_points
+                GROUP BY receiver_id
+            ),
+            hope_points AS (
+                SELECT user_id,
+                    COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '30 days' AND timestamp <= $1::timestamptz THEN value ELSE 0 END), 0) AS h_30,
+                    COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '60 days' AND timestamp < $1 - INTERVAL '30 days' THEN value ELSE 0 END), 0) AS h_60,
+                    COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '90 days' AND timestamp < $1 - INTERVAL '60 days' THEN value ELSE 0 END), 0) AS h_90
+                FROM hope_contributions
+                GROUP BY user_id
+            ),
+            combined AS (
+                SELECT
+                    COALESCE(r.user_id, e.user_id, p.user_id, m.user_id, h.user_id) AS user_id,
+                    COALESCE(r.restock_pts, 0) AS restock_pts,
+                    COALESCE(e.empty_pts, 0) AS empty_pts,
+                    COALESCE(p.p_30, 0) + COALESCE(p.p_60, 0) + COALESCE(p.p_90, 0) AS plusone_pts,
+                    COALESCE(m.m_30, 0) + COALESCE(m.m_60, 0) + COALESCE(m.m_90, 0) AS manual_pts,
+                    COALESCE(h.h_30, 0) + COALESCE(h.h_60, 0) + COALESCE(h.h_90, 0) AS hope_pts,
+                    COALESCE(r.restock_pts, 0) + COALESCE(e.empty_pts, 0) +
+                    COALESCE(p.p_30, 0) + COALESCE(p.p_60, 0) + COALESCE(p.p_90, 0) +
+                    COALESCE(m.m_30, 0) + COALESCE(m.m_60, 0) + COALESCE(m.m_90, 0) +
+                    COALESCE(h.h_30, 0) + COALESCE(h.h_60, 0) + COALESCE(h.h_90, 0) AS total_points,
+                    COALESCE(r.r_30, 0) AS r_30, COALESCE(r.r_60, 0) AS r_60, COALESCE(r.r_90, 0) AS r_90,
+                    COALESCE(e.e_30, 0) AS e_30, COALESCE(e.e_60, 0) AS e_60, COALESCE(e.e_90, 0) AS e_90,
+                    COALESCE(p.p_30, 0) AS p_30, COALESCE(p.p_60, 0) AS p_60, COALESCE(p.p_90, 0) AS p_90,
+                    COALESCE(m.m_30, 0) AS m_30, COALESCE(m.m_60, 0) AS m_60, COALESCE(m.m_90, 0) AS m_90,
+                    COALESCE(h.h_30, 0) AS h_30, COALESCE(h.h_60, 0) AS h_60, COALESCE(h.h_90, 0) AS h_90
+                FROM restock_points r
+                FULL OUTER JOIN empty_points e ON r.user_id = e.user_id
+                FULL OUTER JOIN plusone_points p ON COALESCE(r.user_id, e.user_id) = p.user_id
+                FULL OUTER JOIN manual_points_cte m ON COALESCE(r.user_id, e.user_id, p.user_id) = m.user_id
+                FULL OUTER JOIN hope_points h ON COALESCE(r.user_id, e.user_id, p.user_id, m.user_id) = h.user_id
+            )
+            SELECT c.*, ds.username
+            FROM combined c
+            LEFT JOIN LATERAL (
+                SELECT username FROM dashboard_sessions
+                WHERE user_id = c.user_id
+                ORDER BY logged_in_at DESC
+                LIMIT 1
+            ) ds ON true
+            ORDER BY total_points DESC
+            LIMIT 100
+            """,
+            cutoff
+        )
+
+    return JSONResponse([
+        {
+            "user_id": str(r["user_id"]),
+            "username": r["username"] or f"User {r['user_id']}",
+            "restock_pts": round(float(r["restock_pts"]), 2),
+            "empty_pts":   round(float(r["empty_pts"]), 2),
+            "plusone_pts": round(float(r["plusone_pts"]), 2),
+            "manual_pts":  round(float(r["manual_pts"]), 2),
+            "hope_pts":    round(float(r["hope_pts"]), 2),
+            "total_points":round(float(r["total_points"]), 2),
+            "r_30": int(r["r_30"]), "r_60": int(r["r_60"]), "r_90": int(r["r_90"]),
+            "e_30": int(r["e_30"]), "e_60": int(r["e_60"]), "e_90": int(r["e_90"]),
+            "p_30": round(float(r["p_30"]), 2), "p_60": round(float(r["p_60"]), 2), "p_90": round(float(r["p_90"]), 2),
+            "m_30": round(float(r["m_30"]), 2), "m_60": round(float(r["m_60"]), 2), "m_90": round(float(r["m_90"]), 2),
+            "h_30": round(float(r["h_30"]), 2), "h_60": round(float(r["h_60"]), 2), "h_90": round(float(r["h_90"]), 2),
+        }
+        for r in rows
+    ])
+
 # ---- Map ----
 
 @app.get("/map", response_class=HTMLResponse)
