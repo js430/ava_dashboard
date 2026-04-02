@@ -935,6 +935,7 @@ async def get_map_data(
             """
             SELECT
                 location,
+                store_name,
                 channel_name,
                 date AT TIME ZONE 'America/New_York' AS local_date
             FROM restock_reports
@@ -954,11 +955,11 @@ async def get_map_data(
         row_region = channel_to_region.get(r["channel_name"], "NOVA")
         if row_region != region:
             continue
-        loc_name = r["location"]
+        key = f"{r['location']}||{r['store_name']}"
         local_dt = r["local_date"]
-        if loc_name not in restock_map:
-            restock_map[loc_name] = []
-        restock_map[loc_name].append({
+        if key not in restock_map:
+            restock_map[key] = []
+        restock_map[key].append({
             "datetime": local_dt.strftime("%b %d %I:%M %p"),
             "slot": time_slot(local_dt),
         })
@@ -968,13 +969,14 @@ async def get_map_data(
         lat, lng = _extract_latlng(loc["location_link"])
         if lat is None:
             continue
+        key = f"{loc['location']}||{loc['store_type']}"
         result.append({
             "location": loc["location"],
             "store":    loc["store_type"],
             "link":     loc["location_link"],
             "lat":      lat,
             "lng":      lng,
-            "restocks": restock_map.get(loc["location"], []),
+            "restocks": restock_map.get(key, []),
         })
 
     return JSONResponse(result)
