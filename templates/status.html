@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Store Status — Restock Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
+
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 200; }
+  .header-left { display: flex; align-items: center; gap: 10px; }
+  .avatar { width: 30px; height: 30px; border-radius: 50%; background: #5865F2; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: #fff; overflow: hidden; flex-shrink: 0; }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .header-title { font-size: 15px; font-weight: 600; color: #111; }
+  .header-user { font-size: 11px; color: #888; }
+  .nav { display: flex; gap: 8px; align-items: center; }
+  .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; }
+  .nav a:hover { background: #f4f4f5; }
+  .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+
+  .main { padding: 20px; max-width: 1200px; margin: 0 auto; }
+
+  .toolbar { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 10px 14px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  .toolbar-label { font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
+  .search-input { font-size: 12px; height: 30px; padding: 0 10px; border: 1px solid #ddd; border-radius: 6px; color: #111; width: 200px; }
+  .btn-group { display: flex; }
+  .btn-group button { font-size: 12px; height: 30px; padding: 0 11px; border: 1px solid #ddd; background: #fff; color: #333; cursor: pointer; transition: background 0.1s; white-space: nowrap; }
+  .btn-group button:first-child { border-radius: 6px 0 0 6px; }
+  .btn-group button:last-child { border-radius: 0 6px 6px 0; }
+  .btn-group button:not(:first-child) { border-left: none; }
+  .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .row-count { font-size: 11px; color: #aaa; margin-left: auto; }
+
+  .card { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; overflow: hidden; }
+  .tbl-wrap { overflow-x: auto; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  thead th { font-size: 10px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.04em; padding: 8px 12px; border-bottom: 1px solid #e4e4e7; text-align: left; white-space: nowrap; background: #fafafa; cursor: pointer; user-select: none; }
+  thead th:hover { color: #333; }
+  thead th.sorted { color: #5865F2; }
+  tbody tr { border-bottom: 1px solid #f5f5f5; transition: background 0.1s; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: #fafafa; }
+  tbody td { padding: 8px 12px; white-space: nowrap; }
+
+  .store-name { font-weight: 600; color: #111; }
+  .city-name { color: #555; }
+  .reporter { color: #888; font-size: 11px; }
+  .time-cell { color: #888; font-size: 11px; }
+
+  .badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; }
+  .badge-empty   { background: #fee2e2; color: #991b1b; }
+  .badge-remain  { background: #fef9c3; color: #854d0e; }
+  .badge-restock { background: #dcfce7; color: #166534; }
+  .badge-hope    { background: #ede9fe; color: #5b21b6; }
+
+  .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .dot-empty   { background: #ef4444; }
+  .dot-remain  { background: #eab308; }
+  .dot-restock { background: #22c55e; }
+  .dot-hope    { background: #8b5cf6; }
+
+  .empty-state { text-align: center; padding: 40px; color: #aaa; font-size: 13px; }
+
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #555; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <div class="avatar">
+      {% if avatar %}
+        <img src="https://cdn.discordapp.com/avatars/{{ user_id }}/{{ avatar }}.png" alt="">
+      {% else %}
+        {{ username[0] | upper }}
+      {% endif %}
+    </div>
+    <div>
+      <div class="header-title">Store Status</div>
+      <div class="header-user">{{ username }}</div>
+    </div>
+  </div>
+  <div class="nav">
+    <a href="/">Dashboard</a>
+    <a href="/map">Map</a>
+    <a href="/status" class="active">Status</a>
+    {% if is_admin %}<a href="/admin">Admin</a>{% endif %}
+    {% if is_admin %}<a href="/contributors">Contributors</a>{% endif %}
+    <a href="/logout">Log out</a>
+  </div>
+</div>
+
+<div class="main">
+
+  <div class="toolbar">
+    <span class="toolbar-label">Last Status</span>
+    <input class="search-input" type="text" placeholder="Search store or location…" oninput="applyFilters()">
+    <div class="btn-group" id="storeFilter">
+      <button class="active" data-store="all" onclick="setStore('all', this)">All</button>
+      <button data-store="Target"           onclick="setStore('Target', this)">Target</button>
+      <button data-store="Walmart"          onclick="setStore('Walmart', this)">Walmart</button>
+      <button data-store="Best Buy"         onclick="setStore('Best Buy', this)">Best Buy</button>
+      <button data-store="5 Below"          onclick="setStore('5 Below', this)">5 Below</button>
+      <button data-store="Barnes and Noble" onclick="setStore('Barnes and Noble', this)">B&amp;N</button>
+    </div>
+    <div class="legend">
+      <span class="legend-item"><span class="dot dot-restock"></span>Restocked</span>
+      <span class="legend-item"><span class="dot dot-remain"></span>Stock Remaining</span>
+      <span class="legend-item"><span class="dot dot-empty"></span>Empty</span>
+      <span class="legend-item"><span class="dot dot-hope"></span>Hope Alert</span>
+    </div>
+    <span class="row-count" id="rowCount">Loading…</span>
+  </div>
+
+  <div class="card">
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th onclick="sortBy('store')">Store</th>
+            <th onclick="sortBy('city')">Location</th>
+            <th onclick="sortBy('status')">Last Status</th>
+            <th onclick="sortBy('username')">Reported By</th>
+            <th onclick="sortBy('time')">Time</th>
+          </tr>
+        </thead>
+        <tbody id="statusBody">
+          <tr><td colspan="5" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+let allRows = [];
+let activeStore = 'all';
+let sortKey = 'time';
+let sortAsc = false;
+
+const STATUS_LABELS = {
+  restock: 'Restocked',
+  remain:  'Stock Remaining',
+  empty:   'Empty',
+  hope:    'Hope Alert',
+};
+
+function badge(status) {
+  const label = STATUS_LABELS[status] || status;
+  return `<span class="badge badge-${status}"><span class="dot dot-${status}"></span>${label}</span>`;
+}
+
+function timeAgo(isoStr) {
+  const diff = Math.floor((Date.now() - new Date(isoStr)) / 1000);
+  if (diff < 60)   return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400)return `${Math.floor(diff/3600)}h ago`;
+  return `${Math.floor(diff/86400)}d ago`;
+}
+
+function fullTime(isoStr) {
+  return new Date(isoStr).toLocaleString('en-US', {
+    month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', hour12: true
+  });
+}
+
+function setStore(store, btn) {
+  activeStore = store;
+  document.querySelectorAll('#storeFilter button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  applyFilters();
+}
+
+function sortBy(key) {
+  if (sortKey === key) { sortAsc = !sortAsc; }
+  else { sortKey = key; sortAsc = key !== 'time'; }
+  applyFilters();
+}
+
+function applyFilters() {
+  const q = document.querySelector('.search-input').value.trim().toLowerCase();
+  let rows = allRows.filter(r => {
+    if (activeStore !== 'all' && r.store !== activeStore) return false;
+    if (q && !r.store.toLowerCase().includes(q) && !r.city.toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  rows.sort((a, b) => {
+    let va = a[sortKey] ?? '', vb = b[sortKey] ?? '';
+    if (sortKey === 'time') { va = new Date(a.time); vb = new Date(b.time); }
+    if (va < vb) return sortAsc ? -1 : 1;
+    if (va > vb) return sortAsc ? 1 : -1;
+    return 0;
+  });
+
+  render(rows);
+}
+
+function render(rows) {
+  const body = document.getElementById('statusBody');
+  document.getElementById('rowCount').textContent = `${rows.length} location${rows.length !== 1 ? 's' : ''}`;
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="5" class="empty-state">No results.</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(r => `
+    <tr>
+      <td class="store-name">${r.store}</td>
+      <td class="city-name">${r.city}</td>
+      <td>${badge(r.status)}</td>
+      <td class="reporter">${r.username}</td>
+      <td class="time-cell" title="${fullTime(r.time)}">${timeAgo(r.time)}</td>
+    </tr>`).join('');
+}
+
+async function load() {
+  try {
+    const resp = await fetch('/api/status');
+    if (!resp.ok) throw new Error(resp.status);
+    allRows = await resp.json();
+    applyFilters();
+  } catch(e) {
+    document.getElementById('statusBody').innerHTML = '<tr><td colspan="5" class="empty-state">Failed to load data.</td></tr>';
+    document.getElementById('rowCount').textContent = '';
+  }
+}
+
+load();
+</script>
+</body>
+</html>

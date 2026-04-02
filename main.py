@@ -560,6 +560,60 @@ async def get_analytics(
         "users": users_out,
     })
 
+# ---- Store Status ----
+
+@app.get("/status", response_class=HTMLResponse)
+async def status_page(request: Request):
+    user = request.session.get("user")
+    if not user:
+        return RedirectResponse("/login")
+    if not await terms_current(request, user):
+        return RedirectResponse("/terms")
+    is_admin = int(user["id"]) in ADMIN_USER_IDS
+    return templates.TemplateResponse("status.html", {
+        "request": request,
+        "username": user["username"],
+        "avatar": user.get("avatar"),
+        "user_id": user["id"],
+        "is_admin": is_admin,
+    })
+
+@app.get("/api/status")
+async def get_status(request: Request, user=Depends(get_current_user)):
+    async with request.app.state.db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (cl.location)
+                SPLIT_PART(cl.location, '|', 1) AS city,
+                SPLIT_PART(cl.location, '|', 2) AS store,
+                cl.command_used,
+                cl.timestamp AT TIME ZONE 'America/New_York' AS local_time,
+                COALESCE(u.username, ds.username) AS username
+            FROM command_logs cl
+            LEFT JOIN users u ON u.user_id = cl.user_id
+            LEFT JOIN LATERAL (
+                SELECT username FROM dashboard_sessions
+                WHERE user_id = cl.user_id
+                ORDER BY logged_in_at DESC
+                LIMIT 1
+            ) ds ON true
+            WHERE cl.location IS NOT NULL
+              AND cl.location LIKE '%|%'
+              AND cl.command_used IN ('empty', 'remain', 'restock', 'hope')
+            ORDER BY cl.location, cl.timestamp DESC
+            """
+        )
+    return JSONResponse([
+        {
+            "city":     r["city"],
+            "store":    r["store"],
+            "status":   r["command_used"],
+            "time":     r["local_time"].isoformat(),
+            "username": r["username"] or "Unknown",
+        }
+        for r in rows
+    ])
+
 # ---- Contributors ----
 
 @app.get("/contributors", response_class=HTMLResponse)
