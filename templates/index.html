@@ -293,17 +293,11 @@ function aggregateData(){
   const dayList=buildDayList();
   const locs={};
 
-  // Build a fast set of just location names that are selected (any store)
-  const selectedLocNames=new Set();
-  selectedLocs.forEach(k=>{
-    const sep=k.indexOf('||');
-    if(sep!==-1) selectedLocNames.add(k.slice(sep+2));
-  });
 
   if(currentWeeks===1){
     const dayKeys=new Set(dayList.map(d=>d.key));
     rawData.forEach(row=>{
-      if(!dayKeys.has(row.date)||row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)||!selectedLocNames.has(row.location)) return;
+      if(!dayKeys.has(row.date)||row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)||!selectedLocs.has(`${row.store}||${row.location}`)) return;
       const k=`${row.location}||${row.store}`;
       if(!locs[k]) locs[k]={location:row.location,store:row.store,region:row.region,days:{}};
       if(!locs[k].days[row.date]) locs[k].days[row.date]={Morning:[],Afternoon:[],Evening:[]};
@@ -311,7 +305,7 @@ function aggregateData(){
     });
   } else {
     rawData.forEach(row=>{
-      if(row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)||!selectedLocNames.has(row.location)) return;
+      if(row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)||!selectedLocs.has(`${row.store}||${row.location}`)) return;
       const dow=getDOW(row.date);
       const k=`${row.location}||${row.store}`;
       if(!locs[k]) locs[k]={location:row.location,store:row.store,region:row.region,days:{}};
