@@ -584,9 +584,9 @@ async def get_contributors(request: Request, user=Depends(get_current_user)):
     if int(user["id"]) not in ADMIN_USER_IDS:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # Cutoff = last day of the previous month
-    today = datetime.now(ZoneInfo("America/New_York")).date()
-    cutoff = (today.replace(day=1) - timedelta(days=1))
+    # Cutoff = start of current month (exclusive upper bound = everything through end of last month)
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    cutoff = now_et.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     async with request.app.state.db.acquire() as conn:
         rows = await conn.fetch(
@@ -594,18 +594,18 @@ async def get_contributors(request: Request, user=Depends(get_current_user)):
             WITH
             restock_points AS (
                 SELECT user_id,
-                    SUM(CASE WHEN date >= $1 - INTERVAL '30 days' AND date <= $1
+                    SUM(CASE WHEN date >= ($1 - INTERVAL '30 days')::date AND date < $1::date
                         THEN CASE WHEN store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 1 ELSE 0.5 END ELSE 0 END) +
-                    SUM(CASE WHEN date >= $1 - INTERVAL '60 days' AND date < $1 - INTERVAL '30 days'
+                    SUM(CASE WHEN date >= ($1 - INTERVAL '60 days')::date AND date < ($1 - INTERVAL '30 days')::date
                         THEN CASE WHEN store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 0.8 ELSE 0.4 END ELSE 0 END) +
-                    SUM(CASE WHEN date >= $1 - INTERVAL '90 days' AND date < $1 - INTERVAL '60 days'
+                    SUM(CASE WHEN date >= ($1 - INTERVAL '90 days')::date AND date < ($1 - INTERVAL '60 days')::date
                         THEN CASE WHEN store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 0.6 ELSE 0.3 END ELSE 0 END)
                     AS restock_pts,
-                    SUM(CASE WHEN date >= $1 - INTERVAL '30 days' AND date <= $1
+                    SUM(CASE WHEN date >= ($1 - INTERVAL '30 days')::date AND date < $1::date
                         THEN CASE WHEN store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 1 ELSE 0.5 END ELSE 0 END) AS r_30,
-                    SUM(CASE WHEN date >= $1 - INTERVAL '60 days' AND date < $1 - INTERVAL '30 days'
+                    SUM(CASE WHEN date >= ($1 - INTERVAL '60 days')::date AND date < ($1 - INTERVAL '30 days')::date
                         THEN CASE WHEN store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 1 ELSE 0.5 END ELSE 0 END) AS r_60,
-                    SUM(CASE WHEN date >= $1 - INTERVAL '90 days' AND date < $1 - INTERVAL '60 days'
+                    SUM(CASE WHEN date >= ($1 - INTERVAL '90 days')::date AND date < ($1 - INTERVAL '60 days')::date
                         THEN CASE WHEN store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 1 ELSE 0.5 END ELSE 0 END) AS r_90
                 FROM restock_reports
                 WHERE channel_name NOT IN ('online-restock-information','other-online-restocks','pokemon-center-drops')
@@ -613,14 +613,14 @@ async def get_contributors(request: Request, user=Depends(get_current_user)):
             ),
             empty_points AS (
                 SELECT user_id,
-                    SUM(CASE WHEN timestamp >= $1 - INTERVAL '30 days' AND timestamp <= $1::timestamptz
+                    SUM(CASE WHEN timestamp >= $1 - INTERVAL '30 days' AND timestamp < $1
                         THEN CASE WHEN EXTRACT(DOW FROM timestamp AT TIME ZONE 'America/New_York') IN (0,6) THEN 0.05 ELSE 0.1 END ELSE 0 END) +
                     SUM(CASE WHEN timestamp >= $1 - INTERVAL '60 days' AND timestamp < $1 - INTERVAL '30 days'
                         THEN CASE WHEN EXTRACT(DOW FROM timestamp AT TIME ZONE 'America/New_York') IN (0,6) THEN 0.05 ELSE 0.1 END ELSE 0 END) +
                     SUM(CASE WHEN timestamp >= $1 - INTERVAL '90 days' AND timestamp < $1 - INTERVAL '60 days'
                         THEN CASE WHEN EXTRACT(DOW FROM timestamp AT TIME ZONE 'America/New_York') IN (0,6) THEN 0.05 ELSE 0.1 END ELSE 0 END)
                     AS empty_pts,
-                    SUM(CASE WHEN timestamp >= $1 - INTERVAL '30 days' AND timestamp <= $1::timestamptz THEN 1 ELSE 0 END) AS e_30,
+                    SUM(CASE WHEN timestamp >= $1 - INTERVAL '30 days' AND timestamp < $1 THEN 1 ELSE 0 END) AS e_30,
                     SUM(CASE WHEN timestamp >= $1 - INTERVAL '60 days' AND timestamp < $1 - INTERVAL '30 days' THEN 1 ELSE 0 END) AS e_60,
                     SUM(CASE WHEN timestamp >= $1 - INTERVAL '90 days' AND timestamp < $1 - INTERVAL '60 days' THEN 1 ELSE 0 END) AS e_90
                 FROM command_logs
@@ -633,7 +633,7 @@ async def get_contributors(request: Request, user=Depends(get_current_user)):
             ),
             plusone_points AS (
                 SELECT receiver_id AS user_id,
-                    COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '30 days' AND timestamp <= $1::timestamptz THEN value ELSE 0 END), 0) AS p_30,
+                    COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '30 days' AND timestamp < $1 THEN value ELSE 0 END), 0) AS p_30,
                     COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '60 days' AND timestamp < $1 - INTERVAL '30 days' THEN value ELSE 0 END), 0) AS p_60,
                     COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '90 days' AND timestamp < $1 - INTERVAL '60 days' THEN value ELSE 0 END), 0) AS p_90
                 FROM plusones
@@ -641,7 +641,7 @@ async def get_contributors(request: Request, user=Depends(get_current_user)):
             ),
             manual_points_cte AS (
                 SELECT receiver_id AS user_id,
-                    COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '30 days' AND timestamp <= $1::timestamptz THEN value ELSE 0 END), 0) AS m_30,
+                    COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '30 days' AND timestamp < $1 THEN value ELSE 0 END), 0) AS m_30,
                     COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '60 days' AND timestamp < $1 - INTERVAL '30 days' THEN value ELSE 0 END), 0) AS m_60,
                     COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '90 days' AND timestamp < $1 - INTERVAL '60 days' THEN value ELSE 0 END), 0) AS m_90
                 FROM manual_points
@@ -649,7 +649,7 @@ async def get_contributors(request: Request, user=Depends(get_current_user)):
             ),
             hope_points AS (
                 SELECT user_id,
-                    COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '30 days' AND timestamp <= $1::timestamptz THEN value ELSE 0 END), 0) AS h_30,
+                    COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '30 days' AND timestamp < $1 THEN value ELSE 0 END), 0) AS h_30,
                     COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '60 days' AND timestamp < $1 - INTERVAL '30 days' THEN value ELSE 0 END), 0) AS h_60,
                     COALESCE(SUM(CASE WHEN timestamp >= $1 - INTERVAL '90 days' AND timestamp < $1 - INTERVAL '60 days' THEN value ELSE 0 END), 0) AS h_90
                 FROM hope_contributions
