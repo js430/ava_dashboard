@@ -40,6 +40,9 @@
   .sg-chevron { font-size: 9px; color: #aaa; transition: transform 0.15s; flex-shrink: 0; }
   .sg-chevron.open { transform: rotate(90deg); }
   .sg-count { font-size: 10px; color: #aaa; font-weight: 400; margin-left: auto; }
+  .sg-actions { display: flex; gap: 4px; flex-shrink: 0; }
+  .sg-btn { font-size: 10px; color: #5865F2; background: none; border: none; cursor: pointer; padding: 0 2px; font-weight: 600; }
+  .sg-btn:hover { text-decoration: underline; }
   .store-group-items { padding: 0 0 4px 0; }
   .loc-item { display: flex; align-items: center; gap: 8px; padding: 5px 14px 5px 28px; font-size: 12px; color: #333; }
   .loc-item input[type=checkbox] { width: 14px; height: 14px; cursor: pointer; accent-color: #5865F2; flex-shrink: 0; }
@@ -371,10 +374,15 @@ function renderSidebar(data){
     if(!items||!items.length) return;
     const isOpen=sidebarOpen[store]===true;
     const checked=items.filter(i=>selectedLocs.has(`${store}||${i.location}`)).length;
+    const safeStore=store.replace(/'/g,"\\'");
     html+=`<div class="store-group">
-      <button class="store-group-toggle" onclick="toggleSidebarGroup('${store}')">
+      <button class="store-group-toggle" onclick="toggleSidebarGroup('${safeStore}')">
         <span class="sg-chevron${isOpen?' open':''}">&#9654;</span>${store}
         <span class="sg-count">${checked}/${items.length}</span>
+        <span class="sg-actions">
+          <button class="sg-btn" onclick="event.stopPropagation();selectStoreAll('${safeStore}')">All</button>
+          <button class="sg-btn" onclick="event.stopPropagation();selectStoreNone('${safeStore}')">None</button>
+        </span>
       </button>
       <div class="store-group-items" id="sg-${store.replace(/\s/g,'_')}" style="display:${isOpen?'block':'none'}">`;
     items.forEach(item=>{
@@ -427,6 +435,18 @@ function selectAll(){
 
 function selectNone(){
   selectedLocs.clear();
+  renderSidebar(locationList);
+  render();
+}
+
+function selectStoreAll(store){
+  Object.keys(locationMeta).filter(k=>k.startsWith(store+'||')).forEach(k=>selectedLocs.add(k));
+  renderSidebar(locationList);
+  render();
+}
+
+function selectStoreNone(store){
+  Object.keys(locationMeta).filter(k=>k.startsWith(store+'||')).forEach(k=>selectedLocs.delete(k));
   renderSidebar(locationList);
   render();
 }
