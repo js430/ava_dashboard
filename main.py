@@ -83,7 +83,7 @@ async def terms_current(request: Request, user: dict) -> bool:
             "SELECT accepted_at FROM terms_acceptance WHERE user_id = $1",
             int(user["id"])
         )
-    if row and row["accepted_at"] > datetime.utcnow() - timedelta(days=30):
+    if row and row["accepted_at"] > datetime.now(ZoneInfo("UTC")) - timedelta(days=30):
         request.session["terms_accepted"] = True
         return True
     return False
