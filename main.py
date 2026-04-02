@@ -677,8 +677,10 @@ async def get_contributors(request: Request, user=Depends(get_current_user)):
                 FULL OUTER JOIN manual_points_cte m ON COALESCE(r.user_id, e.user_id, p.user_id) = m.user_id
                 FULL OUTER JOIN hope_points h ON COALESCE(r.user_id, e.user_id, p.user_id, m.user_id) = h.user_id
             )
-            SELECT c.*, ds.username
+            SELECT c.*,
+                COALESCE(u.username, ds.username) AS username
             FROM combined c
+            LEFT JOIN users u ON u.user_id = c.user_id
             LEFT JOIN LATERAL (
                 SELECT username FROM dashboard_sessions
                 WHERE user_id = c.user_id
