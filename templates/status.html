@@ -123,7 +123,6 @@
             <th onclick="sortBy('store')">Store</th>
             <th onclick="sortBy('city')">Location</th>
             <th onclick="sortBy('status')">Last Status</th>
-            <th onclick="sortBy('username')">Reported By</th>
             <th onclick="sortBy('time')">Time</th>
           </tr>
         </thead>
@@ -213,7 +212,6 @@ function render(rows) {
       <td class="store-name">${r.store}</td>
       <td class="city-name">${r.city}</td>
       <td>${badge(r.status)}</td>
-      <td class="reporter">${r.username}</td>
       <td class="time-cell" title="${fullTime(r.time)}">${timeAgo(r.time)}</td>
     </tr>`).join('');
 }
