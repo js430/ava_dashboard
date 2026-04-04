@@ -122,6 +122,17 @@
 
   <div class="toolbar-divider"></div>
 
+  <span class="toolbar-label">Store</span>
+  <div class="btn-group" id="storeGroup">
+    <button class="active" onclick="setStore('all', this)">All</button>
+    <button onclick="setStore('Target', this)">Target</button>
+    <button onclick="setStore('Walmart', this)">Walmart</button>
+    <button onclick="setStore('Best Buy', this)">Best Buy</button>
+    <button onclick="setStore('Barnes and Noble', this)">B&amp;N</button>
+  </div>
+
+  <div class="toolbar-divider"></div>
+
   <span class="toolbar-label">View</span>
   <div class="btn-group" id="windowGroup">
     <button class="active" onclick="setWindow('day', this)">Today</button>
@@ -170,7 +181,7 @@
 
 <script>
 const DISCORD_USERNAME = "{{ username }}";
-let map, markers = [], currentRegion = "NOVA", currentWindow = "day";
+let map, markers = [], currentRegion = "NOVA", currentWindow = "day", currentStore = "all";
 let allData = [];
 
 // ---- Color scale ----
@@ -240,7 +251,8 @@ function clearMarkers() {
 
 function renderMarkers() {
   clearMarkers();
-  if (!allData.length) {
+  const filtered = currentStore === "all" ? allData : allData.filter(l => l.store === currentStore);
+  if (!filtered.length) {
     document.getElementById("statusBar").textContent = "No locations with map links found.";
     document.getElementById("summaryCard").style.display = "none";
     return;
@@ -249,7 +261,7 @@ function renderMarkers() {
   const bounds = new google.maps.LatLngBounds();
   const tally = { 0: 0, 1: 0, 2: 0, 3: 0 };
 
-  allData.forEach(loc => {
+  filtered.forEach(loc => {
     const count = loc.restocks.length;
     tally[Math.min(count, 3)]++;
 
@@ -275,20 +287,21 @@ function renderMarkers() {
     bounds.extend({ lat: loc.lat, lng: loc.lng });
   });
 
-  if (allData.length > 1) {
+  if (filtered.length > 1) {
     map.fitBounds(bounds, { padding: 60 });
-  } else if (allData.length === 1) {
-    map.setCenter({ lat: allData[0].lat, lng: allData[0].lng });
+  } else if (filtered.length === 1) {
+    map.setCenter({ lat: filtered[0].lat, lng: filtered[0].lng });
     map.setZoom(14);
   }
 
   // Status bar
   const periodLabel = currentWindow === "week" ? "this week" : "today";
-  const withRestocks = allData.filter(l => l.restocks.length > 0).length;
+  const withRestocks = filtered.filter(l => l.restocks.length > 0).length;
   const timeStr = new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
   const dateStr = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  const storeLabel = currentStore === "all" ? "" : ` · ${currentStore}`;
   document.getElementById("statusBar").textContent =
-    `${allData.length} locations · ${withRestocks} restocked ${periodLabel} · as of ${timeStr} · ${dateStr}`;
+    `${filtered.length} locations${storeLabel} · ${withRestocks} restocked ${periodLabel} · as of ${timeStr} · ${dateStr}`;
 
   // Summary card
   const isWeek = currentWindow === "week";
@@ -344,6 +357,14 @@ function setWindow(w, btn) {
   btn.classList.add("active");
   closeInfo();
   loadMapData();
+}
+
+function setStore(s, btn) {
+  currentStore = s;
+  btn.closest(".btn-group").querySelectorAll("button").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  closeInfo();
+  renderMarkers();
 }
 
 // ---- Watermark ----
