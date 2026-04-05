@@ -183,10 +183,7 @@
       <div class="ctrl-row">
         <label>Region</label>
         <div class="btn-group" id="regionBtns">
-          <button class="active" onclick="setRegion('NOVA',this)">NOVA</button>
-          <button onclick="setRegion('MD',this)">MD</button>
-          <button onclick="setRegion('DC',this)">DC</button>
-          <button onclick="setRegion('RVA',this)">RVA</button>
+          <button class="active">Loading…</button>
         </div>
       </div>
       <div class="ctrl-divider"></div>
@@ -223,12 +220,7 @@
 <script>
 const DISCORD_USERNAME = {{ username | tojson }};
 
-const REGIONS     = [
-  { key:"NOVA", label:"Northern Virginia", color:"#185FA5" },
-  { key:"MD",   label:"Maryland",          color:"#0F6E56" },
-  { key:"DC",   label:"DC",                color:"#854F0B" },
-  { key:"RVA",  label:"Central VA",        color:"#993556" },
-];
+let REGIONS = [];
 const SLOTS           = ["Morning","Afternoon","Evening"];
 const SLOT_S          = ["AM","PM","Eve"];
 const DOW_ORDER       = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
@@ -240,7 +232,7 @@ const PERIOD_LABELS   = {
 };
 
 let currentWeeks  = 1;
-let currentRegion = 'NOVA';
+let currentRegion = 'VA';
 let showSlots     = true;
 let rawData       = [];
 let expandedStores= new Set();
@@ -714,7 +706,28 @@ if(window.visualViewport){
   window.visualViewport.addEventListener('scroll',redraw);
 }
 
-loadLocations().then(()=>fetchData());
+async function loadRegions(){
+  try {
+    const resp = await fetch("/api/regions");
+    if (!resp.ok) throw new Error("fetch failed");
+    REGIONS = await resp.json();
+    const group = document.getElementById("regionBtns");
+    group.innerHTML = "";
+    REGIONS.forEach((r, i) => {
+      const btn = document.createElement("button");
+      btn.textContent = r.label;
+      btn.onclick = function(){ setRegion(r.code, this); };
+      if (i === 0) {
+        btn.classList.add("active");
+        currentRegion = r.code;
+      }
+      group.appendChild(btn);
+    });
+  } catch(e) {
+    document.getElementById("regionBtns").innerHTML = '<button class="active">Error</button>';
+  }
+}
+loadRegions().then(()=>loadLocations()).then(()=>fetchData());
 guardWatermark();
 </script>
 </body>
