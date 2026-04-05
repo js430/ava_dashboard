@@ -43,6 +43,18 @@ ADMIN_USER_IDS           = {
     int(uid) for uid in os.getenv("ADMIN_USER_IDS", "").split(",") if uid.strip()
 }
 
+STATE_LABELS = {
+    "VA":   "NOVA",
+    "CVA":  "CVA",
+    "DC":   "DC",
+    "WMD":  "Western MD",
+    "CMD":  "Central MD",
+    "SEMD": "South-Eastern MD",
+    "Charm":"Charm MD",
+    "TW":   "Tidewater",
+    "WVA":  "Western VA",
+}
+
 DISCORD_API = "https://discord.com/api/v10"
 DISCORD_OAUTH_URL = (
     f"https://discord.com/oauth2/authorize"
@@ -786,6 +798,22 @@ async def map_page(request: Request):
 
 # ---- Data APIs ----
 
+@app.get("/api/regions")
+async def get_regions(
+    request: Request,
+    user=Depends(get_current_user)
+):
+    async with request.app.state.db.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT DISTINCT state FROM locations WHERE state IS NOT NULL ORDER BY state"
+        )
+    regions = []
+    for r in rows:
+        code = r["state"]
+        label = STATE_LABELS.get(code, code)
+        regions.append({"code": code, "label": label})
+    return JSONResponse(regions)
+
 @app.get("/api/restocks")
 async def get_restocks(
     days: int = 7,
@@ -803,28 +831,24 @@ async def get_restocks(
         rows = await conn.fetch(
             """
             SELECT
-                location,
-                store_name,
-                channel_name,
-                date AT TIME ZONE 'America/New_York' AS local_date
-            FROM restock_reports
-            WHERE date >= $1
-            AND (channel_name IS NULL OR channel_name NOT IN (
+                rr.location,
+                rr.store_name,
+                rr.date AT TIME ZONE 'America/New_York' AS local_date,
+                l.state
+            FROM restock_reports rr
+            LEFT JOIN locations l
+              ON LOWER(TRIM(l.location)) = LOWER(TRIM(rr.location))
+              AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(rr.store_name))
+            WHERE rr.date >= $1
+            AND (rr.channel_name IS NULL OR rr.channel_name NOT IN (
                 'online-restock-information',
                 'other-online-restocks',
                 'pokemon-center-drops'
             ))
-            ORDER BY date ASC
+            ORDER BY rr.date ASC
             """,
             since
         )
-
-    channel_to_region = {
-        "nova-restock-information":           "NOVA",
-        "md-restock-information":             "MD",
-        "dc-restock-information":             "DC",
-        "rva-central-va-restock-information": "RVA",
-    }
 
     def time_slot(dt):
         h = dt.hour
@@ -841,7 +865,7 @@ async def get_restocks(
         result.append({
             "location": row["location"],
             "store":    row["store_name"],
-            "region":   channel_to_region.get(row["channel_name"], "NOVA"),
+            "region":   row["state"] or "VA",
             "date":     local_dt.strftime("%Y-%m-%d"),
             "datetime": local_dt.strftime("%b %d %I:%M %p"),
             "slot":     time_slot(local_dt),
@@ -852,16 +876,10 @@ async def get_restocks(
 @app.get("/api/locations")
 async def get_locations(
     request: Request,
-    region: str = "NOVA",
+    region: str = "VA",
     user=Depends(get_current_user)
 ):
-    region_to_state = {
-        "NOVA": "VA",
-        "MD":   "MD",
-        "DC":   "DC",
-        "RVA":  "CVA",
-    }
-    state = region_to_state.get(region, "VA")
+    state = region
 
     async with request.app.state.db.acquire() as conn:
         rows = await conn.fetch(
@@ -885,17 +903,11 @@ async def get_locations(
 @app.get("/api/map")
 async def get_map_data(
     request: Request,
-    region: str = "NOVA",
+    region: str = "VA",
     window: str = "day",
     user=Depends(get_current_user)
 ):
-    region_to_state = {
-        "NOVA": "VA",
-        "MD":   "MD",
-        "DC":   "DC",
-        "RVA":  "CVA",
-    }
-    state = region_to_state.get(region, "VA")
+    state = region
 
     eastern = ZoneInfo("America/New_York")
     now = datetime.now(eastern)
@@ -904,13 +916,6 @@ async def get_map_data(
         since = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
     else:
         since = now.replace(hour=0, minute=0, second=0, microsecond=0)
-
-    channel_to_region = {
-        "nova-restock-information":           "NOVA",
-        "md-restock-information":             "MD",
-        "dc-restock-information":             "DC",
-        "rva-central-va-restock-information": "RVA",
-    }
 
     def time_slot(dt):
         h = dt.hour
@@ -934,27 +939,27 @@ async def get_map_data(
         restocks = await conn.fetch(
             """
             SELECT
-                location,
-                store_name,
-                channel_name,
-                date AT TIME ZONE 'America/New_York' AS local_date
-            FROM restock_reports
-            WHERE date >= $1
-              AND (channel_name IS NULL OR channel_name NOT IN (
+                rr.location,
+                rr.store_name,
+                rr.date AT TIME ZONE 'America/New_York' AS local_date
+            FROM restock_reports rr
+            JOIN locations l
+              ON LOWER(TRIM(l.location)) = LOWER(TRIM(rr.location))
+              AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(rr.store_name))
+            WHERE l.state = $2
+              AND rr.date >= $1
+              AND (rr.channel_name IS NULL OR rr.channel_name NOT IN (
                   'online-restock-information',
                   'other-online-restocks',
                   'pokemon-center-drops'
               ))
-            ORDER BY date ASC
+            ORDER BY rr.date ASC
             """,
-            since
+            since, state
         )
 
     restock_map: dict[str, list] = {}
     for r in restocks:
-        row_region = channel_to_region.get(r["channel_name"], "NOVA")
-        if row_region != region:
-            continue
         key = f"{r['location']}||{r['store_name']}"
         local_dt = r["local_date"]
         if key not in restock_map:
@@ -986,7 +991,7 @@ async def get_map_data(
 @app.get("/api/preferences")
 async def get_preferences(
     request: Request,
-    region: str = "NOVA",
+    region: str = "VA",
     user=Depends(get_current_user)
 ):
     async with request.app.state.db.acquire() as conn:
@@ -1007,7 +1012,7 @@ async def save_preferences(
     user=Depends(get_current_user)
 ):
     body = await request.json()
-    region = body.get("region", "NOVA")
+    region = body.get("region", "VA")
     selected = body.get("selected", [])
 
     if not isinstance(selected, list):

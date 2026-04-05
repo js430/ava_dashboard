@@ -114,10 +114,7 @@
 <div class="toolbar">
   <span class="toolbar-label">Region</span>
   <div class="btn-group" id="regionGroup">
-    <button class="active" onclick="setRegion('NOVA', this)">NOVA</button>
-    <button onclick="setRegion('MD', this)">MD</button>
-    <button onclick="setRegion('DC', this)">DC</button>
-    <button onclick="setRegion('RVA', this)">RVA</button>
+    <button class="active">Loading…</button>
   </div>
 
   <div class="toolbar-divider"></div>
@@ -181,8 +178,9 @@
 
 <script>
 const DISCORD_USERNAME = "{{ username }}";
-let map, markers = [], currentRegion = "NOVA", currentWindow = "day", currentStore = "all";
+let map, markers = [], currentRegion = "VA", currentWindow = "day", currentStore = "all";
 let allData = [];
+let regionsLoaded = false;
 
 // ---- Color scale ----
 function markerStyle(count) {
@@ -227,7 +225,31 @@ function initMap() {
     setTimeout(drawWatermark, 800);
   });
 
-  loadMapData();
+  loadRegions();
+}
+
+async function loadRegions() {
+  try {
+    const resp = await fetch("/api/regions");
+    if (!resp.ok) throw new Error("fetch failed");
+    const regions = await resp.json();
+    const group = document.getElementById("regionGroup");
+    group.innerHTML = "";
+    regions.forEach((r, i) => {
+      const btn = document.createElement("button");
+      btn.textContent = r.label;
+      btn.onclick = function() { setRegion(r.code, this); };
+      if (i === 0) {
+        btn.classList.add("active");
+        currentRegion = r.code;
+      }
+      group.appendChild(btn);
+    });
+    regionsLoaded = true;
+    loadMapData();
+  } catch(e) {
+    document.getElementById("regionGroup").innerHTML = '<button class="active">Error</button>';
+  }
 }
 
 // ---- Data loading ----
