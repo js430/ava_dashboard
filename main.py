@@ -1,8 +1,11 @@
 import os
+import io
 import logging
 import httpx
 import asyncpg
 import re
+import json
+import base64
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from collections import defaultdict
@@ -10,6 +13,8 @@ from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from anthropic import AsyncAnthropic
+from PIL import Image
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -38,6 +43,7 @@ DISCORD_REDIRECT_URI     = os.getenv("DISCORD_REDIRECT_URI")
 DISCORD_GUILD_ID         = os.getenv("DISCORD_GUILD_ID")
 REQUIRED_ROLE_IDS        = {r.strip() for r in os.getenv("REQUIRED_ROLE_ID", "").split(",") if r.strip()}
 GOOGLE_MAPS_API_KEY      = os.getenv("GOOGLE_MAPS_API_KEY", "")
+ANTHROPIC_API_KEY        = os.getenv("ANTHROPIC_API_KEY", "")
 ACTIVE_INFORMANT_ROLE_ID = os.getenv("ACTIVE_INFORMANT_ROLE_ID", "")
 ADMIN_USER_IDS           = {
     int(uid) for uid in os.getenv("ADMIN_USER_IDS", "").split(",") if uid.strip()
@@ -54,6 +60,464 @@ STATE_LABELS = {
     "TW":   "Tidewater",
     "WVA":  "Western VA",
 }
+
+# ---- Card Scanner Constants ----
+MAX_IMAGE_BYTES = 3 * 1024 * 1024 + 500_000  # ~3.5 MB raw
+MAX_DIMENSION   = 2048
+POKEMON_API     = "https://api.pokemontcg.io/v2/cards"
+SCRYFALL_API    = "https://api.scryfall.com/cards/named"
+YGOPRODECK_API  = "https://db.ygoprodeck.com/api/v7/cardinfo.php"
+OPTCG_API       = "https://www.optcgapi.com/api"
+
+CONDITION_MULTIPLIERS = {
+    "NM": 1.00, "LP": 0.85, "MP": 0.65, "HP": 0.45, "Poor": 0.25,
+}
+
+EXTRACT_PROMPT = (
+    "You are reading a trading card game card image. Extract the following and return "
+    "ONLY a valid JSON object with no extra text, markdown, or code fences:\n\n"
+    "{\n"
+    '  "game": "one of: pokemon, magic, yugioh, one piece, other",\n'
+    '  "name": "the card name exactly as printed — see formatting rules below",\n'
+    '  "number": "the card number as printed (e.g. 045, OP01-001), without the set total — null if not visible",\n'
+    '  "set": "the set or expansion name if visible, otherwise null",\n'
+    '  "is_sp": false,\n'
+    '  "is_manga": false,\n'
+    '  "is_alt_art": false,\n'
+    '  "promo_stamp": null\n'
+    "}\n\n"
+    "For the game field: use 'magic' for Magic: The Gathering, 'yugioh' for Yu-Gi-Oh!, "
+    "'one piece' for One Piece TCG, 'pokemon' for Pokemon TCG, or 'other' for anything else.\n\n"
+    "promo_stamp: if the card artwork has a retailer or event stamp printed over it "
+    "(e.g. 'GameStop', 'Target', 'Walmart', 'Best Buy', 'PAX', 'Pokemon Center'), set this "
+    "to the stamp name as a string. Otherwise null. "
+    "IMPORTANT: ignore any such stamp when reading the card name, number, set, and game — "
+    "the stamp is not part of the card identity.\n\n"
+    "=== ONE PIECE VARIANT DETECTION (set the relevant fields to true) ===\n\n"
+    "is_sp — Special Parallel. True if ANY of these are visible on the card:\n"
+    "  • A small 'SP' box or label printed to the left of the card number at the bottom (e.g. 'SP EB03-053').\n"
+    "  • A circular stamp near the top-right corner containing the kanji '特' and/or the word 'SPECIAL'.\n"
+    "The card will have normal full-color artwork. Either indicator alone is sufficient.\n\n"
+    "is_manga — Manga Art. True if the card artwork is composed of manga comic panels, "
+    "including speech bubbles, panel borders, screentone shading, or manga page layouts. "
+    "The artwork looks like pages from the One Piece manga rather than a standard card illustration.\n\n"
+    "is_alt_art — Alternate Art. True if there is a ★ (star) symbol printed above or next to "
+    "the rarity designation in the bottom-right corner of the card.\n\n"
+    "These three variants are independent — a card can be manga only, alt art only, SP only, or any combination.\n\n"
+    "=== POKEMON NAME FORMATTING ===\n"
+    "- GX cards: always use a hyphen → 'Mewtwo-GX', 'Charizard-GX'\n"
+    "- EX cards: always use a hyphen → 'Charizard-EX', 'Darkrai-EX'\n"
+    "- Mega/M EX cards: format as 'M [Name]-EX' → 'M Charizard-EX', 'M Rayquaza-EX'\n"
+    "- V / VMAX / VStar / VUnion cards: always use a hyphen → 'Charizard-V', 'Charizard-VMAX'\n"
+    "- ex (lowercase, modern era): no hyphen, lowercase → 'Charizard ex'\n\n"
+    "The card number is usually at the bottom in a format like '5/62' or '192/165' or 'OP01-001'.\n"
+    "For Pokemon cards, return the FULL number as printed including the set total (e.g. '5/62', '192/165'). "
+    "Do NOT strip the slash or the total — both parts are needed to identify the exact set.\n\n"
+    "=== POKEMON PROMO CARDS ===\n"
+    "Some Pokemon cards are promos. You can tell because:\n"
+    "  • A ★ (black star) symbol appears in the bottom-left OR bottom-right corner next to the card number.\n"
+    "  • The card number uses a prefix-number format: 'SWSH260', 'XY77', 'XY-P123', 'SM-P456', 'SV-P789', 'BW-P45'.\n"
+    "  • There is NEVER a slash in a promo number. 'XY77' is correct. 'XY/77' is WRONG. '77' alone is WRONG.\n"
+    "IMPORTANT: Return the full promo number exactly as printed — prefix AND digits together (e.g. 'XY77', 'SWSH260'). "
+    "Do NOT split it into a fraction. Do NOT drop the prefix. "
+    "The ★ symbol and regulation mark letter (e.g. 'F', 'D', 'E') near the number are NOT part of the number — "
+    "ignore them when reading the number field.\n\n"
+    "For One Piece cards, if 'SP' appears immediately before the card number (e.g. 'SP EB03-053'), include the SP prefix "
+    "in the number field exactly as printed (e.g. number: 'SP EB03-053') AND set is_sp to true."
+)
+
+
+def _compress_card_image(data: bytes) -> tuple[bytes, str]:
+    img = Image.open(io.BytesIO(data)).convert("RGB")
+    w, h = img.size
+    if w > MAX_DIMENSION or h > MAX_DIMENSION:
+        img.thumbnail((MAX_DIMENSION, MAX_DIMENSION), Image.LANCZOS)
+    quality = 85
+    while quality >= 30:
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        compressed = buf.getvalue()
+        if len(compressed) <= MAX_IMAGE_BYTES:
+            return compressed, "image/jpeg"
+        quality -= 10
+    return compressed, "image/jpeg"
+
+
+def _normalize_pokemon_name(name: str) -> str:
+    name = re.sub(r"\s+(GX|EX|VMAX|VStar|VMax|V-UNION|VUnion)$", r"-\1", name)
+    name = re.sub(r"\s+V$", "-V", name)
+    if re.match(r"^M ", name) and not name.endswith("-EX"):
+        if name.endswith(" EX"):
+            name = name[:-3] + "-EX"
+        elif not name.endswith(" ex"):
+            name = name + "-EX"
+    return name
+
+
+def _name_variants(name: str) -> list[str]:
+    variants = [name, _normalize_pokemon_name(name)]
+    if name.endswith("-EX") or name.endswith(" EX"):
+        base = re.sub(r"[-\s]EX$", "", name)
+        variants.append(base + " ex")
+    if name.endswith(" ex"):
+        variants.append(name[:-3] + "-ex")
+    v_suffixes = ("V", "VMAX", "VStar", "VUnion", "VSTAR")
+    extra: list[str] = []
+    for var in variants:
+        for suf in v_suffixes:
+            if var.endswith(f"-{suf}"):
+                extra.append(var[: -len(suf) - 1] + f" {suf}")
+                break
+            if var.endswith(f" {suf}"):
+                extra.append(var[: -len(suf) - 1] + f"-{suf}")
+                break
+    variants.extend(extra)
+    return list(dict.fromkeys(variants))
+
+
+def _find_op_variant(cards: list[dict], keywords: list[str]) -> dict | None:
+    for card in cards:
+        haystack = (
+            (card.get("card_name") or "").lower()
+            + " "
+            + (card.get("card_image_id") or "").lower()
+        )
+        if any(kw in haystack for kw in keywords):
+            return card
+    return None
+
+
+def _find_op_base(cards: list[dict], name: str) -> dict | None:
+    name_lower = name.lower()
+    for card in cards:
+        cn = (card.get("card_name") or "").lower()
+        if cn == name_lower or (name_lower in cn and "(" not in cn):
+            return card
+    return None
+
+
+async def _claude_identify(client: AsyncAnthropic, image_bytes: bytes, media_type: str) -> dict:
+    if len(image_bytes) > MAX_IMAGE_BYTES:
+        image_bytes, media_type = _compress_card_image(image_bytes)
+    b64_image = base64.standard_b64encode(image_bytes).decode("utf-8")
+    response = await client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=256,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64_image}},
+                {"type": "text", "text": EXTRACT_PROMPT},
+            ],
+        }],
+    )
+    text = response.content[0].text.strip()
+    if text.startswith("```"):
+        parts = text.split("```")
+        text = parts[1].lstrip("json").strip() if len(parts) > 1 else text
+    return json.loads(text)
+
+
+async def _lookup_pokemon(name: str, number: str | None) -> dict | None:
+    PROMO_RE = re.compile(r"^(SWSH|XY|SM|SV|BW|DP|HGSS)[- ]?P?\d+$", re.IGNORECASE)
+    card_number = number
+    printed_total: str | None = None
+    is_promo_number = bool(number and PROMO_RE.match(number.strip()))
+    pokemon_key = os.getenv("POKEMON_TCG_API_KEY", "")
+    headers = {"X-Api-Key": pokemon_key} if pokemon_key else {}
+
+    if is_promo_number:
+        card_number = number.strip().upper()
+    elif number and "/" in number and not is_promo_number:
+        parts = number.split("/", 1)
+        card_number = str(int(parts[0].strip())) if parts[0].strip().isdigit() else parts[0].strip()
+        raw_total = parts[1].strip()
+        printed_total = str(int(raw_total)) if raw_total.isdigit() else raw_total
+    elif number and number.isdigit():
+        card_number = str(int(number))
+
+    attempts: list[tuple[str, str | None]] = []
+    variants = _name_variants(name)
+    if card_number:
+        attempts += [(n, card_number) for n in variants]
+    attempts += [(n, None) for n in variants]
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        for attempt_name, attempt_number in attempts:
+            query = f'name:"{attempt_name}"'
+            if attempt_number:
+                query += f" number:{attempt_number}"
+            if attempt_number and printed_total:
+                query += f" set.printedTotal:{printed_total}"
+            resp = await client.get(POKEMON_API, params={"q": query, "pageSize": 1, "orderBy": "-set.releaseDate"}, headers=headers)
+            if resp.status_code == 200:
+                results = resp.json().get("data", [])
+                if results:
+                    return results[0]
+
+        if printed_total and printed_total.isdigit() and int(printed_total) >= 250:
+            raw_part = number.split("/")[0].strip() if number and "/" in number else None
+            candidates: list[str] = []
+            for prefix in ("SWSH", "SM", "XY", "BW", "SV"):
+                if raw_part:
+                    candidates.append(f"{prefix}{raw_part}")
+                candidates.append(f"{prefix}{printed_total}")
+            for attempt_name in variants:
+                for cand_num in candidates:
+                    query = f'name:"{attempt_name}" number:{cand_num}'
+                    resp = await client.get(POKEMON_API, params={"q": query, "pageSize": 1, "orderBy": "-set.releaseDate"}, headers=headers)
+                    if resp.status_code == 200:
+                        results = resp.json().get("data", [])
+                        if results:
+                            return results[0]
+    return None
+
+
+async def _lookup_scryfall(name: str) -> dict | None:
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(SCRYFALL_API, params={"fuzzy": name})
+        if resp.status_code == 200:
+            return resp.json()
+    return None
+
+
+async def _lookup_yugioh(name: str) -> dict | None:
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(YGOPRODECK_API, params={"name": name, "num": 1, "offset": 0})
+        if resp.status_code == 200:
+            results = resp.json().get("data", [])
+            return results[0] if results else None
+    return None
+
+
+async def _lookup_onepiece(name: str, number: str | None, is_sp: bool, is_alt_art: bool) -> tuple[dict | None, list[dict]]:
+    async with httpx.AsyncClient(timeout=15) as client:
+        all_results: list[dict] = []
+        seen_ids: set[str] = set()
+
+        def _merge(new_cards: list[dict]) -> None:
+            for c in new_cards:
+                cid = c.get("card_image_id")
+                if cid not in seen_ids:
+                    seen_ids.add(cid)
+                    all_results.append(c)
+
+        if number and "-" in number:
+            resp = await client.get(f"{OPTCG_API}/sets/card/{number}/")
+            if resp.status_code == 200:
+                data = resp.json()
+                batch = data if isinstance(data, list) else ([data] if data else [])
+                _merge(batch)
+
+        if not all_results:
+            resp = await client.get(f"{OPTCG_API}/sets/filtered/", params={"card_name": name})
+            if resp.status_code == 200:
+                data = resp.json()
+                _merge(data if isinstance(data, list) else [])
+
+        if not all_results:
+            return None, []
+
+        if is_sp:
+            sp = _find_op_variant(all_results, ["(sp)"])
+            if sp:
+                return sp, all_results
+        if is_alt_art:
+            alt = _find_op_variant(all_results, ["(alternate art)", "alternate art"])
+            if alt:
+                return alt, all_results
+
+        base = _find_op_base(all_results, name)
+        return (base or all_results[0]), all_results
+
+
+def _format_pokemon_price(prices: dict) -> tuple[str | None, float | None, float | None]:
+    priority = ["holofoil", "reverseHolofoil", "normal", "1stEditionHolofoil", "unlimitedHolofoil"]
+    for key in priority:
+        tier = prices.get(key, {})
+        market = tier.get("market")
+        if market is not None:
+            low = float(tier["low"]) if tier.get("low") else None
+            label = key.replace("H", " H").replace("1st", "1st Ed.").strip()
+            return f"${market:.2f} ({label})", float(market), low
+    return None, None, None
+
+
+def _build_card_result(game: str, card_name: str, card_number: str | None, card_set: str | None,
+                       card_data, promo_stamp=None, is_sp=False, is_manga=False, is_alt_art=False,
+                       all_variants=None) -> dict:
+    """Build a JSON-serializable card result dict for the web UI."""
+    result = {
+        "game": game,
+        "name": card_name,
+        "number": card_number,
+        "set": card_set,
+        "found": False,
+        "image": None,
+        "market_price": None,
+        "low_price": None,
+        "fields": [],
+        "variants": [],
+        "promo_stamp": promo_stamp,
+        "is_sp": is_sp,
+        "is_manga": is_manga,
+        "is_alt_art": is_alt_art,
+        "source": "Claude Vision only",
+    }
+
+    if game == "pokemon" and card_data:
+        result["found"] = True
+        result["source"] = "pokemontcg.io"
+        si = card_data.get("set", {})
+        api_number = card_data.get("number", card_number or "?")
+        PROMO_RE = re.compile(r"^(SWSH|XY|SM|SV|BW|DP|HGSS)[- ]?P?\d+$", re.IGNORECASE)
+        if PROMO_RE.match(str(api_number)):
+            full_number = api_number
+        else:
+            full_number = f"{api_number}/{si.get('printedTotal', '?')}"
+        tcg_prices = card_data.get("tcgplayer", {}).get("prices", {})
+        tcg_url = card_data.get("tcgplayer", {}).get("url")
+        cm_prices = card_data.get("cardmarket", {}).get("prices", {})
+        price_str, market, low = _format_pokemon_price(tcg_prices)
+        if not price_str and cm_prices:
+            trend = cm_prices.get("trendPrice") or cm_prices.get("averageSellPrice")
+            if trend:
+                price_str = f"€{float(trend):.2f} (Cardmarket trend)"
+                market = float(trend)
+        if not price_str:
+            price_str = "No price data"
+        result["name"] = card_data.get("name", card_name)
+        result["market_price"] = market
+        result["low_price"] = low
+        result["image"] = card_data.get("images", {}).get("large") or card_data.get("images", {}).get("small")
+        set_name = si.get("name", "Unknown Set")
+        set_series = si.get("series", "")
+        result["set"] = set_name + (f" ({set_series})" if set_series else "")
+        result["number"] = full_number
+        result["fields"] = [
+            {"label": "Set", "value": result["set"]},
+            {"label": "Number", "value": full_number},
+            {"label": "Rarity", "value": card_data.get("rarity", "Unknown")},
+        ]
+        if card_data.get("hp"):
+            result["fields"].append({"label": "HP", "value": card_data["hp"]})
+        types = ", ".join(card_data.get("types") or card_data.get("subtypes") or [])
+        if types:
+            result["fields"].append({"label": "Type", "value": types})
+        if card_data.get("artist"):
+            result["fields"].append({"label": "Artist", "value": card_data["artist"]})
+        result["fields"].append({"label": "Price", "value": price_str})
+        if tcg_url:
+            result["fields"].append({"label": "TCGPlayer", "value": tcg_url, "link": True})
+
+    elif game == "magic" and card_data and card_data.get("object") != "error":
+        result["found"] = True
+        result["source"] = "Scryfall"
+        prices = card_data.get("prices", {})
+        usd = prices.get("usd")
+        usd_foil = prices.get("usd_foil")
+        result["market_price"] = float(usd) if usd else None
+        image_uris = card_data.get("image_uris") or {}
+        if not image_uris and card_data.get("card_faces"):
+            image_uris = card_data["card_faces"][0].get("image_uris", {})
+        result["image"] = image_uris.get("normal") or image_uris.get("small")
+        result["name"] = card_data.get("name", card_name)
+        result["set"] = card_data.get("set_name", "Unknown")
+        result["number"] = card_data.get("collector_number", "—")
+        price_parts = []
+        if usd:
+            price_parts.append(f"${usd}")
+        if usd_foil:
+            price_parts.append(f"${usd_foil} foil")
+        result["fields"] = [
+            {"label": "Set", "value": result["set"]},
+            {"label": "Number", "value": result["number"]},
+            {"label": "Rarity", "value": card_data.get("rarity", "Unknown").title()},
+            {"label": "Mana Cost", "value": card_data.get("mana_cost") or "—"},
+            {"label": "Type", "value": card_data.get("type_line", "—")},
+        ]
+        if price_parts:
+            result["fields"].append({"label": "Price", "value": " / ".join(price_parts)})
+
+    elif game == "yugioh" and card_data:
+        result["found"] = True
+        result["source"] = "YGOProDeck"
+        prices = card_data.get("card_prices", [{}])[0]
+        tcg_price = prices.get("tcgplayer_price")
+        result["market_price"] = float(tcg_price) if tcg_price and tcg_price != "0.00" else None
+        images = card_data.get("card_images", [])
+        result["image"] = images[0].get("image_url") if images else None
+        result["name"] = card_data.get("name", card_name)
+        result["fields"] = [
+            {"label": "Type", "value": card_data.get("type", "—")},
+            {"label": "Race", "value": card_data.get("race", "—")},
+            {"label": "Attribute", "value": card_data.get("attribute", "—")},
+        ]
+        if card_data.get("level") is not None:
+            result["fields"].append({"label": "Level", "value": str(card_data["level"])})
+        if card_data.get("atk") is not None:
+            result["fields"].append({"label": "ATK / DEF", "value": f"{card_data['atk']} / {card_data.get('def', '?')}"})
+        if result["market_price"]:
+            result["fields"].append({"label": "Price", "value": f"${tcg_price}"})
+
+    elif game == "one piece" and card_data:
+        result["found"] = True
+        result["source"] = "optcgapi.com"
+        mp = card_data.get("market_price")
+        result["market_price"] = float(mp) if mp else None
+        result["image"] = card_data.get("card_image")
+        result["name"] = card_data.get("card_name", card_name)
+        result["set"] = card_data.get("set_name", "—")
+        result["number"] = card_data.get("card_set_id") or card_number or "—"
+        result["fields"] = [
+            {"label": "Set", "value": result["set"]},
+            {"label": "Number", "value": result["number"]},
+            {"label": "Rarity", "value": card_data.get("rarity", "—")},
+            {"label": "Color", "value": card_data.get("card_color", "—")},
+            {"label": "Card Type", "value": card_data.get("card_type", "—")},
+        ]
+        if card_data.get("card_cost") is not None:
+            result["fields"].append({"label": "Cost", "value": str(card_data["card_cost"])})
+        if card_data.get("card_power"):
+            result["fields"].append({"label": "Power", "value": str(card_data["card_power"])})
+        # Variant prices
+        all_v = all_variants or []
+        if len(all_v) > 1:
+            for v in all_v:
+                vmp = v.get("market_price")
+                result["variants"].append({
+                    "name": v.get("card_name", "—"),
+                    "price": f"${float(vmp):.2f}" if vmp else "N/A",
+                })
+        elif result["market_price"]:
+            result["fields"].append({"label": "Price", "value": f"${result['market_price']:.2f}"})
+    else:
+        # Other / Claude-only fallback
+        if card_set:
+            result["fields"].append({"label": "Set", "value": card_set})
+        if card_number:
+            result["fields"].append({"label": "Number", "value": card_number})
+
+    # Condition prices
+    if result["market_price"]:
+        m = result["market_price"]
+        lo = result["low_price"]
+        conditions = {}
+        for cond, mult in CONDITION_MULTIPLIERS.items():
+            if cond == "NM":
+                conditions[cond] = round(m, 2)
+            elif cond == "LP" and lo:
+                conditions[cond] = round((m + lo) / 2, 2)
+            elif cond == "MP" and lo:
+                conditions[cond] = round(lo, 2)
+            else:
+                conditions[cond] = round(m * mult, 2)
+        result["conditions"] = conditions
+    else:
+        result["conditions"] = {}
+
+    return result
+
 
 DISCORD_API = "https://discord.com/api/v10"
 DISCORD_OAUTH_URL = (
@@ -795,6 +1259,97 @@ async def map_page(request: Request):
         "is_admin": is_admin,
         "google_maps_api_key": GOOGLE_MAPS_API_KEY,
     })
+
+@app.get("/scan", response_class=HTMLResponse)
+async def scan_page(request: Request):
+    user = request.session.get("user")
+    if not user:
+        return RedirectResponse("/login")
+    if not await terms_current(request, user):
+        return RedirectResponse("/terms")
+    is_admin = int(user["id"]) in ADMIN_USER_IDS
+    return templates.TemplateResponse("scan.html", {
+        "request": request,
+        "username": user["username"],
+        "avatar": user.get("avatar"),
+        "user_id": user["id"],
+        "is_admin": is_admin,
+    })
+
+
+@app.post("/api/scan")
+async def scan_card(
+    request: Request,
+    user=Depends(get_current_user)
+):
+    body = await request.json()
+    image_data = body.get("image")
+    if not image_data:
+        raise HTTPException(status_code=400, detail="No image provided")
+
+    # Strip data URL prefix if present
+    if "," in image_data:
+        header, image_data = image_data.split(",", 1)
+        media_type = header.split(";")[0].split(":")[1] if ":" in header else "image/jpeg"
+    else:
+        media_type = "image/jpeg"
+
+    try:
+        image_bytes = base64.b64decode(image_data)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 image")
+
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=500, detail="Anthropic API key not configured")
+
+    claude_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+
+    try:
+        parsed = await _claude_identify(claude_client, image_bytes, media_type)
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Could not read the card — try a clearer photo."}, status_code=422)
+    except Exception as e:
+        logger.exception("Claude API error during card scan")
+        return JSONResponse({"error": f"Claude API error: {str(e)}"}, status_code=500)
+
+    game        = (parsed.get("game") or "other").lower().strip()
+    card_name   = parsed.get("name")
+    card_number = parsed.get("number")
+    card_set    = parsed.get("set")
+    is_sp       = bool(parsed.get("is_sp", False))
+    is_manga    = bool(parsed.get("is_manga", False))
+    is_alt_art  = bool(parsed.get("is_alt_art", False))
+    promo_stamp = parsed.get("promo_stamp") or None
+
+    if card_number and re.match(r"^SP\s+", card_number, re.IGNORECASE):
+        is_sp = True
+        card_number = re.sub(r"^SP\s+", "", card_number, flags=re.IGNORECASE).strip()
+
+    if not card_name:
+        return JSONResponse({"error": "Could not identify a card name — try a clearer photo."}, status_code=422)
+
+    # Lookup
+    card_data = None
+    all_variants: list[dict] = []
+    try:
+        if game == "pokemon":
+            card_data = await _lookup_pokemon(card_name, card_number)
+        elif game == "magic":
+            card_data = await _lookup_scryfall(card_name)
+        elif game == "yugioh":
+            card_data = await _lookup_yugioh(card_name)
+        elif game == "one piece":
+            card_data, all_variants = await _lookup_onepiece(card_name, card_number, is_sp, is_alt_art)
+    except Exception:
+        logger.exception(f"API lookup error for {game}")
+
+    result = _build_card_result(
+        game, card_name, card_number, card_set, card_data,
+        promo_stamp=promo_stamp, is_sp=is_sp, is_manga=is_manga, is_alt_art=is_alt_art,
+        all_variants=all_variants,
+    )
+    return JSONResponse(result)
+
 
 # ---- Data APIs ----
 
