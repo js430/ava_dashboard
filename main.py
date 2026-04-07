@@ -1368,12 +1368,21 @@ async def scan_card(
     except Exception:
         logger.exception(f"API lookup error for {game}")
 
-    result = _build_card_result(
-        game, card_name, card_number, card_set, card_data,
-        promo_stamp=promo_stamp, is_sp=is_sp, is_manga=is_manga, is_alt_art=is_alt_art,
-        all_variants=all_variants,
-    )
-    return JSONResponse(result)
+    try:
+        result = _build_card_result(
+            game, card_name, card_number, card_set, card_data,
+            promo_stamp=promo_stamp, is_sp=is_sp, is_manga=is_manga, is_alt_art=is_alt_art,
+            all_variants=all_variants,
+        )
+    except Exception:
+        logger.exception(f"Error building card result for {game}/{card_name}")
+        return JSONResponse({"error": "Failed to process card data."}, status_code=500)
+
+    try:
+        return JSONResponse(result)
+    except Exception:
+        logger.exception(f"Error serializing card result: {result}")
+        return JSONResponse({"error": "Failed to serialize card data."}, status_code=500)
 
 
 # ---- Data APIs ----
