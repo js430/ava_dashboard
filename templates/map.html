@@ -78,10 +78,19 @@
   .wm-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 999; overflow: hidden; }
 
   @media (max-width: 640px) {
+    .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 8px 12px; }
+    .nav { flex-wrap: wrap; gap: 5px; }
+    .nav a { font-size: 11px; padding: 3px 7px; }
+    .toolbar { padding: 8px 12px; gap: 8px; }
+    .toolbar-label { font-size: 10px; }
+    .toolbar-divider { display: none; }
+    .btn-group { overflow-x: auto; -webkit-overflow-scrolling: touch; flex-shrink: 1; }
+    .btn-group button { font-size: 11px; height: 28px; padding: 0 8px; flex-shrink: 0; }
     .legend { display: none; }
     .info-panel { width: calc(100vw - 24px); right: 12px; }
-    .summary-card { left: 8px; bottom: 24px; }
-    .toolbar-divider { display: none; }
+    .summary-card { left: 8px; bottom: 24px; min-width: 140px; padding: 8px 10px; }
+    .summary-row { font-size: 11px; }
+    .status-bar { font-size: 10px; padding: 5px 12px; }
   }
 </style>
 </head>

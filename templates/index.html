@@ -102,15 +102,21 @@
   .empty { text-align: center; padding: 32px; color: #aaa; font-size: 13px; }
 
   @media (max-width: 768px) {
-    .locations-btn { display: flex; }
+    .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 8px 12px; }
+    .header-right { flex-wrap: wrap; gap: 5px; width: 100%; }
+    .logout { font-size: 11px; padding: 3px 7px; }
+    .locations-btn { display: flex; font-size: 11px; padding: 3px 8px; }
     .sidebar { position: fixed; top: 0; left: -260px; width: 260px; height: 100vh; z-index: 400; transition: left 0.25s ease; box-shadow: 2px 0 12px rgba(0,0,0,0.1); }
     .sidebar.open { left: 0; }
     .sidebar-close { display: block; }
     .main { padding: 12px; }
     .controls { padding: 10px 12px; gap: 8px; }
+    .ctrl-row { width: 100%; }
+    .btn-group { overflow-x: auto; -webkit-overflow-scrolling: touch; flex-shrink: 1; }
+    .btn-group button { font-size: 11px; height: 28px; padding: 0 8px; flex-shrink: 0; }
     .slider-row input[type=range] { width: 120px; }
     .slider-ticks { width: 120px; }
-    .btn-group button { font-size: 11px; height: 28px; padding: 0 9px; }
+    .table-card { padding: 8px; }
   }
 </style>
 </head>
