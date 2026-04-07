@@ -480,15 +480,40 @@ def _build_card_result(game: str, card_name: str, card_number: str | None, card_
             result["fields"].append({"label": "Cost", "value": str(card_data["card_cost"])})
         if card_data.get("card_power"):
             result["fields"].append({"label": "Power", "value": str(card_data["card_power"])})
-        # Variant prices
+        # Variant data
         all_v = all_variants or []
         if len(all_v) > 1:
-            for v in all_v:
+            for vi, v in enumerate(all_v):
                 vmp = v.get("market_price")
-                result["variants"].append({
+                is_selected = (v is card_data)
+                variant_entry = {
                     "name": v.get("card_name", "—"),
                     "price": f"${float(vmp):.2f}" if vmp else "N/A",
-                })
+                    "market_price": float(vmp) if vmp else None,
+                    "image": v.get("card_image"),
+                    "rarity": v.get("rarity", "—"),
+                    "selected": is_selected,
+                    "fields": [
+                        {"label": "Set", "value": v.get("set_name", "—")},
+                        {"label": "Number", "value": v.get("card_set_id") or "—"},
+                        {"label": "Rarity", "value": v.get("rarity", "—")},
+                        {"label": "Color", "value": v.get("card_color", "—")},
+                        {"label": "Card Type", "value": v.get("card_type", "—")},
+                    ],
+                }
+                if v.get("card_cost") is not None:
+                    variant_entry["fields"].append({"label": "Cost", "value": str(v["card_cost"])})
+                if v.get("card_power"):
+                    variant_entry["fields"].append({"label": "Power", "value": str(v["card_power"])})
+                if vmp:
+                    variant_entry["fields"].append({"label": "Price", "value": f"${float(vmp):.2f}"})
+                    variant_entry["conditions"] = {}
+                    m = float(vmp)
+                    for cond, mult in CONDITION_MULTIPLIERS.items():
+                        variant_entry["conditions"][cond] = round(m * mult, 2)
+                else:
+                    variant_entry["conditions"] = {}
+                result["variants"].append(variant_entry)
         elif result["market_price"]:
             result["fields"].append({"label": "Price", "value": f"${result['market_price']:.2f}"})
     else:
