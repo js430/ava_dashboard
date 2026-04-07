@@ -116,6 +116,21 @@
   .history-meta { font-size: 10px; color: #52525b; }
   .history-price { font-size: 12px; font-weight: 600; color: #22c55e; flex-shrink: 0; }
 
+  /* Variant selector */
+  .variant-tabs { display: flex; gap: 6px; padding: 0 16px 10px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .variant-tabs::-webkit-scrollbar { height: 0; }
+  .variant-tab { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #27272a; border: 2px solid #3f3f46; border-radius: 10px; cursor: pointer; transition: all 0.15s; min-width: 0; }
+  .variant-tab:hover { border-color: #52525b; }
+  .variant-tab.active { border-color: #5865F2; background: #1e1b4b; }
+  .variant-tab-img { width: 40px; height: 56px; border-radius: 4px; object-fit: contain; background: #000; flex-shrink: 0; }
+  .variant-tab-info { min-width: 0; }
+  .variant-tab-name { font-size: 11px; font-weight: 600; color: #d4d4d8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+  .variant-tab-price { font-size: 11px; color: #22c55e; font-weight: 600; }
+  .variant-tab-rarity { font-size: 9px; color: #71717a; }
+  .variant-tab-selected { position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%; background: #5865F2; }
+
+  .variant-detail { padding: 0 16px 14px; }
+
   /* Mobile adjustments */
   @media (max-width: 640px) {
     .nav { gap: 4px; }
@@ -236,8 +251,9 @@
     </div>
     <div class="result-fields" id="resultFields"></div>
     <div class="variant-section" id="variantSection" style="display:none">
-      <div class="condition-title">Variant Prices</div>
-      <div id="variantRows"></div>
+      <div class="condition-title" style="padding: 0 16px 6px;">Variants</div>
+      <div class="variant-tabs" id="variantTabs"></div>
+      <div class="variant-detail" id="variantDetail"></div>
     </div>
     <div class="condition-section" id="conditionSection" style="display:none">
       <div class="condition-title">Estimated by Condition</div>
@@ -479,33 +495,41 @@ function displayResult(data) {
     }
   });
 
-  // Variants
+  // Variants (One Piece multi-variant)
   const variantSection = document.getElementById("variantSection");
-  const variantRows = document.getElementById("variantRows");
-  if (data.variants && data.variants.length > 0) {
-    variantRows.innerHTML = data.variants.map(v =>
-      `<div class="variant-row"><span class="variant-name">${v.name}</span><span class="variant-price">${v.price}</span></div>`
-    ).join("");
+  const variantTabs = document.getElementById("variantTabs");
+  currentVariants = data.variants || [];
+  if (currentVariants.length > 1) {
+    variantTabs.innerHTML = currentVariants.map((v, i) => {
+      const isSelected = v.selected ? " active" : "";
+      const imgHtml = v.image
+        ? `<img class="variant-tab-img" src="${v.image}" alt="">`
+        : `<div class="variant-tab-img" style="display:flex;align-items:center;justify-content:center;font-size:9px;color:#52525b;">—</div>`;
+      return `<div class="variant-tab${isSelected}" onclick="selectVariant(${i})">
+        ${imgHtml}
+        <div class="variant-tab-info">
+          <div class="variant-tab-name">${v.name}</div>
+          <div class="variant-tab-price">${v.price}</div>
+          <div class="variant-tab-rarity">${v.rarity || ""}</div>
+        </div>
+      </div>`;
+    }).join("");
+    // Show the auto-selected variant's details
+    const selectedIdx = currentVariants.findIndex(v => v.selected);
+    selectVariant(selectedIdx >= 0 ? selectedIdx : 0);
     variantSection.style.display = "block";
   } else {
     variantSection.style.display = "none";
   }
 
-  // Conditions
+  // Conditions (non-variant cards)
   const condSection = document.getElementById("conditionSection");
   const condGrid = document.getElementById("conditionGrid");
   const conditions = data.conditions || {};
-  if (Object.keys(conditions).length > 0) {
-    const mults = { NM: "100%", LP: "85%", MP: "65%", HP: "45%", Poor: "25%" };
-    condGrid.innerHTML = Object.entries(conditions).map(([cond, price], i) =>
-      `<div class="cond-btn${i === 0 ? " active" : ""}" onclick="selectCondition(this)">
-        <div class="cond-label">${cond}</div>
-        <div class="cond-price">$${price.toFixed(2)}</div>
-        <div class="cond-mult">${mults[cond] || ""}</div>
-      </div>`
-    ).join("");
+  if (Object.keys(conditions).length > 0 && currentVariants.length <= 1) {
+    renderConditions(conditions);
     condSection.style.display = "block";
-  } else {
+  } else if (currentVariants.length <= 1) {
     condSection.style.display = "none";
   }
 
@@ -513,6 +537,67 @@ function displayResult(data) {
   document.getElementById("resultSource").textContent = `Source: ${data.source}`;
 
   card.classList.add("visible");
+}
+
+let currentVariants = [];
+
+function selectVariant(idx) {
+  const v = currentVariants[idx];
+  if (!v) return;
+
+  // Highlight active tab
+  document.querySelectorAll(".variant-tab").forEach((t, i) => {
+    t.classList.toggle("active", i === idx);
+  });
+
+  // Update main card image & name to selected variant
+  const thumb = document.getElementById("resultThumb");
+  const thumbPh = document.getElementById("resultThumbPlaceholder");
+  if (v.image) {
+    thumb.src = v.image;
+    thumb.style.display = "block";
+    thumbPh.style.display = "none";
+  } else {
+    thumb.style.display = "none";
+    thumbPh.style.display = "flex";
+  }
+  document.getElementById("resultName").textContent = v.name || "Unknown";
+
+  // Update fields to variant's fields
+  const fields = document.getElementById("resultFields");
+  fields.innerHTML = (v.fields || []).map(f =>
+    `<div class="field-row"><span class="field-label">${f.label}</span><span class="field-value">${f.value}</span></div>`
+  ).join("");
+
+  // Update condition prices for this variant
+  const condSection = document.getElementById("conditionSection");
+  const conditions = v.conditions || {};
+  if (Object.keys(conditions).length > 0) {
+    renderConditions(conditions);
+    condSection.style.display = "block";
+  } else {
+    condSection.style.display = "none";
+  }
+
+  // Show variant detail area
+  const detail = document.getElementById("variantDetail");
+  if (v.market_price) {
+    detail.innerHTML = `<div style="font-size:12px;color:#71717a;">Selected: <span style="color:#d4d4d8;font-weight:600;">${v.name}</span> &middot; <span style="color:#22c55e;font-weight:600;">${v.price}</span></div>`;
+  } else {
+    detail.innerHTML = `<div style="font-size:12px;color:#71717a;">Selected: <span style="color:#d4d4d8;font-weight:600;">${v.name}</span> &middot; <span style="color:#52525b;">No price data</span></div>`;
+  }
+}
+
+function renderConditions(conditions) {
+  const condGrid = document.getElementById("conditionGrid");
+  const mults = { NM: "100%", LP: "85%", MP: "65%", HP: "45%", Poor: "25%" };
+  condGrid.innerHTML = Object.entries(conditions).map(([cond, price], i) =>
+    `<div class="cond-btn${i === 0 ? " active" : ""}" onclick="selectCondition(this)">
+      <div class="cond-label">${cond}</div>
+      <div class="cond-price">$${price.toFixed(2)}</div>
+      <div class="cond-mult">${mults[cond] || ""}</div>
+    </div>`
+  ).join("");
 }
 
 function selectCondition(el) {
