@@ -197,20 +197,36 @@ def _find_op_base(cards: list[dict], name: str) -> dict | None:
 
 
 async def _claude_identify(client: AsyncAnthropic, image_bytes: bytes, media_type: str) -> dict:
+    import asyncio
     if len(image_bytes) > MAX_IMAGE_BYTES:
         image_bytes, media_type = _compress_card_image(image_bytes)
     b64_image = base64.standard_b64encode(image_bytes).decode("utf-8")
-    response = await client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=256,
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64_image}},
-                {"type": "text", "text": EXTRACT_PROMPT},
-            ],
-        }],
-    )
+
+    last_err = None
+    for attempt in range(3):
+        try:
+            response = await client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=256,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64_image}},
+                        {"type": "text", "text": EXTRACT_PROMPT},
+                    ],
+                }],
+            )
+            break
+        except Exception as e:
+            last_err = e
+            if "overloaded" in str(e).lower() or "529" in str(e):
+                logger.warning(f"Claude API overloaded, retry {attempt + 1}/3")
+                await asyncio.sleep(2 ** attempt)
+            else:
+                raise
+    else:
+        raise last_err
+
     text = response.content[0].text.strip()
     if text.startswith("```"):
         parts = text.split("```")
