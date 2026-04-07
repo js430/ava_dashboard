@@ -271,6 +271,22 @@
 </div>
 
 <script>
+const GAME_LABELS = {
+  pokemon: "Pokemon TCG",
+  magic: "Magic: The Gathering",
+  yugioh: "Yu-Gi-Oh!",
+  "one piece": "One Piece TCG",
+  other: "Trading Card",
+};
+
+const GAME_COLORS = {
+  pokemon: "#eab308",
+  magic: "#b45309",
+  yugioh: "#7c3aed",
+  "one piece": "#dc2626",
+  other: "#5865F2",
+};
+
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const preview = document.getElementById("preview");
@@ -393,23 +409,6 @@ function resetScanner() {
   document.getElementById("retakeControls").style.display = "none";
   hideResult();
 }
-
-// ---- Constants ----
-const GAME_LABELS = {
-  pokemon: "Pokemon TCG",
-  magic: "Magic: The Gathering",
-  yugioh: "Yu-Gi-Oh!",
-  "one piece": "One Piece TCG",
-  other: "Trading Card",
-};
-
-const GAME_COLORS = {
-  pokemon: "#eab308",
-  magic: "#b45309",
-  yugioh: "#7c3aed",
-  "one piece": "#dc2626",
-  other: "#5865F2",
-};
 
 // ---- Scan ----
 async function scanImage() {
