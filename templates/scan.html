@@ -394,6 +394,23 @@ function resetScanner() {
   hideResult();
 }
 
+// ---- Constants ----
+const GAME_LABELS = {
+  pokemon: "Pokemon TCG",
+  magic: "Magic: The Gathering",
+  yugioh: "Yu-Gi-Oh!",
+  "one piece": "One Piece TCG",
+  other: "Trading Card",
+};
+
+const GAME_COLORS = {
+  pokemon: "#eab308",
+  magic: "#b45309",
+  yugioh: "#7c3aed",
+  "one piece": "#dc2626",
+  other: "#5865F2",
+};
+
 // ---- Scan ----
 async function scanImage() {
   if (!capturedDataUrl) return;
@@ -461,22 +478,6 @@ function hideResult() {
   document.getElementById("errorCard").classList.remove("visible");
   document.getElementById("scanStatus").classList.remove("visible");
 }
-
-const GAME_LABELS = {
-  pokemon: "Pokemon TCG",
-  magic: "Magic: The Gathering",
-  yugioh: "Yu-Gi-Oh!",
-  "one piece": "One Piece TCG",
-  other: "Trading Card",
-};
-
-const GAME_COLORS = {
-  pokemon: "#eab308",
-  magic: "#b45309",
-  yugioh: "#7c3aed",
-  "one piece": "#dc2626",
-  other: "#5865F2",
-};
 
 function displayResult(data) {
   const card = document.getElementById("resultCard");
