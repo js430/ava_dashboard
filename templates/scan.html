@@ -405,6 +405,7 @@ async function scanImage() {
   errorCard.classList.remove("visible");
   document.getElementById("resultCard").classList.remove("visible");
 
+  let data;
   try {
     const resp = await fetch("/api/scan", {
       method: "POST",
@@ -412,21 +413,45 @@ async function scanImage() {
       body: JSON.stringify({ image: capturedDataUrl }),
     });
 
-    const data = await resp.json();
-    if (!resp.ok || data.error) {
-      errorCard.textContent = data.error || data.detail || "Something went wrong.";
+    let rawText;
+    try {
+      rawText = await resp.text();
+      data = JSON.parse(rawText);
+    } catch(parseErr) {
+      console.error("Response parse error:", parseErr, "Raw:", rawText?.substring(0, 500));
+      errorCard.textContent = `Server error (${resp.status}) — check logs.`;
       errorCard.classList.add("visible");
+      status.classList.remove("visible");
+      btnScan.disabled = false;
       return;
     }
 
+    if (!resp.ok || data.error) {
+      errorCard.textContent = data.error || data.detail || "Something went wrong.";
+      errorCard.classList.add("visible");
+      status.classList.remove("visible");
+      btnScan.disabled = false;
+      return;
+    }
+  } catch(e) {
+    console.error("Fetch error:", e);
+    errorCard.textContent = "Network error — please try again.";
+    errorCard.classList.add("visible");
+    status.classList.remove("visible");
+    btnScan.disabled = false;
+    return;
+  }
+
+  status.classList.remove("visible");
+  btnScan.disabled = false;
+
+  try {
     displayResult(data);
     addToHistory(data);
   } catch(e) {
-    errorCard.textContent = "Network error — please try again.";
+    console.error("Display error:", e);
+    errorCard.textContent = `Display error: ${e.message}`;
     errorCard.classList.add("visible");
-  } finally {
-    status.classList.remove("visible");
-    btnScan.disabled = false;
   }
 }
 
