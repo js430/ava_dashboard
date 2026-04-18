@@ -96,6 +96,15 @@
   .tip { position: fixed; background: #fff; border: 1px solid #e4e4e7; border-radius: 8px; padding: 8px 12px; font-size: 11px; color: #111; pointer-events: none; z-index: 1000; display: none; box-shadow: 0 2px 8px rgba(0,0,0,0.1); max-width: 260px; line-height: 1.6; }
   .tip-title { font-weight: 600; margin-bottom: 4px; font-size: 12px; }
   .tip-dates { color: #555; font-size: 10px; white-space: pre-line; }
+  /* Mobile: anchor tip to bottom of screen, full width, tap to dismiss */
+  @media (hover: none) and (pointer: coarse) {
+    .tip { position: fixed; left: 8px; right: 8px; bottom: 8px; top: auto !important; width: auto; max-width: none; pointer-events: auto; border-radius: 12px; padding: 14px 16px; font-size: 13px; box-shadow: 0 -2px 16px rgba(0,0,0,0.15); }
+    .tip-title { font-size: 14px; }
+    .tip-dates { font-size: 12px; }
+    .tip-close { display: block; }
+    .cell { cursor: pointer; }
+  }
+  .tip-close { display: none; float: right; margin: -2px -4px 4px 8px; font-size: 16px; line-height: 1; color: #aaa; cursor: pointer; padding: 2px 4px; }
   .empty { text-align: center; padding: 32px; color: #aaa; font-size: 13px; }
 
   @media (max-width: 768px) {
@@ -212,6 +221,7 @@
 </div>
 
 <div class="tip" id="tip">
+  <span class="tip-close" id="tipClose">✕</span>
   <div class="tip-title" id="tipTitle"></div>
   <div class="tip-dates" id="tipDates"></div>
 </div>
@@ -566,21 +576,49 @@ function render(){
   html+="</tbody>";
   ht.innerHTML=html;
 
-  ht.querySelectorAll(".cell").forEach(cell=>{
-    cell.addEventListener("mouseenter",()=>{
-      document.getElementById("tipTitle").textContent=cell.getAttribute("data-title");
-      document.getElementById("tipDates").textContent=cell.getAttribute("data-dates");
-      document.getElementById("tip").style.display="block";
-    });
-    cell.addEventListener("mousemove",e=>{
-      const tip=document.getElementById("tip"),vw=window.innerWidth;
-      let left=e.clientX+14;
-      if(left+270>vw) left=e.clientX-284;
-      tip.style.left=left+"px";
-      tip.style.top=Math.max(8,e.clientY-tip.offsetHeight/2)+"px";
-    });
-    cell.addEventListener("mouseleave",()=>{ document.getElementById("tip").style.display="none"; });
+  const tip=document.getElementById("tip");
+  const isTouch=()=>window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+
+  function showTip(cell){
+    document.getElementById("tipTitle").textContent=cell.getAttribute("data-title");
+    document.getElementById("tipDates").textContent=cell.getAttribute("data-dates");
+    tip.style.display="block";
+  }
+  function hideTip(){ tip.style.display="none"; }
+  function positionTip(cx,cy){
+    const vw=window.innerWidth,vh=window.innerHeight;
+    const tw=tip.offsetWidth,th=tip.offsetHeight;
+    let left=cx+14;
+    if(left+tw+8>vw) left=cx-tw-14;
+    left=Math.max(8,Math.min(left,vw-tw-8));
+    let top=cy-th/2;
+    top=Math.max(8,Math.min(top,vh-th-8));
+    tip.style.left=left+"px";
+    tip.style.top=top+"px";
+  }
+
+  // Close button (visible on mobile only via CSS)
+  document.getElementById("tipClose").addEventListener("click",e=>{
+    e.stopPropagation();
+    hideTip();
   });
+
+  ht.querySelectorAll(".cell").forEach(cell=>{
+    // Desktop: hover
+    cell.addEventListener("mouseenter",()=>{ if(!isTouch()){ showTip(cell); } });
+    cell.addEventListener("mousemove",e=>{ if(!isTouch()){ positionTip(e.clientX,e.clientY); } });
+    cell.addEventListener("mouseleave",()=>{ if(!isTouch()){ hideTip(); } });
+    // Mobile: tap to toggle
+    cell.addEventListener("click",e=>{
+      if(!isTouch()) return;
+      e.stopPropagation();
+      if(tip.style.display==="block" && tip._cell===cell){ hideTip(); tip._cell=null; }
+      else{ showTip(cell); tip._cell=cell; }
+    });
+  });
+
+  // Tap outside to close on mobile
+  document.addEventListener("click",()=>{ if(isTouch()) hideTip(); });
 
   document.getElementById("legendBar").innerHTML=
     ["#f4f4f5","#34a853","#6dbf4a","#b5d940","#e6c832","#e68220","#dc3232"]
