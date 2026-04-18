@@ -44,6 +44,20 @@
   .breakdown { font-size: 10px; color: #aaa; display: block; margin-top: 1px; }
   .badge-top { display: inline-block; font-size: 9px; font-weight: 700; background: #fef9c3; color: #854d0e; border-radius: 3px; padding: 1px 5px; margin-left: 5px; vertical-align: middle; }
   .empty-state { text-align: center; padding: 40px; color: #aaa; font-size: 13px; }
+
+  @media (max-width: 640px) {
+    .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px; }
+    .nav { flex-wrap: wrap; gap: 5px; }
+    .nav a { font-size: 11px; padding: 3px 7px; }
+    .main { padding: 12px; }
+    .toolbar { padding: 10px 12px; gap: 8px; }
+    .search-input { width: 100%; }
+    .row-count { margin-left: 0; }
+    thead th { padding: 6px 6px; font-size: 9px; }
+    tbody td { padding: 5px 6px; font-size: 11px; }
+    .rank { width: 24px; }
+    .breakdown { font-size: 9px; }
+  }
 </style>
 </head>
 <body>
@@ -64,6 +78,9 @@
   </div>
   <div class="nav">
     <a href="/">Dashboard</a>
+    <a href="/map">Map</a>
+    <a href="/status">Status</a>
+    <a href="/scan">Scan</a>
     {% if is_admin %}<a href="/admin">Admin</a>{% endif %}
     {% if is_admin %}<a href="/contributors" class="active">Contributors</a>{% endif %}
     <a href="/logout">Log out</a>

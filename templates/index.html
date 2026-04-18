@@ -40,6 +40,9 @@
   .sg-chevron { font-size: 9px; color: #aaa; transition: transform 0.15s; flex-shrink: 0; }
   .sg-chevron.open { transform: rotate(90deg); }
   .sg-count { font-size: 10px; color: #aaa; font-weight: 400; margin-left: auto; }
+  .sg-actions { display: flex; gap: 4px; flex-shrink: 0; }
+  .sg-btn { font-size: 10px; color: #5865F2; background: none; border: none; cursor: pointer; padding: 0 2px; font-weight: 600; }
+  .sg-btn:hover { text-decoration: underline; }
   .store-group-items { padding: 0 0 4px 0; }
   .loc-item { display: flex; align-items: center; gap: 8px; padding: 5px 14px 5px 28px; font-size: 12px; color: #333; }
   .loc-item input[type=checkbox] { width: 14px; height: 14px; cursor: pointer; accent-color: #5865F2; flex-shrink: 0; }
@@ -108,15 +111,21 @@
   .empty { text-align: center; padding: 32px; color: #aaa; font-size: 13px; }
 
   @media (max-width: 768px) {
-    .locations-btn { display: flex; }
+    .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 8px 12px; }
+    .header-right { flex-wrap: wrap; gap: 5px; width: 100%; }
+    .logout { font-size: 11px; padding: 3px 7px; }
+    .locations-btn { display: flex; font-size: 11px; padding: 3px 8px; }
     .sidebar { position: fixed; top: 0; left: -260px; width: 260px; height: 100vh; z-index: 400; transition: left 0.25s ease; box-shadow: 2px 0 12px rgba(0,0,0,0.1); }
     .sidebar.open { left: 0; }
     .sidebar-close { display: block; }
     .main { padding: 12px; }
     .controls { padding: 10px 12px; gap: 8px; }
+    .ctrl-row { width: 100%; }
+    .btn-group { overflow-x: auto; -webkit-overflow-scrolling: touch; flex-shrink: 1; }
+    .btn-group button { font-size: 11px; height: 28px; padding: 0 8px; flex-shrink: 0; }
     .slider-row input[type=range] { width: 120px; }
     .slider-ticks { width: 120px; }
-    .btn-group button { font-size: 11px; height: 28px; padding: 0 9px; }
+    .table-card { padding: 8px; }
   }
 </style>
 </head>
@@ -141,6 +150,8 @@
     <span class="locations-btn-dot"></span>Locations
   </button>
   <a href="/map" class="logout">Map</a>
+  <a href="/status" class="logout">Status</a>
+  <a href="/scan" class="logout">Scan</a>
   {% if is_admin %}<a href="/admin" class="logout">Admin</a>{% endif %}
   {% if is_admin %}<a href="/contributors" class="logout">Contributors</a>{% endif %}
   <a href="/logout" class="logout">Log out</a>
@@ -188,10 +199,7 @@
       <div class="ctrl-row">
         <label>Region</label>
         <div class="btn-group" id="regionBtns">
-          <button class="active" onclick="setRegion('NOVA',this)">NOVA</button>
-          <button onclick="setRegion('MD',this)">MD</button>
-          <button onclick="setRegion('DC',this)">DC</button>
-          <button onclick="setRegion('RVA',this)">RVA</button>
+          <button class="active">Loading…</button>
         </div>
       </div>
       <div class="ctrl-divider"></div>
@@ -229,12 +237,7 @@
 <script>
 const DISCORD_USERNAME = {{ username | tojson }};
 
-const REGIONS     = [
-  { key:"NOVA", label:"Northern Virginia", color:"#185FA5" },
-  { key:"MD",   label:"Maryland",          color:"#0F6E56" },
-  { key:"DC",   label:"DC",                color:"#854F0B" },
-  { key:"RVA",  label:"Central VA",        color:"#993556" },
-];
+let REGIONS = [];
 const SLOTS           = ["Morning","Afternoon","Evening"];
 const SLOT_S          = ["AM","PM","Eve"];
 const DOW_ORDER       = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
@@ -246,7 +249,7 @@ const PERIOD_LABELS   = {
 };
 
 let currentWeeks  = 1;
-let currentRegion = 'NOVA';
+let currentRegion = 'VA';
 let showSlots     = true;
 let rawData       = [];
 let expandedStores= new Set();
@@ -299,17 +302,11 @@ function aggregateData(){
   const dayList=buildDayList();
   const locs={};
 
-  // Build a fast set of just location names that are selected (any store)
-  const selectedLocNames=new Set();
-  selectedLocs.forEach(k=>{
-    const sep=k.indexOf('||');
-    if(sep!==-1) selectedLocNames.add(k.slice(sep+2));
-  });
 
   if(currentWeeks===1){
     const dayKeys=new Set(dayList.map(d=>d.key));
     rawData.forEach(row=>{
-      if(!dayKeys.has(row.date)||row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)||!selectedLocNames.has(row.location)) return;
+      if(!dayKeys.has(row.date)||row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)||!selectedLocs.has(`${row.store}||${row.location}`)) return;
       const k=`${row.location}||${row.store}`;
       if(!locs[k]) locs[k]={location:row.location,store:row.store,region:row.region,days:{}};
       if(!locs[k].days[row.date]) locs[k].days[row.date]={Morning:[],Afternoon:[],Evening:[]};
@@ -317,7 +314,7 @@ function aggregateData(){
     });
   } else {
     rawData.forEach(row=>{
-      if(row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)||!selectedLocNames.has(row.location)) return;
+      if(row.region!==currentRegion||EXCLUDED_STORES.includes(row.store)||!selectedLocs.has(`${row.store}||${row.location}`)) return;
       const dow=getDOW(row.date);
       const k=`${row.location}||${row.store}`;
       if(!locs[k]) locs[k]={location:row.location,store:row.store,region:row.region,days:{}};
@@ -380,10 +377,15 @@ function renderSidebar(data){
     if(!items||!items.length) return;
     const isOpen=sidebarOpen[store]===true;
     const checked=items.filter(i=>selectedLocs.has(`${store}||${i.location}`)).length;
+    const safeStore=store.replace(/'/g,"\\'");
     html+=`<div class="store-group">
-      <button class="store-group-toggle" onclick="toggleSidebarGroup('${store}')">
+      <button class="store-group-toggle" onclick="toggleSidebarGroup('${safeStore}')">
         <span class="sg-chevron${isOpen?' open':''}">&#9654;</span>${store}
         <span class="sg-count">${checked}/${items.length}</span>
+        <span class="sg-actions">
+          <button class="sg-btn" onclick="event.stopPropagation();selectStoreAll('${safeStore}')">All</button>
+          <button class="sg-btn" onclick="event.stopPropagation();selectStoreNone('${safeStore}')">None</button>
+        </span>
       </button>
       <div class="store-group-items" id="sg-${store.replace(/\s/g,'_')}" style="display:${isOpen?'block':'none'}">`;
     items.forEach(item=>{
@@ -436,6 +438,18 @@ function selectAll(){
 
 function selectNone(){
   selectedLocs.clear();
+  renderSidebar(locationList);
+  render();
+}
+
+function selectStoreAll(store){
+  Object.keys(locationMeta).filter(k=>k.startsWith(store+'||')).forEach(k=>selectedLocs.add(k));
+  renderSidebar(locationList);
+  render();
+}
+
+function selectStoreNone(store){
+  Object.keys(locationMeta).filter(k=>k.startsWith(store+'||')).forEach(k=>selectedLocs.delete(k));
   renderSidebar(locationList);
   render();
 }
@@ -644,7 +658,7 @@ function drawWatermark(){
   ctx.scale(dpr,dpr); ctx.clearRect(0,0,W,H);
   const fontSize=Math.max(11,Math.min(14,W/36));
   ctx.font=`400 ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
-  ctx.fillStyle="rgba(80,80,80,0.2)";
+  ctx.fillStyle="rgba(60,60,60,0.35)";
   ctx.textBaseline="middle";
   const spacingX=fontSize*6;
   const spacingY=fontSize*4;
@@ -737,7 +751,28 @@ if(window.visualViewport){
   window.visualViewport.addEventListener('scroll',redraw);
 }
 
-loadLocations().then(()=>fetchData());
+async function loadRegions(){
+  try {
+    const resp = await fetch("/api/regions");
+    if (!resp.ok) throw new Error("fetch failed");
+    REGIONS = await resp.json();
+    const group = document.getElementById("regionBtns");
+    group.innerHTML = "";
+    REGIONS.forEach((r, i) => {
+      const btn = document.createElement("button");
+      btn.textContent = r.label;
+      btn.onclick = function(){ setRegion(r.code, this); };
+      if (i === 0) {
+        btn.classList.add("active");
+        currentRegion = r.code;
+      }
+      group.appendChild(btn);
+    });
+  } catch(e) {
+    document.getElementById("regionBtns").innerHTML = '<button class="active">Error</button>';
+  }
+}
+loadRegions().then(()=>loadLocations()).then(()=>fetchData());
 guardWatermark();
 </script>
 </body>

@@ -111,6 +111,12 @@
     .grid { grid-template-columns: 1fr; }
     .flags-grid { grid-template-columns: repeat(2, 1fr); }
   }
+  @media (max-width: 640px) {
+    .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px; }
+    .nav { flex-wrap: wrap; gap: 5px; }
+    .nav a { font-size: 11px; padding: 3px 7px; }
+    .flags-grid { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
@@ -132,6 +138,8 @@
   <div class="nav">
     <a href="/">Dashboard</a>
     <a href="/map">Map</a>
+    <a href="/status">Status</a>
+    <a href="/scan">Scan</a>
     <a href="/admin">Admin</a>
     <a href="/contributors">Contributors</a>
     <a href="/analytics" class="active">Analytics</a>

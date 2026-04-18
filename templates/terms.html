@@ -30,6 +30,14 @@
   .btn-decline:hover { background: #f4f4f5; }
   .highlight-box { background: #fff8e1; border: 1px solid #ffe082; border-radius: 8px; padding: 12px 14px; margin-bottom: 20px; font-size: 12px; color: #5d4037; line-height: 1.6; }
   .highlight-box strong { font-weight: 600; }
+
+  @media (max-width: 640px) {
+    body { padding: 12px; }
+    .card { padding: 24px 20px; }
+    h1 { font-size: 18px; }
+    .btn-row { flex-direction: column; }
+    .btn-accept, .btn-decline { width: 100%; justify-content: center; }
+  }
 </style>
 </head>
 <body>
