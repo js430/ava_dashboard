@@ -1409,7 +1409,7 @@ async def get_restocks(
     request: Request = None,
     user=Depends(get_current_user)
 ):
-    if days not in (7, 14, 21, 28, 35, 42, 49, 56):
+    if days not in (7, 14, 21, 28, 35, 42, 49, 56, 91, 120, 150, 180):
         raise HTTPException(status_code=400, detail="Invalid days value")
 
     eastern = ZoneInfo("America/New_York")
