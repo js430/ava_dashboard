@@ -67,10 +67,12 @@
 
   .slider-wrap { display: flex; flex-direction: column; gap: 3px; }
   .slider-row { display: flex; align-items: center; gap: 10px; }
-  .slider-row input[type=range] { width: 140px; }
+  .slider-row input[type=range] { width: 200px; }
   .slider-label { font-size: 12px; font-weight: 500; color: #111; min-width: 70px; }
-  .slider-ticks { display: flex; justify-content: space-between; width: 140px; padding: 0 2px; }
-  .slider-tick { font-size: 9px; color: #bbb; }
+  .slider-ticks { display: flex; justify-content: space-between; width: 200px; padding: 0 1px; gap: 0; }
+  .slider-tick { font-size: 8px; color: #bbb; text-align: center; padding-top: 2px; border-top: 1px solid #ddd; flex: 1; }
+  .slider-tick.tick-month { color: #5865F2; border-top-color: #5865F2; font-weight: 600; }
+  .slider-tick.tick-gap { border-top-color: transparent; flex: 0 0 6px; }
 
   .table-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px; position: relative; overflow: hidden; }
   .wm-canvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 999; }
@@ -123,8 +125,8 @@
     .ctrl-row { width: 100%; }
     .btn-group { overflow-x: auto; -webkit-overflow-scrolling: touch; flex-shrink: 1; }
     .btn-group button { font-size: 11px; height: 28px; padding: 0 8px; flex-shrink: 0; }
-    .slider-row input[type=range] { width: 120px; }
-    .slider-ticks { width: 120px; }
+    .slider-row input[type=range] { width: 160px; }
+    .slider-ticks { width: 160px; }
     .table-card { padding: 8px; }
   }
 </style>
@@ -185,13 +187,16 @@
         <label>Period</label>
         <div class="slider-wrap">
           <div class="slider-row">
-            <input type="range" id="periodSlider" min="1" max="8" step="1" value="1" oninput="onSliderChange(this.value)">
+            <input type="range" id="periodSlider" min="1" max="12" step="1" value="1" oninput="onSliderChange(this.value)">
             <span class="slider-label" id="periodLabel">This week</span>
           </div>
           <div class="slider-ticks">
             <span class="slider-tick">1w</span><span class="slider-tick">2w</span><span class="slider-tick">3w</span>
             <span class="slider-tick">4w</span><span class="slider-tick">5w</span><span class="slider-tick">6w</span>
             <span class="slider-tick">7w</span><span class="slider-tick">8w</span>
+            <span class="slider-tick tick-gap"></span>
+            <span class="slider-tick tick-month">3m</span><span class="slider-tick tick-month">4m</span>
+            <span class="slider-tick tick-month">5m</span><span class="slider-tick tick-month">6m</span>
           </div>
         </div>
       </div>
@@ -243,9 +248,14 @@ const SLOT_S          = ["AM","PM","Eve"];
 const DOW_ORDER       = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 const STORE_ORDER     = ["Target","Walmart","Best Buy","5 Below","Barnes and Noble"];
 const EXCLUDED_STORES = ["Costco","Sams Club"];
-const PERIOD_LABELS   = {
-  1:"This week",2:"2 weeks",3:"3 weeks",4:"4 weeks",
-  5:"5 weeks",6:"6 weeks",7:"7 weeks",8:"8 weeks"
+const PERIOD_LABELS = {
+  1:"This week", 2:"2 weeks",  3:"3 weeks",  4:"4 weeks",
+  5:"5 weeks",   6:"6 weeks",  7:"7 weeks",  8:"8 weeks",
+  9:"3 months",  10:"4 months",11:"5 months",12:"6 months"
+};
+const PERIOD_DAYS = {
+  1:7,  2:14, 3:21, 4:28, 5:35,  6:42,  7:49,  8:56,
+  9:91, 10:120,11:150,12:180
 };
 
 let currentWeeks  = 1;
@@ -723,7 +733,7 @@ function guardWatermark(){
 async function fetchData(){
   document.getElementById("loadMsg").style.display="inline";
   try{
-    const resp=await fetch(`/api/restocks?days=${currentWeeks*7}`);
+    const resp=await fetch(`/api/restocks?days=${PERIOD_DAYS[currentWeeks]}`);
     rawData=await resp.json();
   } catch(e){ rawData=[]; }
   document.getElementById("loadMsg").style.display="none";
