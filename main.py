@@ -49,6 +49,18 @@ ADMIN_USER_IDS           = {
     int(uid) for uid in os.getenv("ADMIN_USER_IDS", "").split(",") if uid.strip()
 }
 
+# LOOKBACK_ROLE_WEEKS: comma-separated role_id:max_weeks pairs, e.g. "111:1,222:4,333:8"
+# Users get the highest tier that matches any of their roles.  Default (no match) = 1 week.
+LOOKBACK_ROLE_WEEKS: dict[str, int] = {}
+for _pair in os.getenv("LOOKBACK_ROLE_WEEKS", "").split(","):
+    _pair = _pair.strip()
+    if ":" in _pair:
+        _rid, _wks = _pair.split(":", 1)
+        try:
+            LOOKBACK_ROLE_WEEKS[_rid.strip()] = int(_wks.strip())
+        except ValueError:
+            pass
+
 STATE_LABELS = {
     "VA":   "NOVA",
     "CVA":  "CVA",
@@ -560,6 +572,15 @@ def _build_card_result(game: str, card_name: str, card_number: str | None, card_
     return result
 
 
+def _get_max_weeks(roles: list[str]) -> int:
+    """Return the maximum lookback weeks for a user based on their Discord roles."""
+    best = 1  # default minimum for anyone who passes role check
+    for role_id in roles:
+        if role_id in LOOKBACK_ROLE_WEEKS:
+            best = max(best, LOOKBACK_ROLE_WEEKS[role_id])
+    return best
+
+
 DISCORD_API = "https://discord.com/api/v10"
 DISCORD_OAUTH_URL = (
     f"https://discord.com/oauth2/authorize"
@@ -605,15 +626,15 @@ async def terms_current(request: Request, user: dict) -> bool:
         return True
     return False
 
-async def check_discord_role(access_token: str) -> tuple[bool, dict]:
-    """Returns (has_role, user_info)"""
+async def check_discord_role(access_token: str) -> tuple[bool, dict, list[str]]:
+    """Returns (has_role, user_info, member_roles)"""
     async with httpx.AsyncClient() as client:
         user_resp = await client.get(
             f"{DISCORD_API}/users/@me",
             headers={"Authorization": f"Bearer {access_token}"}
         )
         if user_resp.status_code != 200:
-            return False, {}
+            return False, {}, []
         user = user_resp.json()
 
         member_resp = await client.get(
@@ -621,13 +642,13 @@ async def check_discord_role(access_token: str) -> tuple[bool, dict]:
             headers={"Authorization": f"Bearer {access_token}"}
         )
         if member_resp.status_code != 200:
-            return False, user
+            return False, user, []
 
         member = member_resp.json()
         roles = member.get("roles", [])
         has_role = bool(REQUIRED_ROLE_IDS & set(roles))
 
-        return has_role, user
+        return has_role, user, roles
 
 def _extract_latlng(maps_url: str):
     """
@@ -657,12 +678,14 @@ async def index(request: Request):
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
     is_admin = int(user["id"]) in ADMIN_USER_IDS
+    max_weeks = 8 if is_admin else request.session.get("max_weeks", 1)
     return templates.TemplateResponse("index.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
         "user_id": user["id"],
         "is_admin": is_admin,
+        "max_weeks": max_weeks,
     })
 
 @app.get("/terms", response_class=HTMLResponse)
@@ -731,7 +754,7 @@ async def callback(request: Request, code: str = None, error: str = None):
     tokens = token_resp.json()
     access_token = tokens.get("access_token")
 
-    has_role, user = await check_discord_role(access_token)
+    has_role, user, member_roles = await check_discord_role(access_token)
 
     if not user:
         return HTMLResponse("<h3>Could not verify your Discord account.</h3>", status_code=403)
@@ -747,6 +770,7 @@ async def callback(request: Request, code: str = None, error: str = None):
         "username": user["username"],
         "avatar": user.get("avatar")
     }
+    request.session["max_weeks"] = _get_max_weeks(member_roles)
     ip_address = get_real_ip(request)
     try:
         async with app.state.db.acquire() as conn:
@@ -1425,8 +1449,11 @@ async def get_restocks(
     request: Request = None,
     user=Depends(get_current_user)
 ):
-    if days not in (7, 14, 21, 28, 35, 42, 49, 56):
-        raise HTTPException(status_code=400, detail="Invalid days value")
+    is_admin = int(user["id"]) in ADMIN_USER_IDS
+    max_weeks = 8 if is_admin else request.session.get("max_weeks", 1)
+    max_days = max_weeks * 7
+    # Clamp to [7, max_days] — silently cap rather than error so minor slider drift is fine
+    days = max(7, min(days, max_days))
 
     eastern = ZoneInfo("America/New_York")
     now = datetime.now(eastern)

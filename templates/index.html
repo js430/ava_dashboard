@@ -174,17 +174,19 @@
     <div class="controls">
       <div class="ctrl-row">
         <label>Period</label>
+        {% if max_weeks > 1 %}
         <div class="slider-wrap">
           <div class="slider-row">
-            <input type="range" id="periodSlider" min="1" max="8" step="1" value="1" oninput="onSliderChange(this.value)">
+            <input type="range" id="periodSlider" min="1" max="{{ max_weeks }}" step="1" value="1" oninput="onSliderChange(this.value)">
             <span class="slider-label" id="periodLabel">This week</span>
           </div>
           <div class="slider-ticks">
-            <span class="slider-tick">1w</span><span class="slider-tick">2w</span><span class="slider-tick">3w</span>
-            <span class="slider-tick">4w</span><span class="slider-tick">5w</span><span class="slider-tick">6w</span>
-            <span class="slider-tick">7w</span><span class="slider-tick">8w</span>
+            {% for w in range(1, max_weeks + 1) %}<span class="slider-tick">{{ w }}w</span>{% endfor %}
           </div>
         </div>
+        {% else %}
+        <span style="font-size:12px;font-weight:500;color:#111;">This week</span>
+        {% endif %}
       </div>
       <div class="ctrl-divider"></div>
       <div class="ctrl-row">
@@ -226,6 +228,7 @@
 
 <script>
 const DISCORD_USERNAME = {{ username | tojson }};
+const MAX_WEEKS        = {{ max_weeks }};
 
 let REGIONS = [];
 const SLOTS           = ["Morning","Afternoon","Evening"];
@@ -320,7 +323,7 @@ function aggregateData(){
 }
 
 function onSliderChange(val){
-  currentWeeks=parseInt(val);
+  currentWeeks=Math.min(parseInt(val), MAX_WEEKS);
   document.getElementById("periodLabel").textContent=PERIOD_LABELS[currentWeeks];
   fetchData();
 }
