@@ -29,6 +29,18 @@
   .btn-group button:not(:first-child) { border-left: none; }
   .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
 
+  /* Grouped region selector */
+  .region-groups { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .region-group { display: flex; align-items: center; gap: 0; }
+  .region-group-label { font-size: 10px; font-weight: 700; color: #aaa; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 5px; white-space: nowrap; }
+  .region-group .btn-group button { font-size: 12px; height: 30px; padding: 0 11px; border: 1px solid #ddd; background: #fff; color: #333; cursor: pointer; transition: background 0.1s; white-space: nowrap; }
+  .region-group .btn-group button:first-child { border-radius: 6px 0 0 6px; }
+  .region-group .btn-group button:last-child  { border-radius: 0 6px 6px 0; }
+  .region-group .btn-group button:not(:first-child) { border-left: none; }
+  .region-group .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .region-group-sep { width: 1px; height: 20px; background: #e4e4e7; margin: 0 4px; }
+  .region-loading { font-size: 12px; color: #aaa; }
+
   .legend { display: flex; align-items: center; gap: 14px; margin-left: auto; flex-wrap: wrap; }
   .legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #555; white-space: nowrap; }
   .legend-dot { width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; border: 1.5px solid rgba(0,0,0,0.08); }
@@ -84,6 +96,9 @@
     .toolbar { padding: 8px 12px; gap: 8px; }
     .toolbar-label { font-size: 10px; }
     .toolbar-divider { display: none; }
+    .region-groups { overflow-x: auto; -webkit-overflow-scrolling: touch; flex-wrap: nowrap; gap: 6px; }
+    .region-group-label { font-size: 9px; }
+    .region-group .btn-group button { font-size: 11px; height: 28px; padding: 0 7px; }
     .btn-group { overflow-x: auto; -webkit-overflow-scrolling: touch; flex-shrink: 1; }
     .btn-group button { font-size: 11px; height: 28px; padding: 0 8px; flex-shrink: 0; }
     .legend { display: none; }
@@ -122,10 +137,15 @@
 </div>
 
 <div class="toolbar">
-  <span class="toolbar-label">Region</span>
-  <div class="btn-group" id="regionGroup">
+  <span class="toolbar-label">State</span>
+  <div class="btn-group" id="stateGroup">
     <button class="active">Loading…</button>
   </div>
+
+  <div class="toolbar-divider" id="regionDivider" style="display:none"></div>
+
+  <span class="toolbar-label" id="regionLabel" style="display:none">Region</span>
+  <div class="btn-group" id="regionGroup" style="display:none"></div>
 
   <div class="toolbar-divider"></div>
 
@@ -238,28 +258,105 @@ function initMap() {
   loadRegions();
 }
 
+// State → region code mapping (display order)
+const STATE_GROUPS = [
+  { label: "VA", codes: ["VA", "CVA", "TW", "WVA"] },
+  { label: "DC", codes: ["DC"] },
+  { label: "MD", codes: ["Charm", "CMD", "SEMD", "WMD"] },
+];
+
+let regionByCode = {};   // code → label, populated after fetch
+let currentState = null; // currently selected state group
+
 async function loadRegions() {
   try {
     const resp = await fetch("/api/regions");
     if (!resp.ok) throw new Error("fetch failed");
     const regions = await resp.json();
-    const group = document.getElementById("regionGroup");
-    group.innerHTML = "";
-    regions.forEach((r, i) => {
+
+    regions.forEach(r => { regionByCode[r.code] = r.label; });
+
+    // Build state buttons — only states that have at least one DB region
+    const stateGroup = document.getElementById("stateGroup");
+    stateGroup.innerHTML = "";
+    let firstState = null;
+
+    // Known states
+    STATE_GROUPS.forEach(grp => {
+      if (!grp.codes.some(c => c in regionByCode)) return;
       const btn = document.createElement("button");
-      btn.textContent = r.label;
-      btn.onclick = function() { setRegion(r.code, this); };
-      if (i === 0) {
+      btn.textContent = grp.label;
+      btn.onclick = function() { setState(grp, this); };
+      if (!firstState) {
         btn.classList.add("active");
-        currentRegion = r.code;
+        firstState = grp;
       }
-      group.appendChild(btn);
+      stateGroup.appendChild(btn);
     });
-    regionsLoaded = true;
-    loadMapData();
+
+    // Fallback: any codes not in STATE_GROUPS as an "Other" state
+    const knownCodes = new Set(STATE_GROUPS.flatMap(g => g.codes));
+    const otherCodes = regions.filter(r => !knownCodes.has(r.code)).map(r => r.code);
+    if (otherCodes.length) {
+      const btn = document.createElement("button");
+      btn.textContent = "Other";
+      const otherGrp = { label: "Other", codes: otherCodes };
+      btn.onclick = function() { setState(otherGrp, this); };
+      if (!firstState) {
+        btn.classList.add("active");
+        firstState = otherGrp;
+      }
+      stateGroup.appendChild(btn);
+    }
+
+    if (firstState) setState(firstState, stateGroup.querySelector("button.active"), true);
+
   } catch(e) {
-    document.getElementById("regionGroup").innerHTML = '<button class="active">Error</button>';
+    document.getElementById("stateGroup").innerHTML = '<button class="active">Error</button>';
   }
+}
+
+function setState(grp, btn, initial = false) {
+  currentState = grp;
+
+  // Highlight active state button
+  document.getElementById("stateGroup").querySelectorAll("button").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+
+  // Build region buttons for this state
+  const available = grp.codes.filter(c => c in regionByCode);
+  const regionGroup = document.getElementById("regionGroup");
+  const regionLabel = document.getElementById("regionLabel");
+  const regionDivider = document.getElementById("regionDivider");
+
+  if (available.length <= 1) {
+    // Single region — hide the region row and auto-select
+    regionGroup.style.display = "none";
+    regionLabel.style.display = "none";
+    regionDivider.style.display = "none";
+    if (available.length === 1) {
+      currentRegion = available[0];
+    }
+  } else {
+    regionGroup.innerHTML = "";
+    available.forEach((code, i) => {
+      const b = document.createElement("button");
+      b.textContent = regionByCode[code];
+      b.onclick = function() { setRegion(code, this); };
+      if (i === 0) {
+        b.classList.add("active");
+        currentRegion = code;
+      }
+      regionGroup.appendChild(b);
+    });
+    regionGroup.style.display = "flex";
+    regionLabel.style.display = "";
+    regionDivider.style.display = "";
+  }
+
+  closeInfo();
+  if (!initial) loadMapData();
+  else { regionsLoaded = true; loadMapData(); }
 }
 
 // ---- Data loading ----
@@ -377,7 +474,7 @@ function closeInfo() {
 // ---- Controls ----
 function setRegion(r, btn) {
   currentRegion = r;
-  btn.closest(".btn-group").querySelectorAll("button").forEach(b => b.classList.remove("active"));
+  document.getElementById("regionGroup").querySelectorAll("button").forEach(b => b.classList.remove("active"));
   btn.classList.add("active");
   closeInfo();
   loadMapData();
