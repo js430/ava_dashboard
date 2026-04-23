@@ -49,15 +49,16 @@ ADMIN_USER_IDS           = {
     int(uid) for uid in os.getenv("ADMIN_USER_IDS", "").split(",") if uid.strip()
 }
 
-# LOOKBACK_ROLE_WEEKS: comma-separated role_id:max_weeks pairs, e.g. "111:1,222:4,333:8"
-# Users get the highest tier that matches any of their roles.  Default (no match) = 1 week.
+# LOOKBACK_ROLE_WEEKS: comma-separated role_id:max_position pairs.
+# Positions 1-8 = weeks, 9-12 = 3m/4m/5m/6m (91/120/150/180 days).
+# Users get the highest tier that matches any of their roles. Default = 1.
 LOOKBACK_ROLE_WEEKS: dict[str, int] = {}
 for _pair in os.getenv("LOOKBACK_ROLE_WEEKS", "").split(","):
     _pair = _pair.strip()
     if ":" in _pair:
-        _rid, _wks = _pair.split(":", 1)
+        _rid, _pos = _pair.split(":", 1)
         try:
-            LOOKBACK_ROLE_WEEKS[_rid.strip()] = int(_wks.strip())
+            LOOKBACK_ROLE_WEEKS[_rid.strip()] = int(_pos.strip())
         except ValueError:
             pass
 
@@ -626,6 +627,16 @@ async def terms_current(request: Request, user: dict) -> bool:
         return True
     return False
 
+def _get_max_position(roles: list[str]) -> int:
+    """Return the max slider position (1-12) for a user based on their Discord roles."""
+    best = 1  # default minimum for anyone who passes the access check
+    for role_id in roles:
+        if role_id in LOOKBACK_ROLE_WEEKS:
+            best = max(best, LOOKBACK_ROLE_WEEKS[role_id])
+    return best
+
+
+
 async def check_discord_role(access_token: str) -> tuple[bool, dict, list[str]]:
     """Returns (has_role, user_info, member_roles)"""
     async with httpx.AsyncClient() as client:
@@ -678,14 +689,14 @@ async def index(request: Request):
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
     is_admin = int(user["id"]) in ADMIN_USER_IDS
-    max_weeks = 8 if is_admin else request.session.get("max_weeks", 1)
+    max_position = 12 if is_admin else request.session.get("max_position", 1)
     return templates.TemplateResponse("index.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
         "user_id": user["id"],
         "is_admin": is_admin,
-        "max_weeks": max_weeks,
+        "max_position": max_position,
     })
 
 @app.get("/terms", response_class=HTMLResponse)
@@ -770,7 +781,7 @@ async def callback(request: Request, code: str = None, error: str = None):
         "username": user["username"],
         "avatar": user.get("avatar")
     }
-    request.session["max_weeks"] = _get_max_weeks(member_roles)
+    request.session["max_position"] = _get_max_position(member_roles)
     ip_address = get_real_ip(request)
     try:
         async with app.state.db.acquire() as conn:
@@ -1449,11 +1460,15 @@ async def get_restocks(
     request: Request = None,
     user=Depends(get_current_user)
 ):
+    # Map slider positions to allowed day values
+    _POSITION_DAYS = {1:7,2:14,3:21,4:28,5:35,6:42,7:49,8:56,9:91,10:120,11:150,12:180}
     is_admin = int(user["id"]) in ADMIN_USER_IDS
-    max_weeks = 8 if is_admin else request.session.get("max_weeks", 1)
-    max_days = max_weeks * 7
-    # Clamp to [7, max_days] — silently cap rather than error so minor slider drift is fine
-    days = max(7, min(days, max_days))
+    max_position = 12 if is_admin else request.session.get("max_position", 1)
+    max_days = _POSITION_DAYS.get(max_position, 7)
+    # Silently clamp to the user's allowed max — no error, just cap it
+    if days not in _POSITION_DAYS.values():
+        days = 7
+    days = min(days, max_days)
 
     eastern = ZoneInfo("America/New_York")
     now = datetime.now(eastern)
