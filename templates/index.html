@@ -341,8 +341,9 @@ function aggregateData(){
 }
 
 function onSliderChange(val){
-  currentWeeks=Math.min(parseInt(val), MAX_POSITION);
-  document.getElementById("periodLabel").textContent=PERIOD_LABELS[currentWeeks];
+  const pos = parseInt(val);
+  currentWeeks = (!isNaN(pos) && pos >= 1 && pos <= 12) ? Math.min(pos, MAX_POSITION) : 1;
+  document.getElementById("periodLabel").textContent=PERIOD_LABELS[currentWeeks] || "This week";
   fetchData();
 }
 
@@ -734,7 +735,8 @@ function guardWatermark(){
 async function fetchData(){
   document.getElementById("loadMsg").style.display="inline";
   try{
-    const resp=await fetch(`/api/restocks?days=${PERIOD_DAYS[currentWeeks]}`);
+    const days = PERIOD_DAYS[currentWeeks] || 7;
+    const resp=await fetch(`/api/restocks?days=${days}`);
     rawData=await resp.json();
   } catch(e){ rawData=[]; }
   document.getElementById("loadMsg").style.display="none";
