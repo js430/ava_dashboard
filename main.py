@@ -628,12 +628,14 @@ async def terms_current(request: Request, user: dict) -> bool:
     return False
 
 def _get_max_position(roles: list[str]) -> int:
-    """Return the max slider position (1-12) for a user based on their Discord roles."""
+    """Return the max slider position (1-12) for a user based on their Discord roles.
+    Values above 12 are treated as full access (12). Use any value >= 12 in
+    LOOKBACK_ROLE_WEEKS to mean 'unlimited / full history'."""
     best = 1  # default minimum for anyone who passes the access check
     for role_id in roles:
         if role_id in LOOKBACK_ROLE_WEEKS:
             best = max(best, LOOKBACK_ROLE_WEEKS[role_id])
-    return best
+    return min(best, 12)  # clamp to valid slider range
 
 
 
