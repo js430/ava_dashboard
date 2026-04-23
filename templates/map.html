@@ -22,24 +22,13 @@
   .toolbar { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 10px 16px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; flex-shrink: 0; }
   .toolbar-label { font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
   .toolbar-divider { width: 1px; height: 20px; background: #e4e4e7; flex-shrink: 0; }
+  .filter-row { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
   .btn-group { display: flex; }
   .btn-group button { font-size: 12px; height: 30px; padding: 0 11px; border: 1px solid #ddd; background: #fff; color: #333; cursor: pointer; transition: background 0.1s; white-space: nowrap; }
   .btn-group button:first-child { border-radius: 6px 0 0 6px; }
   .btn-group button:last-child  { border-radius: 0 6px 6px 0; }
   .btn-group button:not(:first-child) { border-left: none; }
   .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
-
-  /* Grouped region selector */
-  .region-groups { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .region-group { display: flex; align-items: center; gap: 0; }
-  .region-group-label { font-size: 10px; font-weight: 700; color: #aaa; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 5px; white-space: nowrap; }
-  .region-group .btn-group button { font-size: 12px; height: 30px; padding: 0 11px; border: 1px solid #ddd; background: #fff; color: #333; cursor: pointer; transition: background 0.1s; white-space: nowrap; }
-  .region-group .btn-group button:first-child { border-radius: 6px 0 0 6px; }
-  .region-group .btn-group button:last-child  { border-radius: 0 6px 6px 0; }
-  .region-group .btn-group button:not(:first-child) { border-left: none; }
-  .region-group .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
-  .region-group-sep { width: 1px; height: 20px; background: #e4e4e7; margin: 0 4px; }
-  .region-loading { font-size: 12px; color: #aaa; }
 
   .legend { display: flex; align-items: center; gap: 14px; margin-left: auto; flex-wrap: wrap; }
   .legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #555; white-space: nowrap; }
@@ -93,14 +82,13 @@
     .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 8px 12px; }
     .nav { flex-wrap: wrap; gap: 5px; }
     .nav a { font-size: 11px; padding: 3px 7px; }
-    .toolbar { padding: 8px 12px; gap: 8px; }
-    .toolbar-label { font-size: 10px; }
+    .toolbar { padding: 8px 12px; gap: 0; flex-direction: column; align-items: stretch; }
     .toolbar-divider { display: none; }
-    .region-groups { overflow-x: auto; -webkit-overflow-scrolling: touch; flex-wrap: nowrap; gap: 6px; }
-    .region-group-label { font-size: 9px; }
-    .region-group .btn-group button { font-size: 11px; height: 28px; padding: 0 7px; }
-    .btn-group { overflow-x: auto; -webkit-overflow-scrolling: touch; flex-shrink: 1; }
-    .btn-group button { font-size: 11px; height: 28px; padding: 0 8px; flex-shrink: 0; }
+    .filter-row { padding: 5px 0; border-bottom: 1px solid #f4f4f5; }
+    .filter-row:last-of-type { border-bottom: none; }
+    .toolbar-label { font-size: 10px; min-width: 46px; }
+    .filter-row .btn-group { overflow-x: auto; -webkit-overflow-scrolling: touch; flex: 1; min-width: 0; }
+    .btn-group button { font-size: 11px; height: 28px; padding: 0 9px; flex-shrink: 0; }
     .legend { display: none; }
     .info-panel { width: calc(100vw - 24px); right: 12px; }
     .summary-card { left: 8px; bottom: 24px; min-width: 140px; padding: 8px 10px; }
@@ -137,33 +125,39 @@
 </div>
 
 <div class="toolbar">
-  <span class="toolbar-label">State</span>
-  <div class="btn-group" id="stateGroup">
-    <button class="active">Loading…</button>
+  <div class="filter-row">
+    <span class="toolbar-label">State</span>
+    <div class="btn-group" id="stateGroup">
+      <button class="active">Loading…</button>
+    </div>
   </div>
 
-  <div class="toolbar-divider" id="regionDivider" style="display:none"></div>
-
-  <span class="toolbar-label" id="regionLabel" style="display:none">Region</span>
-  <div class="btn-group" id="regionGroup" style="display:none"></div>
-
-  <div class="toolbar-divider"></div>
-
-  <span class="toolbar-label">Store</span>
-  <div class="btn-group" id="storeGroup">
-    <button class="active" onclick="setStore('all', this)">All</button>
-    <button onclick="setStore('Target', this)">Target</button>
-    <button onclick="setStore('Walmart', this)">Walmart</button>
-    <button onclick="setStore('Best Buy', this)">Best Buy</button>
-    <button onclick="setStore('Barnes and Noble', this)">B&amp;N</button>
+  <div class="filter-row" id="regionRow" style="display:none">
+    <span class="toolbar-label">Region</span>
+    <div class="btn-group" id="regionGroup"></div>
   </div>
 
   <div class="toolbar-divider"></div>
 
-  <span class="toolbar-label">View</span>
-  <div class="btn-group" id="windowGroup">
-    <button class="active" onclick="setWindow('day', this)">Today</button>
-    <button onclick="setWindow('week', this)">This Week</button>
+  <div class="filter-row">
+    <span class="toolbar-label">Store</span>
+    <div class="btn-group" id="storeGroup">
+      <button class="active" onclick="setStore('all', this)">All</button>
+      <button onclick="setStore('Target', this)">Target</button>
+      <button onclick="setStore('Walmart', this)">Walmart</button>
+      <button onclick="setStore('Best Buy', this)">Best Buy</button>
+      <button onclick="setStore('Barnes and Noble', this)">B&amp;N</button>
+    </div>
+  </div>
+
+  <div class="toolbar-divider"></div>
+
+  <div class="filter-row">
+    <span class="toolbar-label">View</span>
+    <div class="btn-group" id="windowGroup">
+      <button class="active" onclick="setWindow('day', this)">Today</button>
+      <button onclick="setWindow('week', this)">This Week</button>
+    </div>
   </div>
 
   <div class="legend">
@@ -326,14 +320,11 @@ function setState(grp, btn, initial = false) {
   // Build region buttons for this state
   const available = grp.codes.filter(c => c in regionByCode);
   const regionGroup = document.getElementById("regionGroup");
-  const regionLabel = document.getElementById("regionLabel");
-  const regionDivider = document.getElementById("regionDivider");
+  const regionRow   = document.getElementById("regionRow");
 
   if (available.length <= 1) {
     // Single region — hide the region row and auto-select
-    regionGroup.style.display = "none";
-    regionLabel.style.display = "none";
-    regionDivider.style.display = "none";
+    regionRow.style.display = "none";
     if (available.length === 1) {
       currentRegion = available[0];
     }
@@ -349,9 +340,7 @@ function setState(grp, btn, initial = false) {
       }
       regionGroup.appendChild(b);
     });
-    regionGroup.style.display = "flex";
-    regionLabel.style.display = "";
-    regionDivider.style.display = "";
+    regionRow.style.display = "flex";
   }
 
   closeInfo();
