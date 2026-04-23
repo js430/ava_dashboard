@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Card Scanner — Restock Dashboard</title>
 <style>
@@ -147,6 +148,35 @@
     .result-thumb { width: 72px; height: 100px; }
     .result-name { font-size: 14px; }
   }
+  /* ── Theme toggle ── */
+  .theme-toggle { font-size: 16px; background: #27272a; border: 1px solid #3f3f46; border-radius: 6px; padding: 4px 8px; cursor: pointer; line-height: 1; transition: background 0.15s; flex-shrink: 0; color: #e4e4e7; }
+  .theme-toggle:hover { background: #3f3f46; }
+  /* ── Light mode overrides (scan is dark by default) ── */
+  html[data-theme="light"] body { background: #f4f4f5; color: #111; }
+  html[data-theme="light"] .header { background: #fff; border-bottom-color: #e4e4e7; }
+  html[data-theme="light"] .header-title { color: #111; }
+  html[data-theme="light"] .header-user { color: #888; }
+  html[data-theme="light"] .nav a { background: #fff; border-color: #ddd; color: #555; }
+  html[data-theme="light"] .nav a:hover { background: #f4f4f5; }
+  html[data-theme="light"] .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="light"] .scan-layout { background: #f4f4f5; }
+  html[data-theme="light"] .camera-area { background: #fff; border-color: #e4e4e7; }
+  html[data-theme="light"] .camera-area.has-stream { border-color: #ddd; }
+  html[data-theme="light"] .camera-placeholder p { color: #888; }
+  html[data-theme="light"] .camera-placeholder .sub { color: #aaa; }
+  html[data-theme="light"] .btn-secondary { background: #fff; color: #333; border-color: #ddd; }
+  html[data-theme="light"] .btn-secondary:hover { background: #f4f4f5; }
+  html[data-theme="light"] .btn-primary:disabled { background: #e4e4e7; color: #999; }
+  html[data-theme="light"] .scan-status { color: #888; }
+  html[data-theme="light"] .result-card { background: #fff; border-color: #e4e4e7; }
+  html[data-theme="light"] .result-name { color: #111; }
+  html[data-theme="light"] .result-game { color: #888; }
+  html[data-theme="light"] .field-row { border-bottom-color: #f0f0f0; }
+  html[data-theme="light"] .field-label { color: #888; }
+  html[data-theme="light"] .field-value { color: #333; }
+  html[data-theme="light"] .result-thumb-placeholder { background: #f0f0f0; color: #bbb; }
+  html[data-theme="light"] .theme-toggle { background: #f4f4f5; border-color: #ddd; color: #555; }
+  html[data-theme="light"] .theme-toggle:hover { background: #e8e8ea; }
 </style>
 </head>
 <body>
@@ -172,6 +202,7 @@
     <a href="/scan" class="active">Scan</a>
     {% if is_admin %}<a href="/admin">Admin</a>{% endif %}
     {% if is_admin %}<a href="/contributors">Contributors</a>{% endif %}
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
     <a href="/logout">Log out</a>
   </div>
 </div>
@@ -685,6 +716,7 @@ function timeAgo(ts) {
   if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
   return `${Math.floor(diff / 86400000)}d ago`;
 }
+(function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')!=='light';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var t=document.documentElement.getAttribute('data-theme');var n=(t==='light')?'dark':'light';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();};upd();})();
 </script>
 </body>
 </html>

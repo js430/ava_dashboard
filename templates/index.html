@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Restock Dashboard</title>
 <style>
@@ -129,6 +130,42 @@
     .slider-ticks { width: 160px; }
     .table-card { padding: 8px; }
   }
+  /* ── Theme toggle ── */
+  .theme-toggle { font-size: 16px; background: #f4f4f5; border: 1px solid #ddd; border-radius: 6px; padding: 4px 8px; cursor: pointer; line-height: 1; transition: background 0.15s; flex-shrink: 0; }
+  .theme-toggle:hover { background: #e8e8ea; }
+  /* ── Dark mode ── */
+  html[data-theme="dark"] { color-scheme: dark; }
+  html[data-theme="dark"] body { background: #111113; color: #f0f0f0; }
+  html[data-theme="dark"] .header { background: #1c1c1f; border-bottom-color: #303033; }
+  html[data-theme="dark"] .header-title { color: #f0f0f0; }
+  html[data-theme="dark"] .logout { color: #bbbbc5; border-color: #383838; background: #252528; }
+  html[data-theme="dark"] .logout:hover { background: #2e2e32; }
+  html[data-theme="dark"] .locations-btn { color: #818cf8; background: #1e2040; border-color: #3730a3; }
+  html[data-theme="dark"] .overlay { background: rgba(0,0,0,0.6); }
+  html[data-theme="dark"] .sidebar { background: #1c1c1f; border-right-color: #303033; }
+  html[data-theme="dark"] .sidebar-header { border-bottom-color: #2a2a2d; }
+  html[data-theme="dark"] .sidebar-title { color: #f0f0f0; }
+  html[data-theme="dark"] .sidebar-footer { border-top-color: #2a2a2d; }
+  html[data-theme="dark"] .store-group-toggle { color: #f0f0f0; }
+  html[data-theme="dark"] .store-group-toggle:hover { background: #222226; }
+  html[data-theme="dark"] .loc-item { color: #ccc; }
+  html[data-theme="dark"] .loc-link { color: #ccc; }
+  html[data-theme="dark"] .ctrl-divider { background: #2a2a2d; }
+  html[data-theme="dark"] .controls { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .btn-group button { background: #252528; border-color: #383838; color: #ccc; }
+  html[data-theme="dark"] .btn-group button:hover { background: #2e2e32; }
+  html[data-theme="dark"] .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .slider-label { color: #f0f0f0; }
+  html[data-theme="dark"] .slider-tick { color: #666; border-top-color: #555; }
+  html[data-theme="dark"] .slider-tick.tick-month { color: #818cf8; border-top-color: #818cf8; }
+  html[data-theme="dark"] .table-card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .store-header-inner { border-top-color: #303033; }
+  html[data-theme="dark"] .store-header-name { color: #f0f0f0; }
+  html[data-theme="dark"] .loc-name { color: #f0f0f0; }
+  html[data-theme="dark"] .day-divider { border-left-color: #555 !important; }
+  html[data-theme="dark"] .tip { background: #1c1c1f; border-color: #303033; color: #f0f0f0; }
+  html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
+  html[data-theme="dark"] .theme-toggle:hover { background: #2e2e32; }
 </style>
 </head>
 <body>
@@ -156,6 +193,7 @@
   <a href="/scan" class="logout">Scan</a>
   {% if is_admin %}<a href="/admin" class="logout">Admin</a>{% endif %}
   {% if is_admin %}<a href="/contributors" class="logout">Contributors</a>{% endif %}
+  <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
   <a href="/logout" class="logout">Log out</a>
 </div>
 </div>
@@ -787,6 +825,7 @@ async function loadRegions(){
 }
 loadRegions().then(()=>loadLocations()).then(()=>fetchData());
 guardWatermark();
+(function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();};upd();})();
 </script>
 </body>
 </html>

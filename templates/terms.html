@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Terms of Use — Restock Dashboard</title>
 <style>
@@ -38,9 +39,29 @@
     .btn-row { flex-direction: column; }
     .btn-accept, .btn-decline { width: 100%; justify-content: center; }
   }
+  /* ── Theme toggle ── */
+  .theme-toggle { position: fixed; top: 12px; right: 12px; font-size: 16px; background: #f4f4f5; border: 1px solid #ddd; border-radius: 6px; padding: 4px 8px; cursor: pointer; line-height: 1; transition: background 0.15s; z-index: 100; }
+  .theme-toggle:hover { background: #e8e8ea; }
+  /* ── Dark mode ── */
+  html[data-theme="dark"] { color-scheme: dark; }
+  html[data-theme="dark"] body { background: #111113; color: #f0f0f0; }
+  html[data-theme="dark"] .card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] h1 { color: #f0f0f0; }
+  html[data-theme="dark"] .section h2 { color: #f0f0f0; }
+  html[data-theme="dark"] .section p, html[data-theme="dark"] .section ul { color: #ccc; }
+  html[data-theme="dark"] .divider { background: #303033; }
+  html[data-theme="dark"] .accept-block { border-top-color: #303033; }
+  html[data-theme="dark"] .checkbox-label { color: #ccc; }
+  html[data-theme="dark"] .highlight-box { background: #2a2209; border-color: #6b5a0a; color: #d4b96a; }
+  html[data-theme="dark"] .btn-accept { background: #5865F2; }
+  html[data-theme="dark"] .btn-decline { background: #252528; border-color: #383838; color: #888; }
+  html[data-theme="dark"] .btn-decline:hover { background: #2e2e32; }
+  html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
+  html[data-theme="dark"] .theme-toggle:hover { background: #2e2e32; }
 </style>
 </head>
 <body>
+<button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
 <div class="card">
 
   <h1>Terms of Use &amp; Privacy Notice</h1>
@@ -244,6 +265,7 @@ async function acceptTerms(){
     toggleAccept();
   }
 }
+(function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();};upd();})();
 </script>
 </body>
 </html>
