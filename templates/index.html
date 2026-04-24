@@ -879,7 +879,7 @@ async function loadRegions(){
 }
 loadRegions().then(()=>loadLocations()).then(()=>fetchData());
 guardWatermark();
-(function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();};upd();})();
+(function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();requestAnimationFrame(drawWatermark);};upd();})();
 </script>
 </body>
 </html>

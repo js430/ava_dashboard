@@ -604,7 +604,7 @@ guardWatermark();
 setInterval(() => {
   if (document.visibilityState === "visible") loadMapData();
 }, 120_000);
-(function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();};upd();})();
+(function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();requestAnimationFrame(drawWatermark);};upd();})();
 </script>
 
 <div class="wm-overlay"><canvas id="wmCanvas" class="wm-canvas"></canvas></div>
