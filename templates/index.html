@@ -240,10 +240,14 @@
       </div>
       <div class="ctrl-divider"></div>
       <div class="ctrl-row">
-        <label>Region</label>
-        <div class="btn-group" id="regionBtns">
+        <label>State</label>
+        <div class="btn-group" id="stateBtns">
           <button class="active">Loading…</button>
         </div>
+      </div>
+      <div class="ctrl-row" id="regionRow" style="display:none">
+        <label>Region</label>
+        <div class="btn-group" id="regionBtns"></div>
       </div>
       <div class="ctrl-divider"></div>
       <div class="ctrl-row">
@@ -282,6 +286,13 @@ const DISCORD_USERNAME = {{ username | tojson }};
 const MAX_POSITION     = {{ max_position }};
 
 let REGIONS = [];
+const STATE_GROUPS = [
+  { label: "VA", codes: ["VA", "CVA", "TW", "WVA"] },
+  { label: "DC", codes: ["DC"] },
+  { label: "MD", codes: ["Charm", "CMD", "SEMD", "WMD"] },
+];
+let regionByCode = {};
+let currentState = null;
 const SLOTS           = ["Morning","Afternoon","Evening"];
 const SLOT_S          = ["AM","PM","Eve"];
 const DOW_ORDER       = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
@@ -781,6 +792,32 @@ async function fetchData(){
   render();
 }
 
+function setState(grp, btn, initial = false) {
+  currentState = grp;
+  document.getElementById("stateBtns").querySelectorAll("button").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+
+  const available = grp.codes.filter(c => c in regionByCode);
+  const regionBtnsEl = document.getElementById("regionBtns");
+  const regionRow    = document.getElementById("regionRow");
+
+  if (available.length <= 1) {
+    regionRow.style.display = "none";
+    if (available.length === 1) currentRegion = available[0];
+  } else {
+    regionBtnsEl.innerHTML = "";
+    available.forEach((code, i) => {
+      const b = document.createElement("button");
+      b.textContent = regionByCode[code];
+      b.onclick = function(){ setRegion(code, this); };
+      if (i === 0) { b.classList.add("active"); currentRegion = code; }
+      regionBtnsEl.appendChild(b);
+    });
+    regionRow.style.display = "";
+  }
+
+  if (!initial) loadLocations().then(() => fetchData());
+}
 function setRegion(r,btn){
   currentRegion=r;
   btn.closest(".btn-group").querySelectorAll("button").forEach(b=>b.classList.remove("active"));
@@ -807,20 +844,36 @@ async function loadRegions(){
     const resp = await fetch("/api/regions");
     if (!resp.ok) throw new Error("fetch failed");
     REGIONS = await resp.json();
-    const group = document.getElementById("regionBtns");
-    group.innerHTML = "";
-    REGIONS.forEach((r, i) => {
+    REGIONS.forEach(r => { regionByCode[r.code] = r.label; });
+
+    const stateGroup = document.getElementById("stateBtns");
+    stateGroup.innerHTML = "";
+    let firstState = null;
+
+    STATE_GROUPS.forEach(grp => {
+      if (!grp.codes.some(c => c in regionByCode)) return;
       const btn = document.createElement("button");
-      btn.textContent = r.label;
-      btn.onclick = function(){ setRegion(r.code, this); };
-      if (i === 0) {
-        btn.classList.add("active");
-        currentRegion = r.code;
-      }
-      group.appendChild(btn);
+      btn.textContent = grp.label;
+      btn.onclick = function(){ setState(grp, this); };
+      if (!firstState) { btn.classList.add("active"); firstState = grp; }
+      stateGroup.appendChild(btn);
     });
+
+    // Fallback: codes not in STATE_GROUPS → "Other"
+    const knownCodes = new Set(STATE_GROUPS.flatMap(g => g.codes));
+    const otherCodes = REGIONS.filter(r => !knownCodes.has(r.code)).map(r => r.code);
+    if (otherCodes.length) {
+      const btn = document.createElement("button");
+      btn.textContent = "Other";
+      const otherGrp = { label: "Other", codes: otherCodes };
+      btn.onclick = function(){ setState(otherGrp, this); };
+      if (!firstState) { btn.classList.add("active"); firstState = otherGrp; }
+      stateGroup.appendChild(btn);
+    }
+
+    if (firstState) setState(firstState, stateGroup.querySelector("button.active"), true);
   } catch(e) {
-    document.getElementById("regionBtns").innerHTML = '<button class="active">Error</button>';
+    document.getElementById("stateBtns").innerHTML = '<button class="active">Error</button>';
   }
 }
 loadRegions().then(()=>loadLocations()).then(()=>fetchData());
