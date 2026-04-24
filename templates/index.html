@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Restock Dashboard</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -118,7 +118,8 @@
     .header-right { flex-wrap: wrap; gap: 5px; width: 100%; }
     .logout { font-size: 11px; padding: 3px 7px; }
     .locations-btn { display: flex; font-size: 11px; padding: 3px 8px; }
-    .sidebar { position: fixed; top: 0; left: -260px; width: 260px; height: 100vh; z-index: 400; transition: left 0.25s ease; box-shadow: 2px 0 12px rgba(0,0,0,0.1); }
+    .sidebar { position: fixed; top: 0; left: -260px; width: 260px; height: 100vh; height: 100dvh; z-index: 400; transition: left 0.25s ease; box-shadow: 2px 0 12px rgba(0,0,0,0.1); }
+    .sidebar-footer { padding-bottom: max(10px, calc(10px + env(safe-area-inset-bottom))); }
     .sidebar.open { left: 0; }
     .sidebar-close { display: block; }
     .main { padding: 12px; }
