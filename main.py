@@ -1166,7 +1166,7 @@ async def get_status(request: Request, user=Depends(get_current_user)):
             "username": r["username"] or "Unknown",
         }
         for r in rows
-    ])
+    ], headers={"Cache-Control": "no-store"})
 
 # ---- Contributors ----
 
@@ -1520,7 +1520,7 @@ async def get_restocks(
             "slot":     time_slot(local_dt),
         })
 
-    return JSONResponse(result)
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
 @app.get("/api/locations")
 async def get_locations(
@@ -1633,7 +1633,7 @@ async def get_map_data(
             "restocks": restock_map.get(key, []),
         })
 
-    return JSONResponse(result)
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
 # ---- Preferences API ----
 
