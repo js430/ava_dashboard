@@ -1489,6 +1489,7 @@ async def get_restocks(
               ON LOWER(TRIM(l.location)) = LOWER(TRIM(rr.location))
               AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(rr.store_name))
             WHERE rr.date >= $1
+            AND rr.user_id != 0
             AND (rr.channel_name IS NULL OR rr.channel_name NOT IN (
                 'online-restock-information',
                 'other-online-restocks',
@@ -1597,6 +1598,7 @@ async def get_map_data(
               AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(rr.store_name))
             WHERE l.state = $2
               AND rr.date >= $1
+              AND rr.user_id != 0
               AND (rr.channel_name IS NULL OR rr.channel_name NOT IN (
                   'online-restock-information',
                   'other-online-restocks',
