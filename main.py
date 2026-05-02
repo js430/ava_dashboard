@@ -42,6 +42,7 @@ DISCORD_CLIENT_SECRET    = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_REDIRECT_URI     = os.getenv("DISCORD_REDIRECT_URI")
 DISCORD_GUILD_ID         = os.getenv("DISCORD_GUILD_ID")
 REQUIRED_ROLE_IDS        = {r.strip() for r in os.getenv("REQUIRED_ROLE_ID", "").split(",") if r.strip()}
+DENY_ROLE_IDS            = {r.strip() for r in os.getenv("DENY_ROLE_IDS", "").split(",") if r.strip()}
 GOOGLE_MAPS_API_KEY      = os.getenv("GOOGLE_MAPS_API_KEY", "")
 ANTHROPIC_API_KEY        = os.getenv("ANTHROPIC_API_KEY", "")
 ACTIVE_INFORMANT_ROLE_ID = os.getenv("ACTIVE_INFORMANT_ROLE_ID", "")
@@ -659,6 +660,9 @@ async def check_discord_role(access_token: str) -> tuple[bool, dict, list[str]]:
 
         member = member_resp.json()
         roles = member.get("roles", [])
+        # Deny list takes priority — blocked even if they have an allowed role
+        if DENY_ROLE_IDS & set(roles):
+            return False, user, roles
         has_role = bool(REQUIRED_ROLE_IDS & set(roles))
 
         return has_role, user, roles
