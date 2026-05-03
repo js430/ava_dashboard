@@ -44,7 +44,6 @@ DISCORD_REDIRECT_URI     = os.getenv("DISCORD_REDIRECT_URI")
 DISCORD_GUILD_ID         = os.getenv("DISCORD_GUILD_ID")
 REQUIRED_ROLE_IDS        = {r.strip() for r in os.getenv("REQUIRED_ROLE_ID", "").split(",") if r.strip()}
 DENY_ROLE_IDS            = {r.strip() for r in os.getenv("DENY_ROLE_IDS", "").split(",") if r.strip()}
-MOD_ROLE_IDS             = {r.strip() for r in os.getenv("MOD_ROLE_IDS", "1406753334051737631").split(",") if r.strip()}
 GOOGLE_MAPS_API_KEY      = os.getenv("GOOGLE_MAPS_API_KEY", "")
 ANTHROPIC_API_KEY        = os.getenv("ANTHROPIC_API_KEY", "")
 ACTIVE_INFORMANT_ROLE_ID = os.getenv("ACTIVE_INFORMANT_ROLE_ID", "")
@@ -704,7 +703,6 @@ async def index(request: Request):
         "avatar": user.get("avatar"),
         "user_id": user["id"],
         "is_admin": is_admin,
-        "is_mod": is_admin or request.session.get("is_mod", False),
         "max_position": max_position,
     })
 
@@ -791,7 +789,6 @@ async def callback(request: Request, code: str = None, error: str = None):
         "avatar": user.get("avatar")
     }
     request.session["max_position"] = _get_max_position(member_roles)
-    request.session["is_mod"] = bool(MOD_ROLE_IDS & set(member_roles))
     ip_address = get_real_ip(request)
     try:
         async with app.state.db.acquire() as conn:
@@ -1138,7 +1135,6 @@ async def status_page(request: Request):
         "avatar": user.get("avatar"),
         "user_id": user["id"],
         "is_admin": is_admin,
-        "is_mod": is_admin or request.session.get("is_mod", False),
     })
 
 @app.get("/api/status")
@@ -1344,7 +1340,6 @@ async def map_page(request: Request):
         "avatar": user.get("avatar"),
         "user_id": user["id"],
         "is_admin": is_admin,
-        "is_mod": is_admin or request.session.get("is_mod", False),
         "google_maps_api_key": GOOGLE_MAPS_API_KEY,
     })
 
@@ -1362,7 +1357,6 @@ async def scan_page(request: Request):
         "avatar": user.get("avatar"),
         "user_id": user["id"],
         "is_admin": is_admin,
-        "is_mod": is_admin or request.session.get("is_mod", False),
     })
 
 
@@ -1374,8 +1368,7 @@ async def invite_network_page(request: Request):
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
     is_admin = int(user["id"]) in ADMIN_USER_IDS
-    is_mod = request.session.get("is_mod", False)
-    if not is_admin and not is_mod:
+    if not is_admin:
         raise HTTPException(status_code=403, detail="Not authorized")
     return templates.TemplateResponse("invite_network.html", {
         "request": request,
@@ -1383,15 +1376,13 @@ async def invite_network_page(request: Request):
         "avatar": user.get("avatar"),
         "user_id": user["id"],
         "is_admin": is_admin,
-        "is_mod": True,
     })
 
 
 @app.get("/api/invite-network")
 async def get_invite_network(request: Request, user=Depends(get_current_user)):
     is_admin = int(user["id"]) in ADMIN_USER_IDS
-    is_mod = request.session.get("is_mod", False)
-    if not is_admin and not is_mod:
+    if not is_admin:
         raise HTTPException(status_code=403, detail="Not authorized")
 
     async with request.app.state.db.acquire() as conn:
