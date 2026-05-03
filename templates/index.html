@@ -194,6 +194,7 @@
   <a href="/scan" class="logout">Scan</a>
   {% if is_admin %}<a href="/admin" class="logout">Admin</a>{% endif %}
   {% if is_admin %}<a href="/contributors" class="logout">Contributors</a>{% endif %}
+  {% if is_admin or is_mod %}<a href="/invite-network" class="logout">Network</a>{% endif %}
   <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
   <a href="/logout" class="logout">Log out</a>
 </div>
