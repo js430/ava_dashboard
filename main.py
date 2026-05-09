@@ -1593,6 +1593,7 @@ async def get_restocks(
             SELECT
                 rr.location,
                 rr.store_name,
+                rr.channel_name,
                 rr.date AT TIME ZONE 'America/New_York' AS local_date,
                 l.state
             FROM restock_reports rr
@@ -1600,7 +1601,6 @@ async def get_restocks(
               ON LOWER(TRIM(l.location)) = LOWER(TRIM(rr.location))
               AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(rr.store_name))
             WHERE rr.date >= $1
-            AND rr.user_id != 0
             AND (rr.channel_name IS NULL OR rr.channel_name NOT IN (
                 'online-restock-information',
                 'other-online-restocks',
@@ -1630,6 +1630,7 @@ async def get_restocks(
             "date":     local_dt.strftime("%Y-%m-%d"),
             "datetime": local_dt.strftime("%b %d %I:%M %p"),
             "slot":     time_slot(local_dt),
+            "via_hope": row["channel_name"] in ("hope-converted", "hope-converted-late"),
         })
 
     return JSONResponse(result, headers={"Cache-Control": "no-store"})
@@ -1702,6 +1703,7 @@ async def get_map_data(
             SELECT
                 rr.location,
                 rr.store_name,
+                rr.channel_name,
                 rr.date AT TIME ZONE 'America/New_York' AS local_date
             FROM restock_reports rr
             JOIN locations l
@@ -1709,7 +1711,6 @@ async def get_map_data(
               AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(rr.store_name))
             WHERE l.state = $2
               AND rr.date >= $1
-              AND rr.user_id != 0
               AND (rr.channel_name IS NULL OR rr.channel_name NOT IN (
                   'online-restock-information',
                   'other-online-restocks',
@@ -1729,6 +1730,7 @@ async def get_map_data(
         restock_map[key].append({
             "datetime": local_dt.strftime("%b %d %I:%M %p"),
             "slot": time_slot(local_dt),
+            "via_hope": r["channel_name"] in ("hope-converted", "hope-converted-late"),
         })
 
     result = []
