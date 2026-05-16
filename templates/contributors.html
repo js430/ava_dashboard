@@ -106,7 +106,7 @@
     <a href="/scan">Scan</a>
     {% if is_admin %}<a href="/admin">Admin</a>{% endif %}
     {% if is_admin %}<a href="/contributors" class="active">Contributors</a>{% endif %}
-    <a href="/invite-network">Network</a>
+    {% if is_admin %}<a href="/invite-network">Network</a>{% endif %}
     <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
     <a href="/logout">Log out</a>
   </div>
@@ -147,13 +147,14 @@
 <script>
 let allRows = [];
 
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 function fmt(n){ return n === 0 ? '—' : n % 1 === 0 ? n.toString() : n.toFixed(2); }
 
 function buildRow(r, rank){
   const top = rank <= 25 ? '<span class="badge-top">TOP 25</span>' : '';
   return `<tr>
     <td class="left rank">${rank}</td>
-    <td class="left"><span class="username">${r.username}</span>${top}</td>
+    <td class="left"><span class="username">${esc(r.username)}</span>${top}</td>
     <td class="pts">${fmt(r.restock_pts)}<span class="breakdown">${r.r_30} / ${r.r_60} / ${r.r_90}</span></td>
     <td class="pts">${fmt(r.empty_pts)}<span class="breakdown">${r.e_30} / ${r.e_60} / ${r.e_90}</span></td>
     <td class="pts">${fmt(r.plusone_pts)}<span class="breakdown">${fmt(r.p_30)} / ${fmt(r.p_60)} / ${fmt(r.p_90)}</span></td>

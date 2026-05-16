@@ -231,7 +231,7 @@
 </div>
 
 <script>
-const DISCORD_USERNAME = "{{ username }}";
+const DISCORD_USERNAME = {{ username | tojson }};
 let map, markers = [], currentRegion = "VA", currentWindow = "day", currentStore = "all";
 let allData = [];
 let regionsLoaded = false;

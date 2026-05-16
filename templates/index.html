@@ -287,6 +287,9 @@
 const DISCORD_USERNAME = {{ username | tojson }};
 const MAX_POSITION     = {{ max_position }};
 
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+function safeHref(url){return url && /^https?:\/\//i.test(url.trim()) ? url.trim() : '#';}
+
 let REGIONS = [];
 const STATE_GROUPS = [
   { label: "VA", codes: ["VA", "CVA", "TW", "WVA"] },
@@ -443,7 +446,7 @@ function renderSidebar(data){
     const safeStore=store.replace(/'/g,"\\'");
     html+=`<div class="store-group">
       <button class="store-group-toggle" onclick="toggleSidebarGroup('${safeStore}')">
-        <span class="sg-chevron${isOpen?' open':''}">&#9654;</span>${store}
+        <span class="sg-chevron${isOpen?' open':''}">&#9654;</span>${esc(store)}
         <span class="sg-count">${checked}/${items.length}</span>
         <span class="sg-actions">
           <button class="sg-btn" onclick="event.stopPropagation();selectStoreAll('${safeStore}')">All</button>
@@ -454,10 +457,10 @@ function renderSidebar(data){
     items.forEach(item=>{
       const compoundKey=`${store}||${item.location}`;
       const chk=selectedLocs.has(compoundKey);
-      const hasLink=item.link&&item.link.trim();
-      const lbl=hasLink
-        ?`<a class="loc-link has-link" href="${item.link}" target="_blank" rel="noopener">${item.location}</a>`
-        :`<span class="loc-link">${item.location}</span>`;
+      const href=safeHref(item.link);
+      const lbl=href!=='#'
+        ?`<a class="loc-link has-link" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(item.location)}</a>`
+        :`<span class="loc-link">${esc(item.location)}</span>`;
       html+=`<label class="loc-item"><input type="checkbox" ${chk?'checked':''} onchange="toggleLocation('${compoundKey.replace(/'/g,"\\'")}',this.checked)">${lbl}</label>`;
     });
     html+=`</div></div>`;

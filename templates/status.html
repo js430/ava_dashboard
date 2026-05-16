@@ -187,6 +187,8 @@
 const DISCORD_USERNAME = {{ username | tojson }};
 let allRows = [];
 let activeStore = 'all';
+
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 let sortKey = 'time';
 let sortAsc = false;
 
@@ -258,8 +260,8 @@ function render(rows) {
   }
   body.innerHTML = rows.map(r => `
     <tr>
-      <td class="store-name">${r.store}</td>
-      <td class="city-name">${r.city}</td>
+      <td class="store-name">${esc(r.store)}</td>
+      <td class="city-name">${esc(r.city)}</td>
       <td>${badge(r.status)}</td>
       <td class="time-cell">${fullTime(r.time)}</td>
     </tr>`).join('');

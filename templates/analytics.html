@@ -272,6 +272,8 @@
 </div>
 
 <script>
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+
 // ---- State ----
 let currentRange = 7;
 let currentMetric = 'total';
@@ -326,7 +328,7 @@ function renderUserList(users) {
     return `<div class="user-row ${selectedUsers.has(u.user_id) ? 'selected' : ''}" onclick="toggleUser('${u.user_id}', this)">
       <input type="checkbox" class="user-checkbox" ${checked} onclick="event.stopPropagation(); toggleUser('${u.user_id}', this.closest('.user-row'))">
       <div class="user-color" style="background:${color}"></div>
-      <div class="user-name" title="${u.username}">${u.username}</div>
+      <div class="user-name" title="${esc(u.username)}">${esc(u.username)}</div>
       <div class="user-flags">${flags}</div>
       <div class="user-pts">${u.total_pts.toFixed(1)}pts</div>
       <button class="detail-btn" onclick="event.stopPropagation(); showDetail('${u.user_id}')">detail</button>
@@ -489,12 +491,12 @@ function showDetail(userId) {
     const ptsCls = pts >= 1 ? 'pts-high' : pts >= 0.5 ? 'pts-med' : 'pts-low';
     const flagStr = r.flag_reasons?.join(', ') || '';
     return `<tr class="${r.flagged ? 'flagged-row' : ''}">
-      <td>${r.date}</td>
-      <td>${r.type}</td>
-      <td>${r.store || '—'}</td>
-      <td>${r.location || '—'}</td>
+      <td>${esc(r.date)}</td>
+      <td>${esc(r.type)}</td>
+      <td>${esc(r.store || '—')}</td>
+      <td>${esc(r.location || '—')}</td>
       <td><span class="pts-pill ${ptsCls}">${pts.toFixed(2)}</span></td>
-      <td style="font-size: 12px;color:#999;">${flagStr}</td>
+      <td style="font-size: 12px;color:#999;">${esc(flagStr)}</td>
     </tr>`;
   }).join('');
 

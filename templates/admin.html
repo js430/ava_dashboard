@@ -167,6 +167,8 @@
 <script>
 let allSessions = [];
 
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+
 function timeAgo(dateStr){
   const diff = (Date.now() - new Date(dateStr).getTime()) / 1000;
   if(diff < 60) return `${Math.floor(diff)}s ago`;
@@ -217,14 +219,14 @@ function renderTable(sessions){
   body.innerHTML = sessions.map(s=>{
     const isNew = !seen.has(s.user_id);
     seen.add(s.user_id);
-    const initials = s.username.slice(0,2).toUpperCase();
+    const initials = esc(s.username.slice(0,2).toUpperCase());
     return `<tr>
       <td>
         <div class="user-cell">
           <div class="avatar">${initials}</div>
           <div>
-            <div class="username">${s.username}</div>
-            <div class="user-id">${s.user_id}</div>
+            <div class="username">${esc(s.username)}</div>
+            <div class="user-id">${esc(s.user_id)}</div>
           </div>
         </div>
       </td>
@@ -232,7 +234,7 @@ function renderTable(sessions){
         <div class="time">${formatTime(s.logged_in_at)}</div>
         <div class="time-ago">${timeAgo(s.logged_in_at)}</div>
       </td>
-      <td><span class="ip">${s.ip_address||"—"}</span></td>
+      <td><span class="ip">${esc(s.ip_address||"—")}</span></td>
       <td><span class="badge ${isNew?"badge-new":"badge-repeat"}">${isNew?"First visit":"Repeat"}</span></td>
     </tr>`;
   }).join("");

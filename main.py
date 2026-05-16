@@ -1,6 +1,7 @@
 import os
 import io
 import math
+import secrets
 import logging
 import httpx
 import asyncpg
@@ -14,6 +15,10 @@ from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from anthropic import AsyncAnthropic
 from PIL import Image
 from dotenv import load_dotenv
@@ -28,10 +33,41 @@ logging.basicConfig(
 
 app = FastAPI()
 
+# ---- Rate limiter ----
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# ---- Security headers ----
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        response.headers.setdefault("Permissions-Policy", "geolocation=(), camera=(), microphone=()")
+        response.headers.setdefault("Content-Security-Policy",
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://maps.googleapis.com https://maps.gstatic.com "
+            "https://unpkg.com https://cdnjs.cloudflare.com; "
+            "style-src 'self' 'unsafe-inline' https://unpkg.com; "
+            "img-src 'self' data: blob: https://cdn.discordapp.com https://images.pokemontcg.io "
+            "https://api.scryfall.com https://db.ygoprodeck.com https://www.optcgapi.com "
+            "https://maps.googleapis.com https://maps.gstatic.com https://assets.pokemon.com; "
+            "connect-src 'self' https://maps.googleapis.com; "
+            "font-src 'self' data:; "
+            "frame-ancestors 'none'; frame-src 'none'; object-src 'none'; base-uri 'self';"
+        )
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(
     SessionMiddleware,
     secret_key=os.getenv("SESSION_SECRET"),
-    max_age=60 * 60 * 24  # 24 hour session
+    max_age=60 * 60 * 24,       # 24 hour session
+    https_only=os.getenv("HTTPS_ONLY", "true").lower() != "false",
+    same_site="lax",            # "lax" required for OAuth redirect flow
 )
 
 templates = Jinja2Templates(directory="templates")
@@ -75,6 +111,7 @@ STATE_LABELS = {
     "TW":   "Tidewater",
     "WVA":  "Western VA",
 }
+VALID_REGIONS = frozenset(STATE_LABELS.keys())
 
 # ---- Card Scanner Constants ----
 MAX_IMAGE_BYTES = 3 * 1024 * 1024 + 500_000  # ~3.5 MB raw
@@ -585,7 +622,8 @@ def _get_max_weeks(roles: list[str]) -> int:
 
 
 DISCORD_API = "https://discord.com/api/v10"
-DISCORD_OAUTH_URL = (
+# Base OAuth URL — state is appended dynamically in /login to prevent CSRF
+DISCORD_OAUTH_BASE_URL = (
     f"https://discord.com/oauth2/authorize"
     f"?client_id={DISCORD_CLIENT_ID}"
     f"&redirect_uri={DISCORD_REDIRECT_URI}"
@@ -593,9 +631,18 @@ DISCORD_OAUTH_URL = (
     f"&scope=identify+guilds.members.read"
 )
 
+# Scan endpoint — allowed image MIME types for Claude Vision
+ALLOWED_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
+
+# Region allowlist (derived from STATE_LABELS keys; populated after that dict is defined)
+VALID_REGIONS: frozenset[str] = frozenset()
+
 # ---- DB pool ----
 @app.on_event("startup")
 async def startup():
+    secret = os.getenv("SESSION_SECRET", "")
+    if not secret or len(secret) < 32:
+        raise RuntimeError("SESSION_SECRET env var must be set and at least 32 characters long")
     app.state.db = await asyncpg.create_pool(DATABASE_URL)
 
 @app.on_event("shutdown")
@@ -720,6 +767,7 @@ async def terms_page(request: Request):
     })
 
 @app.post("/accept-terms")
+@limiter.limit("10/minute")
 async def accept_terms(request: Request):
     user = request.session.get("user")
     if not user:
@@ -745,13 +793,21 @@ async def accept_terms(request: Request):
     return JSONResponse({"ok": True})
 
 @app.get("/login")
-async def login():
-    return RedirectResponse(DISCORD_OAUTH_URL)
+async def login(request: Request):
+    state = secrets.token_hex(32)
+    request.session["oauth_state"] = state
+    return RedirectResponse(DISCORD_OAUTH_BASE_URL + f"&state={state}")
 
 @app.get("/callback")
-async def callback(request: Request, code: str = None, error: str = None):
+@limiter.limit("30/minute")
+async def callback(request: Request, code: str = None, error: str = None, state: str = None):
     if error or not code:
         return HTMLResponse("<h3>Access denied.</h3>", status_code=403)
+
+    # Validate OAuth state parameter to prevent CSRF
+    expected_state = request.session.pop("oauth_state", None)
+    if not expected_state or not secrets.compare_digest(state or "", expected_state):
+        return HTMLResponse("<h3>Invalid session state. Please try logging in again.</h3>", status_code=400)
 
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(
@@ -1467,10 +1523,16 @@ async def get_invite_network(request: Request, user=Depends(get_current_user)):
 
 
 @app.post("/api/scan")
+@limiter.limit("10/minute")
 async def scan_card(
     request: Request,
     user=Depends(get_current_user)
 ):
+    # Enforce body size limit before reading
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Request body too large (max 10 MB)")
+
     body = await request.json()
     image_data = body.get("image")
     if not image_data:
@@ -1482,6 +1544,10 @@ async def scan_card(
         media_type = header.split(";")[0].split(":")[1] if ":" in header else "image/jpeg"
     else:
         media_type = "image/jpeg"
+
+    # Allowlist MIME types accepted by Claude Vision
+    if media_type not in ALLOWED_MEDIA_TYPES:
+        raise HTTPException(status_code=400, detail="Unsupported image type")
 
     try:
         image_bytes = base64.b64decode(image_data)
@@ -1499,7 +1565,7 @@ async def scan_card(
         return JSONResponse({"error": "Could not read the card — try a clearer photo."}, status_code=422)
     except Exception as e:
         logger.exception("Claude API error during card scan")
-        return JSONResponse({"error": f"Claude API error: {str(e)}"}, status_code=500)
+        return JSONResponse({"error": "Failed to process image — please try again."}, status_code=500)
 
     game        = (parsed.get("game") or "other").lower().strip()
     card_name   = parsed.get("name")
@@ -1641,6 +1707,8 @@ async def get_locations(
     region: str = "VA",
     user=Depends(get_current_user)
 ):
+    if region not in VALID_REGIONS:
+        raise HTTPException(status_code=400, detail="Invalid region")
     state = region
 
     async with request.app.state.db.acquire() as conn:
@@ -1669,6 +1737,10 @@ async def get_map_data(
     window: str = "day",
     user=Depends(get_current_user)
 ):
+    if region not in VALID_REGIONS:
+        raise HTTPException(status_code=400, detail="Invalid region")
+    if window not in ("day", "week"):
+        window = "day"
     state = region
 
     eastern = ZoneInfo("America/New_York")
@@ -1758,6 +1830,8 @@ async def get_preferences(
     region: str = "VA",
     user=Depends(get_current_user)
 ):
+    if region not in VALID_REGIONS:
+        raise HTTPException(status_code=400, detail="Invalid region")
     async with request.app.state.db.acquire() as conn:
         row = await conn.fetchrow(
             """
@@ -1779,8 +1853,14 @@ async def save_preferences(
     region = body.get("region", "VA")
     selected = body.get("selected", [])
 
+    if region not in VALID_REGIONS:
+        raise HTTPException(status_code=400, detail="Invalid region")
     if not isinstance(selected, list):
         raise HTTPException(status_code=400, detail="Invalid payload")
+    if len(selected) > 500:
+        raise HTTPException(status_code=400, detail="Too many selections")
+    if any(not isinstance(s, str) or len(s) > 300 for s in selected):
+        raise HTTPException(status_code=400, detail="Invalid selection item")
 
     async with request.app.state.db.acquire() as conn:
         await conn.execute(

@@ -303,6 +303,9 @@
 </div>
 
 <script>
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+function safeHref(url){return url && /^https?:\/\//i.test(String(url).trim()) ? String(url).trim() : '#';}
+
 const GAME_LABELS = {
   pokemon: "Pokemon TCG",
   magic: "Magic: The Gathering",
@@ -498,7 +501,7 @@ async function scanImage() {
     addToHistory(data);
   } catch(e) {
     console.error("Display error:", e);
-    errorCard.textContent = `Display error: ${e.message}`;
+    errorCard.textContent = "Failed to display result — please try again.";
     errorCard.classList.add("visible");
   }
 }
@@ -546,9 +549,9 @@ function displayResult(data) {
   fields.innerHTML = "";
   (data.fields || []).forEach(f => {
     if (f.link) {
-      fields.innerHTML += `<div class="field-row"><span class="field-label">${f.label}</span><span class="field-value"><a href="${f.value}" target="_blank" rel="noopener">View on TCGPlayer</a></span></div>`;
+      fields.innerHTML += `<div class="field-row"><span class="field-label">${esc(f.label)}</span><span class="field-value"><a href="${esc(safeHref(f.value))}" target="_blank" rel="noopener noreferrer">View on TCGPlayer</a></span></div>`;
     } else {
-      fields.innerHTML += `<div class="field-row"><span class="field-label">${f.label}</span><span class="field-value">${f.value}</span></div>`;
+      fields.innerHTML += `<div class="field-row"><span class="field-label">${esc(f.label)}</span><span class="field-value">${esc(f.value)}</span></div>`;
     }
   });
 
@@ -623,7 +626,7 @@ function selectVariant(idx) {
   // Update fields to variant's fields
   const fields = document.getElementById("resultFields");
   fields.innerHTML = (v.fields || []).map(f =>
-    `<div class="field-row"><span class="field-label">${f.label}</span><span class="field-value">${f.value}</span></div>`
+    `<div class="field-row"><span class="field-label">${esc(f.label)}</span><span class="field-value">${esc(f.value)}</span></div>`
   ).join("");
 
   // Update condition prices for this variant
@@ -639,9 +642,9 @@ function selectVariant(idx) {
   // Show variant detail area
   const detail = document.getElementById("variantDetail");
   if (v.market_price) {
-    detail.innerHTML = `<div style="font-size:12px;color:#71717a;">Selected: <span style="color:#d4d4d8;font-weight:600;">${v.name}</span> &middot; <span style="color:#22c55e;font-weight:600;">${v.price}</span></div>`;
+    detail.innerHTML = `<div style="font-size:12px;color:#71717a;">Selected: <span style="color:#d4d4d8;font-weight:600;">${esc(v.name)}</span> &middot; <span style="color:#22c55e;font-weight:600;">${esc(v.price)}</span></div>`;
   } else {
-    detail.innerHTML = `<div style="font-size:12px;color:#71717a;">Selected: <span style="color:#d4d4d8;font-weight:600;">${v.name}</span> &middot; <span style="color:#52525b;">No price data</span></div>`;
+    detail.innerHTML = `<div style="font-size:12px;color:#71717a;">Selected: <span style="color:#d4d4d8;font-weight:600;">${esc(v.name)}</span> &middot; <span style="color:#52525b;">No price data</span></div>`;
   }
 }
 
@@ -694,7 +697,7 @@ function renderHistory() {
     return `<div class="history-item" onclick="showHistoryItem(${i})">
       ${thumbHtml}
       <div class="history-info">
-        <div class="history-name">${h.name || "Unknown"}</div>
+        <div class="history-name">${esc(h.name || "Unknown")}</div>
         <div class="history-meta">${gameLabel} &middot; ${timeAgo(h.time)}</div>
       </div>
       <div class="history-price">${priceStr}</div>
