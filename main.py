@@ -634,9 +634,6 @@ DISCORD_OAUTH_BASE_URL = (
 # Scan endpoint — allowed image MIME types for Claude Vision
 ALLOWED_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
 
-# Region allowlist (derived from STATE_LABELS keys; populated after that dict is defined)
-VALID_REGIONS: frozenset[str] = frozenset()
-
 # ---- DB pool ----
 @app.on_event("startup")
 async def startup():
