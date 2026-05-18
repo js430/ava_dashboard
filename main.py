@@ -1,6 +1,8 @@
 import os
 import io
 import math
+import hmac
+import hashlib
 import secrets
 import logging
 import httpx
@@ -634,6 +636,29 @@ DISCORD_OAUTH_BASE_URL = (
 # Scan endpoint — allowed image MIME types for Claude Vision
 ALLOWED_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
 
+# ---- OAuth state helpers (stateless HMAC — no session cookie required) ----
+# This avoids browser SameSite/ITP issues where the session cookie is not sent
+# after a cross-site OAuth redirect round-trip.
+def _oauth_secret() -> bytes:
+    return os.getenv("SESSION_SECRET", "").encode()
+
+def make_oauth_state() -> str:
+    """Return a signed state token: '<nonce>.<hmac-sha256-hex>'."""
+    nonce = secrets.token_hex(24)
+    sig = hmac.new(_oauth_secret(), nonce.encode(), hashlib.sha256).hexdigest()
+    return f"{nonce}.{sig}"
+
+def verify_oauth_state(state: str | None) -> bool:
+    """Return True iff *state* carries a valid HMAC signature."""
+    if not state or "." not in state:
+        return False
+    try:
+        nonce, sig = state.rsplit(".", 1)
+        expected = hmac.new(_oauth_secret(), nonce.encode(), hashlib.sha256).hexdigest()
+        return secrets.compare_digest(sig, expected)
+    except Exception:
+        return False
+
 # ---- DB pool ----
 @app.on_event("startup")
 async def startup():
@@ -791,8 +816,7 @@ async def accept_terms(request: Request):
 
 @app.get("/login")
 async def login(request: Request):
-    state = secrets.token_hex(32)
-    request.session["oauth_state"] = state
+    state = make_oauth_state()
     return RedirectResponse(DISCORD_OAUTH_BASE_URL + f"&state={state}")
 
 @app.get("/callback")
@@ -801,9 +825,10 @@ async def callback(request: Request, code: str = None, error: str = None, state:
     if error or not code:
         return HTMLResponse("<h3>Access denied.</h3>", status_code=403)
 
-    # Validate OAuth state parameter to prevent CSRF
-    expected_state = request.session.pop("oauth_state", None)
-    if not expected_state or not secrets.compare_digest(state or "", expected_state):
+    # Validate OAuth state parameter to prevent CSRF.
+    # Uses a stateless HMAC signature so no session cookie is required —
+    # avoids browser SameSite/ITP issues with the cross-site OAuth round-trip.
+    if not verify_oauth_state(state):
         return HTMLResponse("<h3>Invalid session state. Please try logging in again.</h3>", status_code=400)
 
     async with httpx.AsyncClient() as client:
