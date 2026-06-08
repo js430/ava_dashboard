@@ -67,7 +67,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(
     SessionMiddleware,
     secret_key=os.getenv("SESSION_SECRET"),
-    max_age=60 * 60 * 24,       # 24 hour session
+    max_age=60 * 60 * 24 * 7,   # 7 day session
     https_only=os.getenv("HTTPS_ONLY", "true").lower() != "false",
     same_site="lax",            # "lax" required for OAuth redirect flow
 )
