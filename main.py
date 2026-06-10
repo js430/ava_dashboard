@@ -33,17 +33,22 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s"
 )
 
-# Number of trusted reverse-proxy hops in front of the app (Railway = 1). The
-# real client IP is taken this many hops from the right of X-Forwarded-For;
-# anything further left can be forged by the client and must not be trusted.
+# Number of trusted reverse-proxy hops in front of the app, used only for the
+# X-Forwarded-For fallback path. On Railway the real client IP comes from
+# X-Envoy-External-Address (a single trusted value set by Railway's Envoy edge,
+# not client-spoofable), so this rarely applies in production.
 TRUSTED_PROXY_HOPS = max(1, int(os.getenv("TRUSTED_PROXY_HOPS", "1")))
 
 def get_real_ip(request: Request) -> str:
     """Best-effort real client IP, resistant to X-Forwarded-For spoofing.
 
-    Only the hop added by our own proxy layer(s) is trusted; entries to the
-    left of it are attacker-controllable and ignored.
+    Prefers X-Envoy-External-Address (set by Railway's edge to the true external
+    client IP). Falls back to the trusted-hop X-Forwarded-For entry for non-Envoy
+    deployments; entries left of that hop are attacker-controllable and ignored.
     """
+    envoy_ip = request.headers.get("X-Envoy-External-Address")
+    if envoy_ip and envoy_ip.strip():
+        return envoy_ip.strip()
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
         parts = [p.strip() for p in forwarded_for.split(",") if p.strip()]
