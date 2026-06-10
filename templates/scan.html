@@ -535,7 +535,7 @@ function displayResult(data) {
   // Badges
   const badges = document.getElementById("resultBadges");
   badges.innerHTML = "";
-  const addBadge = (cls, text) => { badges.innerHTML += `<span class="badge ${cls}">${text}</span>`; };
+  const addBadge = (cls, text) => { badges.innerHTML += `<span class="badge ${cls}">${esc(text)}</span>`; };
   addBadge("badge-game", (GAME_LABELS[data.game] || data.game).split(":")[0]);
   if (data.found) addBadge("badge-found", "Match Found");
   else addBadge("badge-not-found", "No DB Match");
@@ -563,14 +563,14 @@ function displayResult(data) {
     variantTabs.innerHTML = currentVariants.map((v, i) => {
       const isSelected = v.selected ? " active" : "";
       const imgHtml = v.image
-        ? `<img class="variant-tab-img" src="${v.image}" alt="">`
+        ? `<img class="variant-tab-img" src="${esc(safeHref(v.image))}" alt="">`
         : `<div class="variant-tab-img" style="display:flex;align-items:center;justify-content:center;font-size: 12px;color:#52525b;">—</div>`;
       return `<div class="variant-tab${isSelected}" onclick="selectVariant(${i})">
         ${imgHtml}
         <div class="variant-tab-info">
-          <div class="variant-tab-name">${v.name}</div>
-          <div class="variant-tab-price">${v.price}</div>
-          <div class="variant-tab-rarity">${v.rarity || ""}</div>
+          <div class="variant-tab-name">${esc(v.name)}</div>
+          <div class="variant-tab-price">${esc(v.price)}</div>
+          <div class="variant-tab-rarity">${esc(v.rarity || "")}</div>
         </div>
       </div>`;
     }).join("");
@@ -690,9 +690,9 @@ function renderHistory() {
   section.style.display = "block";
   list.innerHTML = scanHistory.map((h, i) => {
     const priceStr = h.price ? `$${h.price.toFixed(2)}` : "—";
-    const gameLabel = (GAME_LABELS[h.game] || h.game).split(":")[0];
+    const gameLabel = esc((GAME_LABELS[h.game] || h.game).split(":")[0]);
     const thumbHtml = h.image
-      ? `<img class="history-thumb" src="${h.image}" alt="">`
+      ? `<img class="history-thumb" src="${esc(safeHref(h.image))}" alt="">`
       : `<div class="history-thumb" style="display:flex;align-items:center;justify-content:center;background:#27272a;font-size: 12px;color:#52525b;">${gameLabel}</div>`;
     return `<div class="history-item" onclick="showHistoryItem(${i})">
       ${thumbHtml}

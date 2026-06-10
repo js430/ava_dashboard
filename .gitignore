@@ -1,0 +1,19 @@
+# Secrets / environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Editor / OS / tooling
+.claude/
+.DS_Store
+NUL
+
+# Logs
+*.log

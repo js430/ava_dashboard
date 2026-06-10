@@ -11,6 +11,7 @@ import re
 import json
 import base64
 from datetime import datetime, timedelta
+from contextlib import asynccontextmanager
 from zoneinfo import ZoneInfo
 from collections import defaultdict
 from fastapi import FastAPI, Request, HTTPException, Depends
@@ -20,7 +21,6 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 from anthropic import AsyncAnthropic
 from PIL import Image
 from dotenv import load_dotenv
@@ -33,10 +33,43 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s"
 )
 
-app = FastAPI()
+# Number of trusted reverse-proxy hops in front of the app (Railway = 1). The
+# real client IP is taken this many hops from the right of X-Forwarded-For;
+# anything further left can be forged by the client and must not be trusted.
+TRUSTED_PROXY_HOPS = max(1, int(os.getenv("TRUSTED_PROXY_HOPS", "1")))
+
+def get_real_ip(request: Request) -> str:
+    """Best-effort real client IP, resistant to X-Forwarded-For spoofing.
+
+    Only the hop added by our own proxy layer(s) is trusted; entries to the
+    left of it are attacker-controllable and ignored.
+    """
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        parts = [p.strip() for p in forwarded_for.split(",") if p.strip()]
+        if parts:
+            idx = max(0, len(parts) - TRUSTED_PROXY_HOPS)
+            return parts[idx]
+    return request.client.host if request.client else "unknown"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    secret = os.getenv("SESSION_SECRET", "")
+    if not secret or len(secret) < 32:
+        raise RuntimeError("SESSION_SECRET env var must be set and at least 32 characters long")
+    app.state.db = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+    try:
+        yield
+    finally:
+        await app.state.db.close()
+
+
+app = FastAPI(lifespan=lifespan)
 
 # ---- Rate limiter ----
-limiter = Limiter(key_func=get_remote_address)
+# Key on the trusted client IP (not the spoofable left-most XFF entry).
+limiter = Limiter(key_func=get_real_ip)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -84,6 +117,8 @@ REQUIRED_ROLE_IDS        = {r.strip() for r in os.getenv("REQUIRED_ROLE_ID", "")
 DENY_ROLE_IDS            = {r.strip() for r in os.getenv("DENY_ROLE_IDS", "").split(",") if r.strip()}
 GOOGLE_MAPS_API_KEY      = os.getenv("GOOGLE_MAPS_API_KEY", "")
 ANTHROPIC_API_KEY        = os.getenv("ANTHROPIC_API_KEY", "")
+# Reused across requests instead of constructing a client per scan.
+anthropic_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 ACTIVE_INFORMANT_ROLE_ID = os.getenv("ACTIVE_INFORMANT_ROLE_ID", "")
 ADMIN_USER_IDS           = {
     int(uid) for uid in os.getenv("ADMIN_USER_IDS", "").split(",") if uid.strip()
@@ -614,15 +649,6 @@ def _build_card_result(game: str, card_name: str, card_number: str | None, card_
     return result
 
 
-def _get_max_weeks(roles: list[str]) -> int:
-    """Return the maximum lookback weeks for a user based on their Discord roles."""
-    best = 1  # default minimum for anyone who passes role check
-    for role_id in roles:
-        if role_id in LOOKBACK_ROLE_WEEKS:
-            best = max(best, LOOKBACK_ROLE_WEEKS[role_id])
-    return best
-
-
 DISCORD_API = "https://discord.com/api/v10"
 # Base OAuth URL — state is appended dynamically in /login to prevent CSRF
 DISCORD_OAUTH_BASE_URL = (
@@ -659,25 +685,7 @@ def verify_oauth_state(state: str | None) -> bool:
     except Exception:
         return False
 
-# ---- DB pool ----
-@app.on_event("startup")
-async def startup():
-    secret = os.getenv("SESSION_SECRET", "")
-    if not secret or len(secret) < 32:
-        raise RuntimeError("SESSION_SECRET env var must be set and at least 32 characters long")
-    app.state.db = await asyncpg.create_pool(DATABASE_URL)
-
-@app.on_event("shutdown")
-async def shutdown():
-    await app.state.db.close()
-
 # ---- Helpers ----
-def get_real_ip(request: Request) -> str:
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    return request.client.host
-
 def get_current_user(request: Request):
     user = request.session.get("user")
     if not user:
@@ -879,7 +887,7 @@ async def callback(request: Request, code: str = None, error: str = None, state:
                 user["username"],
                 ip_address
             )
-        logger.info(f"Dashboard login: {user['username']} ({user['id']}) from {request.client.host}")
+        logger.info(f"Dashboard login: {user['username']} ({user['id']}) from {ip_address}")
     except Exception as e:
         logger.error(f"Failed to log dashboard session: {e}")
 
@@ -1576,13 +1584,11 @@ async def scan_card(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid base64 image")
 
-    if not ANTHROPIC_API_KEY:
+    if anthropic_client is None:
         raise HTTPException(status_code=500, detail="Anthropic API key not configured")
 
-    claude_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-
     try:
-        parsed = await _claude_identify(claude_client, image_bytes, media_type)
+        parsed = await _claude_identify(anthropic_client, image_bytes, media_type)
     except json.JSONDecodeError:
         return JSONResponse({"error": "Could not read the card — try a clearer photo."}, status_code=422)
     except Exception as e:
