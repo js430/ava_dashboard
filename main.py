@@ -33,28 +33,22 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s"
 )
 
-# Number of trusted reverse-proxy hops in front of the app, used only for the
-# X-Forwarded-For fallback path. On Railway the real client IP comes from
-# X-Envoy-External-Address (a single trusted value set by Railway's Envoy edge,
-# not client-spoofable), so this rarely applies in production.
-TRUSTED_PROXY_HOPS = max(1, int(os.getenv("TRUSTED_PROXY_HOPS", "1")))
-
 def get_real_ip(request: Request) -> str:
-    """Best-effort real client IP, resistant to X-Forwarded-For spoofing.
+    """Real client IP behind Railway's proxy.
 
-    Prefers X-Envoy-External-Address (set by Railway's edge to the true external
-    client IP). Falls back to the trusted-hop X-Forwarded-For entry for non-Envoy
-    deployments; entries left of that hop are attacker-controllable and ignored.
+    Railway's edge sets X-Real-IP to the true client address (it matches the
+    left-most X-Forwarded-For entry). Both are populated by the edge from the
+    actual connection, so a client cannot forge them past it. Fall back to the
+    left-most X-Forwarded-For entry, then the socket peer.
     """
-    envoy_ip = request.headers.get("X-Envoy-External-Address")
-    if envoy_ip and envoy_ip.strip():
-        return envoy_ip.strip()
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip and real_ip.strip():
+        return real_ip.strip()
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
         parts = [p.strip() for p in forwarded_for.split(",") if p.strip()]
         if parts:
-            idx = max(0, len(parts) - TRUSTED_PROXY_HOPS)
-            return parts[idx]
+            return parts[0]
     return request.client.host if request.client else "unknown"
 
 
@@ -904,25 +898,6 @@ async def logout(request: Request):
     return RedirectResponse("/login")
 
 # ---- Admin ----
-
-@app.get("/debug/ip")
-async def debug_ip(request: Request, user=Depends(get_current_user)):
-    """TEMPORARY diagnostic: dump forwarding headers so we can identify which
-    one carries the real client IP behind Railway's proxy chain. Admin-only."""
-    if int(user["id"]) not in ADMIN_USER_IDS:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    interesting = [
-        "x-forwarded-for", "x-envoy-external-address", "x-real-ip",
-        "cf-connecting-ip", "true-client-ip", "x-client-ip",
-        "x-forwarded-host", "x-forwarded-proto", "forwarded",
-    ]
-    return JSONResponse({
-        "computed_get_real_ip": get_real_ip(request),
-        "request_client_host": request.client.host if request.client else None,
-        "headers": {k: request.headers.get(k) for k in interesting},
-        "all_header_names": sorted(request.headers.keys()),
-    }, headers={"Cache-Control": "no-store"})
-
 
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request, user=Depends(get_current_user)):
