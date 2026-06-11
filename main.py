@@ -905,6 +905,25 @@ async def logout(request: Request):
 
 # ---- Admin ----
 
+@app.get("/debug/ip")
+async def debug_ip(request: Request, user=Depends(get_current_user)):
+    """TEMPORARY diagnostic: dump forwarding headers so we can identify which
+    one carries the real client IP behind Railway's proxy chain. Admin-only."""
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    interesting = [
+        "x-forwarded-for", "x-envoy-external-address", "x-real-ip",
+        "cf-connecting-ip", "true-client-ip", "x-client-ip",
+        "x-forwarded-host", "x-forwarded-proto", "forwarded",
+    ]
+    return JSONResponse({
+        "computed_get_real_ip": get_real_ip(request),
+        "request_client_host": request.client.host if request.client else None,
+        "headers": {k: request.headers.get(k) for k in interesting},
+        "all_header_names": sorted(request.headers.keys()),
+    }, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request, user=Depends(get_current_user)):
     if int(user["id"]) not in ADMIN_USER_IDS:
