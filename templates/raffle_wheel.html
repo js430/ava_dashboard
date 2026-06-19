@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%23fff' stroke='%23111' stroke-width='2'/><path d='M2 16a14 14 0 0 1 28 0z' fill='%23ee1515'/><path d='M2 16h28' stroke='%23111' stroke-width='3'/><circle cx='16' cy='16' r='5' fill='%23fff' stroke='%23111' stroke-width='3'/></svg>">
+<script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Raffle Wheel — Restock Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; position: relative; }
+  .header::after { content:""; position:absolute; left:0; right:0; bottom:-1px; height:3px; background: linear-gradient(90deg,#ee1515 0%,#f4a92e 34%,#5865F2 67%,#8b5cf6 100%); }
+  .header-left { display: flex; align-items: center; gap: 12px; }
+  .header-title { font-size: 16px; font-weight: 600; color: #111; display:inline-flex; align-items:center; gap:6px; }
+  .title-emblem { width:18px; height:18px; flex-shrink:0; }
+  .header-sub { font-size: 12px; color: #999; margin-top: 1px; }
+  .nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; }
+  .nav a:hover { background: #f4f4f5; }
+  .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .main { padding: 24px; max-width: 1200px; margin: 0 auto; }
+
+  .toolbar { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 18px; }
+  .toolbar label { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
+  .toolbar select { font-size: 13px; height: 34px; padding: 0 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #111; min-width: 220px; }
+  .stat-pills { display:flex; gap:8px; flex-wrap:wrap; margin-left:auto; }
+  .pill { font-size: 12px; color:#555; background:#f4f4f5; border:1px solid #e4e4e7; border-radius: 20px; padding: 5px 12px; }
+  .pill b { color:#111; font-weight:600; }
+
+  .layout { display: grid; grid-template-columns: 1fr 320px; gap: 18px; align-items: start; }
+
+  .stage { background:#fff; border:1px solid #e4e4e7; border-radius:14px; padding: 20px; display:flex; flex-direction:column; align-items:center; gap:16px; }
+  .wheel-wrap { position: relative; width: 100%; max-width: 460px; aspect-ratio: 1 / 1; }
+  canvas { width: 100%; height: 100%; display:block; }
+  .pointer { position:absolute; top:-2px; left:50%; transform:translateX(-50%); width:0; height:0; border-left:14px solid transparent; border-right:14px solid transparent; border-top:24px solid #ee1515; filter: drop-shadow(0 1px 1px rgba(0,0,0,.3)); z-index:2; }
+  .last-elim { font-size: 13px; color:#888; min-height: 20px; text-align:center; }
+  .last-elim b { color:#ee1515; font-weight:600; }
+
+  .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content:center; }
+  .btn { font-size: 14px; font-weight:600; height: 42px; padding: 0 22px; border-radius: 8px; border:none; cursor:pointer; transition: background .15s, opacity .15s; }
+  .btn-spin { background:#5865F2; color:#fff; }
+  .btn-spin:hover { background:#4752d4; }
+  .btn-spin:disabled { opacity:.5; cursor:not-allowed; }
+  .btn-ghost { background:#f4f4f5; color:#333; border:1px solid #ddd; height:42px; }
+  .btn-ghost:hover { background:#ebebec; }
+  .auto-toggle { display:flex; align-items:center; gap:6px; font-size:12px; color:#555; }
+
+  .side { display:flex; flex-direction:column; gap:18px; }
+  .panel { background:#fff; border:1px solid #e4e4e7; border-radius:12px; overflow:hidden; }
+  .panel-head { padding: 10px 14px; border-bottom:1px solid #f0f0f0; font-size:12px; font-weight:600; color:#888; text-transform:uppercase; letter-spacing:.05em; display:flex; justify-content:space-between; }
+  .panel-body { max-height: 320px; overflow-y:auto; }
+  .row { display:flex; align-items:center; gap:8px; padding:7px 14px; font-size:13px; border-bottom:1px solid #f7f7f7; }
+  .row:last-child { border-bottom:none; }
+  .dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
+  .row .name { color:#111; font-weight:500; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .row .cnt { color:#999; font-size:12px; }
+  .row.out .name { color:#aaa; text-decoration: line-through; }
+  .rank { width:20px; color:#aaa; font-size:12px; text-align:right; }
+  .empty { padding: 20px; text-align:center; color:#aaa; font-size:12px; }
+
+  .winner-banner { display:none; background: linear-gradient(90deg,#fef9c3,#fde68a); border:1px solid #f5d76e; border-radius:12px; padding:18px 20px; text-align:center; margin-bottom:18px; }
+  .winner-banner.show { display:block; }
+  .winner-banner .wb-label { font-size:12px; font-weight:600; color:#854d0e; text-transform:uppercase; letter-spacing:.08em; }
+  .winner-banner .wb-name { font-size:26px; font-weight:700; color:#713f12; margin-top:4px; }
+  .winner-banner .wb-sub { font-size:12px; color:#92722e; margin-top:4px; }
+
+  @media (max-width: 880px) {
+    .layout { grid-template-columns: 1fr; }
+    .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 14px; }
+    .main { padding: 14px; }
+  }
+  .theme-toggle { display:none; font-size: 16px; background: #f4f4f5; border: 1px solid #ddd; border-radius: 6px; padding: 4px 8px; cursor: pointer; line-height: 1; flex-shrink: 0; }
+  html[data-theme="dark"] { color-scheme: dark; }
+  html[data-theme="dark"] body { background: #111113; color: #f0f0f0; }
+  html[data-theme="dark"] .header { background: #1c1c1f; border-bottom-color: #303033; }
+  html[data-theme="dark"] .header-title { color: #f0f0f0; }
+  html[data-theme="dark"] .nav a { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .nav a:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .toolbar, html[data-theme="dark"] .stage, html[data-theme="dark"] .panel { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .toolbar select { background:#252528; border-color:#383838; color:#f0f0f0; }
+  html[data-theme="dark"] .pill { background:#252528; border-color:#383838; color:#bbb; }
+  html[data-theme="dark"] .pill b { color:#f0f0f0; }
+  html[data-theme="dark"] .btn-ghost { background:#252528; border-color:#383838; color:#ddd; }
+  html[data-theme="dark"] .panel-head { border-bottom-color:#2a2a2d; }
+  html[data-theme="dark"] .row { border-bottom-color:#242427; }
+  html[data-theme="dark"] .row .name { color:#f0f0f0; }
+  html[data-theme="dark"] .last-elim { color:#aaa; }
+  html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <div>
+      <div class="header-title"><svg class="title-emblem" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="#fff" stroke="#111" stroke-width="2"/><path d="M2 16a14 14 0 0 1 28 0z" fill="#ee1515"/><path d="M2 16h28" stroke="#111" stroke-width="3"/><circle cx="16" cy="16" r="5" fill="#fff" stroke="#111" stroke-width="3"/></svg>Raffle Wheel of Death</div>
+      <div class="header-sub">Last entry standing wins</div>
+    </div>
+  </div>
+  <div class="nav">
+    <a href="/">Dashboard</a>
+    <a href="/map">Map</a>
+    <a href="/status">Status</a>
+    <a href="/scan">Scan</a>
+    <a href="/admin">Admin</a>
+    <a href="/contributors">Contributors</a>
+    <a href="/invite-network">Network</a>
+    <a href="/raffle-wheel" class="active">Raffle</a>
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
+    <a href="/logout">Log out</a>
+  </div>
+</div>
+
+<div class="main">
+
+  <div class="toolbar">
+    <label for="raffleSelect">Raffle</label>
+    <select id="raffleSelect" onchange="onRaffleChange()"><option value="">Loading…</option></select>
+    <button class="btn-ghost btn" style="height:34px;padding:0 14px;font-size:13px;" onclick="resetWheel()">Reset</button>
+    <div class="stat-pills">
+      <span class="pill">Participants <b id="pillUsers">—</b></span>
+      <span class="pill">Total entries <b id="pillEntries">—</b></span>
+      <span class="pill">Remaining <b id="pillRemain">—</b></span>
+    </div>
+  </div>
+
+  <div class="winner-banner" id="winnerBanner">
+    <div class="wb-label">🏆 Last one standing</div>
+    <div class="wb-name" id="wbName"></div>
+    <div class="wb-sub" id="wbSub"></div>
+  </div>
+
+  <div class="layout">
+    <div class="stage">
+      <div class="wheel-wrap">
+        <div class="pointer"></div>
+        <canvas id="wheel" width="600" height="600"></canvas>
+      </div>
+      <div class="last-elim" id="lastElim">Pick a raffle to begin.</div>
+      <div class="controls">
+        <button class="btn btn-spin" id="spinBtn" onclick="spin()" disabled>Spin</button>
+        <label class="auto-toggle"><input type="checkbox" id="autoChk"> Auto-spin to the end</label>
+      </div>
+    </div>
+
+    <div class="side">
+      <div class="panel">
+        <div class="panel-head"><span>Still in</span><span id="inCount"></span></div>
+        <div class="panel-body" id="inList"><div class="empty">—</div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><span>Finishing order</span><span id="outCount"></span></div>
+        <div class="panel-body" id="outList"><div class="empty">No eliminations yet.</div></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+
+const COLORS = ['#5865F2','#ee1515','#f4a92e','#27ae60','#8b5cf6','#0ea5e9','#e84393','#16a085','#e67e22','#2ecc71','#e74c3c','#3498db','#9b59b6','#f39c12','#1abc9c','#d35400','#c0392b','#2980b9'];
+
+let RAFFLE = "";
+let allTickets = [];           // {id,user_id,username}
+let remaining = [];            // ticket ids still in
+let userName = new Map();      // user_id -> username
+let userRemain = new Map();    // user_id -> remaining ticket count
+let userColor = new Map();     // user_id -> color
+let eliminatedOrder = [];      // user_ids in order they were fully knocked out
+let totalEntries = 0, totalUsers = 0;
+let rotation = 0;
+let spinning = false;
+let finished = false;
+
+const canvas = document.getElementById('wheel');
+const ctx = canvas.getContext('2d');
+const TAU = Math.PI * 2;
+const POINTER = -Math.PI / 2;
+
+function activeSegments(){
+  const segs = [];
+  let total = 0;
+  for (const [uid, c] of userRemain) if (c > 0) total += c;
+  if (total === 0) return { segs, total };
+  let a = POINTER;
+  for (const u of orderedActiveUsers()){
+    const c = userRemain.get(u);
+    if (!c) continue;
+    const size = TAU * (c / total);
+    segs.push({ uid: u, start: a, end: a + size, mid: a + size/2, color: userColor.get(u), count: c });
+    a += size;
+  }
+  return { segs, total };
+}
+
+function orderedActiveUsers(){
+  // stable display order: by original users list
+  return baseUserOrder.filter(u => (userRemain.get(u) || 0) > 0);
+}
+let baseUserOrder = [];
+
+function draw(){
+  const W = canvas.width, cx = W/2, cy = W/2, R = W/2 - 6;
+  ctx.clearRect(0,0,W,W);
+  const { segs, total } = activeSegments();
+  if (!segs.length){
+    ctx.beginPath(); ctx.arc(cx,cy,R,0,TAU); ctx.fillStyle = '#ececec'; ctx.fill();
+  }
+  for (const s of segs){
+    ctx.beginPath();
+    ctx.moveTo(cx,cy);
+    ctx.arc(cx, cy, R, s.start + rotation, s.end + rotation);
+    ctx.closePath();
+    ctx.fillStyle = s.color;
+    ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.stroke();
+    const ang = s.mid + rotation;
+    const size = s.end - s.start;
+    if (size > 0.13){
+      ctx.save();
+      ctx.translate(cx + Math.cos(ang)*R*0.62, cy + Math.sin(ang)*R*0.62);
+      ctx.rotate(ang + (Math.cos(ang) < 0 ? Math.PI : 0));
+      ctx.fillStyle = '#fff';
+      ctx.font = '600 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+      ctx.textAlign = Math.cos(ang) < 0 ? 'left' : 'right';
+      ctx.textBaseline = 'middle';
+      const label = userName.get(s.uid) + (s.count > 1 ? ' ×' + s.count : '');
+      const dir = Math.cos(ang) < 0 ? -1 : 1;
+      ctx.fillText(label.length > 18 ? label.slice(0,17)+'…' : label, dir * R*0.30, 0);
+      ctx.restore();
+    }
+  }
+  // hub
+  ctx.beginPath(); ctx.arc(cx,cy,R*0.13,0,TAU);
+  ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = '#111'; ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx,cy,R*0.055,0,TAU); ctx.fillStyle='#ee1515'; ctx.fill();
+}
+
+function easeOutCubic(t){ return 1 - Math.pow(1 - t, 3); }
+
+function animateTo(targetUid, cb){
+  // find target segment from current segments, land a random point inside it under the pointer
+  const { segs } = activeSegments();
+  const seg = segs.find(s => s.uid === targetUid);
+  if (!seg){ cb(); return; }
+  const p = seg.start + 0.15*(seg.end - seg.start) + Math.random()*0.7*(seg.end - seg.start);
+  const target = POINTER - p;
+  const EXTRA = 5;
+  let finalRot = target;
+  while (finalRot < rotation + TAU*EXTRA) finalRot += TAU;
+  const startRot = rotation;
+  const delta = finalRot - startRot;
+  const dur = document.getElementById('autoChk').checked ? 1100 : 3400;
+  const t0 = performance.now();
+  function frame(now){
+    const t = Math.min(1, (now - t0)/dur);
+    rotation = startRot + delta * easeOutCubic(t);
+    draw();
+    if (t < 1) requestAnimationFrame(frame);
+    else { rotation = finalRot % TAU; draw(); cb(); }
+  }
+  requestAnimationFrame(frame);
+}
+
+async function spin(){
+  if (spinning || finished || remaining.length <= 1) return;
+  spinning = true;
+  document.getElementById('spinBtn').disabled = true;
+  let data;
+  try {
+    const resp = await fetch('/api/raffle-wheel/spin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ raffle_id: RAFFLE, remaining })
+    });
+    if (!resp.ok) throw new Error(resp.status);
+    data = await resp.json();
+  } catch(e){
+    document.getElementById('lastElim').textContent = 'Spin failed — try again.';
+    spinning = false; document.getElementById('spinBtn').disabled = false; return;
+  }
+
+  const elimId = data.eliminated;
+  const uid = String(data.user_id);
+  animateTo(uid, () => {
+    // remove one ticket
+    const i = remaining.indexOf(elimId);
+    if (i >= 0) remaining.splice(i, 1);
+    userRemain.set(uid, (userRemain.get(uid) || 1) - 1);
+    const knockedOut = (userRemain.get(uid) || 0) <= 0;
+    if (knockedOut) eliminatedOrder.push(uid);
+    document.getElementById('lastElim').innerHTML =
+      `Eliminated: <b>${esc(data.username)}</b>` + (knockedOut ? ' (out)' : ` — ${userRemain.get(uid)} left`);
+    draw();
+    updateUI();
+    spinning = false;
+
+    if (remaining.length === 1){
+      declareWinner();
+    } else {
+      document.getElementById('spinBtn').disabled = false;
+      if (document.getElementById('autoChk').checked) setTimeout(spin, 550);
+    }
+  });
+}
+
+function declareWinner(){
+  finished = true;
+  const winnerUid = String(allTickets.find(t => t.id === remaining[0]).user_id);
+  const name = userName.get(winnerUid);
+  document.getElementById('wbName').textContent = name;
+  document.getElementById('wbSub').textContent = `Survived ${totalEntries} entries from ${totalUsers} participants`;
+  document.getElementById('winnerBanner').classList.add('show');
+  document.getElementById('spinBtn').disabled = true;
+  document.getElementById('lastElim').innerHTML = `🏆 <b>${esc(name)}</b> wins!`;
+  updateUI();
+}
+
+function finishingOrder(){
+  // 1st = winner (last standing), then most-recently eliminated, …
+  const order = [];
+  const stillIn = orderedActiveUsers();
+  if (finished && stillIn.length === 1) order.push(stillIn[0]);
+  for (let i = eliminatedOrder.length - 1; i >= 0; i--) order.push(eliminatedOrder[i]);
+  return order;
+}
+
+function updateUI(){
+  document.getElementById('pillRemain').textContent = remaining.length;
+  // still-in list
+  const inUsers = orderedActiveUsers();
+  document.getElementById('inCount').textContent = inUsers.length;
+  document.getElementById('inList').innerHTML = inUsers.length ? inUsers.map(u =>
+    `<div class="row"><span class="dot" style="background:${userColor.get(u)}"></span><span class="name">${esc(userName.get(u))}</span><span class="cnt">${userRemain.get(u)} ${userRemain.get(u)===1?'entry':'entries'}</span></div>`
+  ).join('') : '<div class="empty">None.</div>';
+  // finishing order
+  const fo = finishingOrder();
+  document.getElementById('outCount').textContent = fo.length;
+  document.getElementById('outList').innerHTML = fo.length ? fo.map((u,i) =>
+    `<div class="row${i>0?' out':''}"><span class="rank">${i+1}</span><span class="dot" style="background:${userColor.get(u)}"></span><span class="name">${esc(userName.get(u))}</span>${i===0&&finished?'<span class="cnt">🏆</span>':''}</div>`
+  ).join('') : '<div class="empty">No eliminations yet.</div>';
+}
+
+function resetState(){
+  remaining = allTickets.map(t => t.id);
+  userRemain = new Map();
+  eliminatedOrder = [];
+  finished = false;
+  rotation = 0;
+  for (const t of allTickets){
+    userRemain.set(String(t.user_id), (userRemain.get(String(t.user_id)) || 0) + 1);
+  }
+  document.getElementById('winnerBanner').classList.remove('show');
+  document.getElementById('spinBtn').disabled = remaining.length <= 1;
+  document.getElementById('lastElim').textContent = remaining.length <= 1 ? 'Need at least 2 entries.' : 'Ready. Hit spin!';
+  draw();
+  updateUI();
+}
+
+function resetWheel(){ if (allTickets.length) resetState(); }
+
+async function loadEntries(raffleId){
+  document.getElementById('lastElim').textContent = 'Loading entries…';
+  document.getElementById('spinBtn').disabled = true;
+  try {
+    const resp = await fetch('/api/raffle-wheel/entries?raffle_id=' + encodeURIComponent(raffleId));
+    if (!resp.ok) throw new Error(resp.status);
+    const d = await resp.json();
+    allTickets = d.tickets;
+    totalEntries = d.total_entries;
+    totalUsers = d.total_users;
+    userName = new Map();
+    userColor = new Map();
+    baseUserOrder = [];
+    d.users.forEach((u, i) => {
+      userName.set(String(u.user_id), u.username);
+      userColor.set(String(u.user_id), COLORS[i % COLORS.length]);
+      baseUserOrder.push(String(u.user_id));
+    });
+    document.getElementById('pillUsers').textContent = totalUsers;
+    document.getElementById('pillEntries').textContent = totalEntries;
+    resetState();
+  } catch(e){
+    document.getElementById('lastElim').textContent = 'Failed to load entries.';
+  }
+}
+
+function onRaffleChange(){
+  RAFFLE = document.getElementById('raffleSelect').value;
+  if (RAFFLE) loadEntries(RAFFLE);
+}
+
+async function loadRaffles(){
+  try {
+    const resp = await fetch('/api/raffle-wheel/raffles');
+    if (!resp.ok) throw new Error(resp.status);
+    const list = await resp.json();
+    const sel = document.getElementById('raffleSelect');
+    if (!list.length){ sel.innerHTML = '<option value="">No raffles found</option>'; return; }
+    sel.innerHTML = '<option value="">Select a raffle…</option>' + list.map(r =>
+      `<option value="${esc(r.id)}">${esc(r.name)} — ${r.users} ppl / ${r.entries} entries</option>`
+    ).join('');
+  } catch(e){
+    document.getElementById('raffleSelect').innerHTML = '<option value="">Failed to load raffles</option>';
+  }
+}
+
+loadRaffles();
+draw();
+(function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();draw();};upd();})();
+</script>
+</body>
+</html>

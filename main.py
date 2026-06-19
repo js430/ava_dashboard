@@ -943,6 +943,215 @@ async def admin_api(
         for r in rows
     ])
 
+# ---- Raffle Wheel (admin-only) ----
+# The raffles / raffle_entry tables are owned by the bot, so column names are
+# discovered at runtime from information_schema rather than hard-coded. Only
+# names matched against these fixed allowlists are ever interpolated into SQL,
+# so this is not an injection vector.
+_RAFFLE_ID_COLS   = ("id", "raffle_id", "uuid")
+_RAFFLE_NAME_COLS = ("name", "title", "raffle_name", "prize", "description", "label")
+_ENTRY_FK_COLS    = ("raffle_id", "raffle", "raffle_uuid", "raffle_fk")
+_ENTRY_USER_COLS  = ("user_id", "userid", "discord_id", "member_id")
+_ENTRY_NAME_COLS  = ("username", "display_name", "displayname", "user_name", "name")
+_ENTRY_COUNT_COLS = ("entries", "num_entries", "entry_count", "tickets", "ticket_count", "count", "quantity", "amount")
+_ENTRY_PK_COLS    = ("id", "entry_id", "raffle_entry_id")
+
+MAX_WHEEL_TICKETS = 20000  # guard against pathological payloads
+
+async def _table_columns(conn, table: str) -> set[str]:
+    rows = await conn.fetch(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = $1",
+        table,
+    )
+    return {r["column_name"] for r in rows}
+
+def _pick_col(cols: set[str], candidates: tuple[str, ...]) -> str | None:
+    lower = {c.lower(): c for c in cols}
+    for cand in candidates:
+        if cand in lower:
+            return lower[cand]
+    return None
+
+async def _raffle_schema(conn) -> dict:
+    rcols = await _table_columns(conn, "raffles")
+    ecols = await _table_columns(conn, "raffle_entry")
+    if not rcols or not ecols:
+        raise HTTPException(status_code=500, detail="raffles/raffle_entry tables not found")
+    schema = {
+        "rid":    _pick_col(rcols, _RAFFLE_ID_COLS) or "id",
+        "rname":  _pick_col(rcols, _RAFFLE_NAME_COLS),
+        "efk":    _pick_col(ecols, _ENTRY_FK_COLS) or "raffle_id",
+        "euid":   _pick_col(ecols, _ENTRY_USER_COLS) or "user_id",
+        "ename":  _pick_col(ecols, _ENTRY_NAME_COLS),
+        "ecount": _pick_col(ecols, _ENTRY_COUNT_COLS),
+        "epk":    _pick_col(ecols, _ENTRY_PK_COLS),
+    }
+    return schema
+
+async def _load_raffle_entries(conn, raffle_id: str) -> tuple[dict, list[dict], list[dict]]:
+    """Return (raffle_meta, users, tickets) for a raffle, normalized so the
+    front-end is schema-agnostic. Each ticket is one elimination unit."""
+    s = await _raffle_schema(conn)
+    rid, rname = s["rid"], s["rname"]
+    efk, euid, ename, ecount, epk = s["efk"], s["euid"], s["ename"], s["ecount"], s["epk"]
+
+    name_sel = f'r."{rname}"' if rname else "NULL"
+    raffle_row = await conn.fetchrow(
+        f'SELECT r."{rid}" AS id, {name_sel} AS name FROM raffles r WHERE r."{rid}"::text = $1',
+        raffle_id,
+    )
+    if raffle_row is None:
+        raise HTTPException(status_code=404, detail="Raffle not found")
+    raffle_meta = {
+        "id": str(raffle_row["id"]),
+        "name": raffle_row["name"] or f"Raffle #{raffle_row['id']}",
+    }
+
+    name_col = f'e."{ename}"' if ename else "NULL"
+    order_by = f' ORDER BY e."{euid}"' + (f', e."{epk}"' if epk else "")
+    rows = await conn.fetch(
+        f'SELECT e."{euid}" AS uid, {name_col} AS uname'
+        + (f', e."{ecount}" AS cnt' if ecount else "")
+        + (f', e."{epk}" AS pk' if epk else "")
+        + f' FROM raffle_entry e WHERE e."{efk}"::text = $1'
+        + order_by,
+        raffle_id,
+    )
+
+    users: dict[str, dict] = {}
+    tickets: list[dict] = []
+    for row in rows:
+        uid = str(row["uid"])
+        uname = row["uname"] or f"User {uid}"
+        if ecount:
+            # One row per user with a count column.
+            try:
+                n = int(row["cnt"] or 0)
+            except (TypeError, ValueError):
+                n = 0
+            n = max(0, n)
+            u = users.setdefault(uid, {"user_id": uid, "username": uname, "entries": 0})
+            base = u["entries"]
+            for i in range(n):
+                tickets.append({"id": f"{uid}#{base + i}", "user_id": uid, "username": uname})
+            u["entries"] += n
+        else:
+            # One row per ticket.
+            tid = str(row["pk"]) if epk and row["pk"] is not None else f"{uid}#{len(tickets)}"
+            tickets.append({"id": tid, "user_id": uid, "username": uname})
+            u = users.setdefault(uid, {"user_id": uid, "username": uname, "entries": 0})
+            u["entries"] += 1
+
+    users_list = sorted(users.values(), key=lambda u: (-u["entries"], u["username"].lower()))
+    return raffle_meta, users_list, tickets
+
+
+@app.get("/raffle-wheel", response_class=HTMLResponse)
+async def raffle_wheel_page(request: Request):
+    user = request.session.get("user")
+    if not user:
+        return RedirectResponse("/login")
+    if not await terms_current(request, user):
+        return RedirectResponse("/terms")
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return templates.TemplateResponse("raffle_wheel.html", {
+        "request": request,
+        "username": user["username"],
+        "avatar": user.get("avatar"),
+        "user_id": user["id"],
+        "is_admin": True,
+    })
+
+@app.get("/api/raffle-wheel/raffles")
+async def api_raffle_list(request: Request, user=Depends(get_current_user)):
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    async with request.app.state.db.acquire() as conn:
+        s = await _raffle_schema(conn)
+        rid, rname = s["rid"], s["rname"]
+        efk, euid, ecount = s["efk"], s["euid"], s["ecount"]
+        name_sel = f'r."{rname}"' if rname else "NULL"
+        raffles = await conn.fetch(
+            f'SELECT r."{rid}" AS id, {name_sel} AS name FROM raffles r ORDER BY r."{rid}" DESC'
+        )
+        entry_expr = f'COALESCE(SUM(e."{ecount}"),0)' if ecount else "COUNT(*)"
+        agg = await conn.fetch(
+            f'SELECT e."{efk}"::text AS rid, {entry_expr} AS entries,'
+            f' COUNT(DISTINCT e."{euid}") AS users FROM raffle_entry e GROUP BY e."{efk}"'
+        )
+    agg_map = {a["rid"]: a for a in agg}
+    out = []
+    for r in raffles:
+        key = str(r["id"])
+        a = agg_map.get(key)
+        out.append({
+            "id": key,
+            "name": r["name"] or f"Raffle #{r['id']}",
+            "entries": int(a["entries"]) if a else 0,
+            "users": int(a["users"]) if a else 0,
+        })
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+@app.get("/api/raffle-wheel/entries")
+async def api_raffle_entries(request: Request, raffle_id: str, user=Depends(get_current_user)):
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    async with request.app.state.db.acquire() as conn:
+        raffle_meta, users_list, tickets = await _load_raffle_entries(conn, raffle_id)
+    if len(tickets) > MAX_WHEEL_TICKETS:
+        raise HTTPException(status_code=413, detail="Too many entries to run the wheel")
+    return JSONResponse({
+        "raffle": raffle_meta,
+        "users": users_list,
+        "tickets": tickets,
+        "total_entries": len(tickets),
+        "total_users": len(users_list),
+    }, headers={"Cache-Control": "no-store"})
+
+@app.post("/api/raffle-wheel/spin")
+@limiter.limit("120/minute")
+async def api_raffle_spin(request: Request, user=Depends(get_current_user)):
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    body = await request.json()
+    raffle_id = body.get("raffle_id")
+    remaining = body.get("remaining")
+    if not raffle_id or not isinstance(remaining, list) or not remaining:
+        raise HTTPException(status_code=400, detail="raffle_id and a non-empty remaining list are required")
+    if len(remaining) > MAX_WHEEL_TICKETS:
+        raise HTTPException(status_code=413, detail="Too many entries")
+
+    # Rebuild the authoritative ticket set and validate the submitted remaining
+    # set is a genuine subset — the client cannot invent or duplicate tickets.
+    async with request.app.state.db.acquire() as conn:
+        _, _, tickets = await _load_raffle_entries(conn, str(raffle_id))
+    owner = {t["id"]: t for t in tickets}
+    seen = set()
+    for tid in remaining:
+        if not isinstance(tid, str) or tid not in owner or tid in seen:
+            raise HTTPException(status_code=400, detail="Invalid remaining ticket set")
+        seen.add(tid)
+
+    if len(remaining) == 1:
+        winner = owner[remaining[0]]
+        return JSONResponse({"winner": True, "ticket": remaining[0],
+                             "user_id": winner["user_id"], "username": winner["username"]},
+                            headers={"Cache-Control": "no-store"})
+
+    # Cryptographically secure, unbiased uniform selection over remaining tickets.
+    idx = secrets.randbelow(len(remaining))
+    eliminated = remaining[idx]
+    info = owner[eliminated]
+    return JSONResponse({
+        "winner": False,
+        "eliminated": eliminated,
+        "index": idx,
+        "user_id": info["user_id"],
+        "username": info["username"],
+        "remaining_after": len(remaining) - 1,
+    }, headers={"Cache-Control": "no-store"})
+
 # ---- Analytics ----
 
 @app.get("/analytics", response_class=HTMLResponse)
