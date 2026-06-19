@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%23fff' stroke='%23111' stroke-width='2'/><path d='M2 16a14 14 0 0 1 28 0z' fill='%23ee1515'/><path d='M2 16h28' stroke='%23111' stroke-width='3'/><circle cx='16' cy='16' r='5' fill='%23fff' stroke='%23111' stroke-width='3'/></svg>">
 <script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Card Scanner — Restock Dashboard</title>
@@ -177,6 +178,18 @@
   html[data-theme="light"] .result-thumb-placeholder { background: #f0f0f0; color: #bbb; }
   html[data-theme="light"] .theme-toggle { background: #f4f4f5; border-color: #ddd; color: #555; }
   html[data-theme="light"] .theme-toggle:hover { background: #e8e8ea; }
+  /* ── TCG / Pokémon / One Piece theme ── */
+  .header { position: relative; }
+  .header::after { content:""; position:absolute; left:0; right:0; bottom:-1px; height:3px; z-index:1;
+    background: linear-gradient(90deg,#ee1515 0%,#f4a92e 34%,#5865F2 67%,#8b5cf6 100%); }
+  .header-title { display:inline-flex; align-items:center; gap:6px; }
+  .title-emblem { width:18px; height:18px; flex-shrink:0; }
+  .tcg-spinner { width:20px; height:20px; border-radius:50%; border:2px solid #111; box-sizing:border-box;
+    background:
+      radial-gradient(circle at 50% 50%, #fff 0 24%, #111 24% 33%, rgba(255,255,255,0) 33%),
+      linear-gradient(#ee1515 0 44%, #111 44% 56%, #fff 56% 100%);
+    display:inline-block; vertical-align:middle; animation: tcgspin .9s linear infinite; }
+  @keyframes tcgspin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
@@ -191,7 +204,7 @@
       {% endif %}
     </div>
     <div>
-      <div class="header-title">Card Scanner</div>
+      <div class="header-title"><svg class="title-emblem" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="#fff" stroke="#111" stroke-width="2"/><path d="M2 16a14 14 0 0 1 28 0z" fill="#ee1515"/><path d="M2 16h28" stroke="#111" stroke-width="3"/><circle cx="16" cy="16" r="5" fill="#fff" stroke="#111" stroke-width="3"/></svg>Card Scanner</div>
       <div class="header-user">{{ username }}</div>
     </div>
   </div>
@@ -264,7 +277,7 @@
 
   <!-- Status -->
   <div class="scan-status" id="scanStatus">
-    <span class="spinner"></span> Identifying card...
+    <span class="tcg-spinner" style="width:16px;height:16px;margin-right:6px"></span> Identifying card...
   </div>
 
   <!-- Error -->

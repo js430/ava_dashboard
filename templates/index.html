@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%23fff' stroke='%23111' stroke-width='2'/><path d='M2 16a14 14 0 0 1 28 0z' fill='%23ee1515'/><path d='M2 16h28' stroke='%23111' stroke-width='3'/><circle cx='16' cy='16' r='5' fill='%23fff' stroke='%23111' stroke-width='3'/></svg>">
 <script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Restock Dashboard</title>
@@ -167,6 +168,22 @@
   html[data-theme="dark"] .tip { background: #1c1c1f; border-color: #303033; color: #f0f0f0; }
   html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
   html[data-theme="dark"] .theme-toggle:hover { background: #2e2e32; }
+  /* ── TCG / Pokémon / One Piece theme ── */
+  .header { position: relative; }
+  .header::after { content:""; position:absolute; left:0; right:0; bottom:-1px; height:3px; z-index:1;
+    background: linear-gradient(90deg,#ee1515 0%,#f4a92e 34%,#5865F2 67%,#8b5cf6 100%); }
+  .header-title { display:inline-flex; align-items:center; gap:6px; }
+  .title-emblem { width:18px; height:18px; flex-shrink:0; }
+  .tcg-spinner { width:20px; height:20px; border-radius:50%; border:2px solid #111; box-sizing:border-box;
+    background:
+      radial-gradient(circle at 50% 50%, #fff 0 24%, #111 24% 33%, rgba(255,255,255,0) 33%),
+      linear-gradient(#ee1515 0 44%, #111 44% 56%, #fff 56% 100%);
+    display:inline-block; vertical-align:middle; animation: tcgspin .9s linear infinite; }
+  @keyframes tcgspin { to { transform: rotate(360deg); } }
+  .tcg-empty { display:flex; flex-direction:column; align-items:center; gap:10px; padding:30px 14px; }
+  .tcg-empty svg { width:48px; height:48px; opacity:.9; }
+  .tcg-empty-text { font-size:12px; color:#aaa; max-width:300px; line-height:1.5; text-align:center; }
+  html[data-theme="dark"] .tcg-spinner { border-color:#e8e8e8; }
 </style>
 </head>
 <body>
@@ -181,7 +198,7 @@
       {% endif %}
     </div>
     <div>
-      <div class="header-title">Restock Dashboard</div>
+      <div class="header-title"><svg class="title-emblem" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="#fff" stroke="#111" stroke-width="2"/><path d="M2 16a14 14 0 0 1 28 0z" fill="#ee1515"/><path d="M2 16h28" stroke="#111" stroke-width="3"/><circle cx="16" cy="16" r="5" fill="#fff" stroke="#111" stroke-width="3"/></svg>Restock Dashboard</div>
       <div class="header-user">{{ username }}</div>
     </div>
   </div>
@@ -214,7 +231,7 @@
       </div>
     </div>
     <div class="sidebar-body" id="sidebarBody">
-      <div style="padding:20px;text-align:center;font-size:12px;color:#aaa;">Loading...</div>
+      <div style="padding:20px;text-align:center;font-size:12px;color:#aaa;"><span class="tcg-spinner"></span><div style="margin-top:8px">Loading…</div></div>
     </div>
     <div class="sidebar-footer">
       <button class="save-prefs-btn" id="savePrefsBtn" onclick="savePreferences()">Save Locations</button>
@@ -265,7 +282,7 @@
     <div class="table-card" id="tableCard">
       <canvas class="wm-canvas" id="wmCanvas"></canvas>
       <div class="table-scroll">
-        <table id="ht"><tr><td class="empty">Loading data...</td></tr></table>
+        <table id="ht"><tr><td class="empty"><span class="tcg-spinner"></span><span style="margin-left:8px;vertical-align:middle">Loading…</span></td></tr></table>
       </div>
     </div>
 
@@ -582,7 +599,7 @@ function render(){
   if(maxVal===0) maxVal=1;
 
   const ht=document.getElementById("ht");
-  if(!locs.length){ ht.innerHTML=`<tr><td class="empty">No restocks found — select locations or adjust period.</td></tr>`; drawWatermark(); return; }
+  if(!locs.length){ ht.innerHTML=`<tr><td class="empty"><div class="tcg-empty"><svg viewBox="0 0 48 48" aria-hidden="true"><rect x="8" y="22" width="32" height="17" rx="2" fill="#cf9242" stroke="#7a4f1d" stroke-width="2"/><path d="M8 23a16 9 0 0 1 32 0z" fill="#e3ab53" stroke="#7a4f1d" stroke-width="2"/><rect x="6.5" y="27" width="35" height="5" rx="1" fill="#f4c869" stroke="#7a4f1d" stroke-width="1.5"/><rect x="22" y="29" width="4" height="6" rx="1" fill="#7a4f1d"/></svg><div class="tcg-empty-text">No loot in this haul yet — widen the period or pick more locations.</div></div></td></tr>`; drawWatermark(); return; }
 
   let html="<thead>";
   if(showSlots){
