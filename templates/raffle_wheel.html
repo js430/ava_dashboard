@@ -88,6 +88,11 @@
   html[data-theme="dark"] .row .name { color:#f0f0f0; }
   html[data-theme="dark"] .last-elim { color:#aaa; }
   html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
+  .speed-ctl { display:flex; align-items:center; gap:8px; font-size:12px; color:#555; }
+  .speed-ctl input[type=range] { width:130px; accent-color:#5865F2; }
+  .speed-val { min-width:36px; font-weight:600; color:#111; }
+  html[data-theme="dark"] .auto-toggle, html[data-theme="dark"] .speed-ctl { color:#bbb; }
+  html[data-theme="dark"] .speed-val { color:#f0f0f0; }
 </style>
 </head>
 <body>
@@ -142,6 +147,10 @@
       <div class="controls">
         <button class="btn btn-spin" id="spinBtn" onclick="spin()" disabled>Spin</button>
         <button class="btn btn-ghost" id="randBtn" onclick="randomize()" disabled>🔀 Shuffle positions</button>
+        <label class="speed-ctl">Spin time
+          <input type="range" id="spinSpeed" min="1" max="10" step="0.5" value="3.5" oninput="updateSpeedLabel()">
+          <span class="speed-val" id="spinSpeedLabel">3.5s</span>
+        </label>
         <label class="auto-toggle"><input type="checkbox" id="autoChk"> Auto-spin to the end</label>
       </div>
     </div>
@@ -268,7 +277,7 @@ function animateTo(targetTicket, cb){
   while (finalRot < rotation + TAU*EXTRA) finalRot += TAU;
   const startRot = rotation;
   const delta = finalRot - startRot;
-  const dur = document.getElementById('autoChk').checked ? 1100 : 3400;
+  const dur = Math.max(300, (parseFloat(document.getElementById('spinSpeed').value) || 3.5) * 1000);
   const t0 = performance.now();
   function frame(now){
     const t = Math.min(1, (now - t0)/dur);
@@ -396,6 +405,11 @@ function randomize(){
   if (spinning || finished) return;
   shuffle(wheelOrder);
   draw();
+}
+
+function updateSpeedLabel(){
+  document.getElementById('spinSpeedLabel').textContent =
+    parseFloat(document.getElementById('spinSpeed').value).toFixed(1) + 's';
 }
 
 async function loadEntries(raffleId){
