@@ -141,6 +141,7 @@
       <div class="last-elim" id="lastElim">Pick a raffle to begin.</div>
       <div class="controls">
         <button class="btn btn-spin" id="spinBtn" onclick="spin()" disabled>Spin</button>
+        <button class="btn btn-ghost" id="randBtn" onclick="randomize()" disabled>🔀 Shuffle positions</button>
         <label class="auto-toggle"><input type="checkbox" id="autoChk"> Auto-spin to the end</label>
       </div>
     </div>
@@ -167,6 +168,8 @@ const COLORS = ['#5865F2','#ee1515','#f4a92e','#27ae60','#8b5cf6','#0ea5e9','#e8
 let RAFFLE = "";
 let allTickets = [];           // {id,user_id,username}
 let remaining = [];            // ticket ids still in
+let wheelOrder = [];           // ticket ids in the order drawn around the wheel
+let ticketUser = new Map();    // ticket id -> user_id
 let userName = new Map();      // user_id -> username
 let userRemain = new Map();    // user_id -> remaining ticket count
 let userColor = new Map();     // user_id -> color
@@ -176,25 +179,33 @@ let rotation = 0;
 let spinning = false;
 let finished = false;
 
+function shuffle(arr){
+  for (let i = arr.length - 1; i > 0; i--){
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
 const canvas = document.getElementById('wheel');
 const ctx = canvas.getContext('2d');
 const TAU = Math.PI * 2;
 const POINTER = -Math.PI / 2;
 
-function activeSegments(){
+function wheelSlices(){
+  // One equal-sized slice per remaining ticket, in wheelOrder. A user with
+  // several entries gets several slices, scattered wherever the shuffle put them.
   const segs = [];
-  let total = 0;
-  for (const [uid, c] of userRemain) if (c > 0) total += c;
-  if (total === 0) return { segs, total };
+  const n = wheelOrder.length;
+  if (n === 0) return segs;
+  const size = TAU / n;
   let a = POINTER;
-  for (const u of orderedActiveUsers()){
-    const c = userRemain.get(u);
-    if (!c) continue;
-    const size = TAU * (c / total);
-    segs.push({ uid: u, start: a, end: a + size, mid: a + size/2, color: userColor.get(u), count: c });
+  for (const tid of wheelOrder){
+    const uid = ticketUser.get(tid);
+    segs.push({ tid, uid, start: a, end: a + size, mid: a + size/2, color: userColor.get(uid) });
     a += size;
   }
-  return { segs, total };
+  return segs;
 }
 
 function orderedActiveUsers(){
@@ -206,10 +217,13 @@ let baseUserOrder = [];
 function draw(){
   const W = canvas.width, cx = W/2, cy = W/2, R = W/2 - 6;
   ctx.clearRect(0,0,W,W);
-  const { segs, total } = activeSegments();
+  const segs = wheelSlices();
   if (!segs.length){
     ctx.beginPath(); ctx.arc(cx,cy,R,0,TAU); ctx.fillStyle = '#ececec'; ctx.fill();
   }
+  const sliceSize = segs.length ? TAU / segs.length : 0;
+  const doStroke = sliceSize > 0.022;
+  const doLabel  = sliceSize > 0.14;
   for (const s of segs){
     ctx.beginPath();
     ctx.moveTo(cx,cy);
@@ -217,20 +231,19 @@ function draw(){
     ctx.closePath();
     ctx.fillStyle = s.color;
     ctx.fill();
-    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.stroke();
-    const ang = s.mid + rotation;
-    const size = s.end - s.start;
-    if (size > 0.13){
+    if (doStroke){ ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.stroke(); }
+    if (doLabel){
+      const ang = s.mid + rotation;
       ctx.save();
       ctx.translate(cx + Math.cos(ang)*R*0.62, cy + Math.sin(ang)*R*0.62);
       ctx.rotate(ang + (Math.cos(ang) < 0 ? Math.PI : 0));
       ctx.fillStyle = '#fff';
-      ctx.font = '600 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+      ctx.font = '600 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
       ctx.textAlign = Math.cos(ang) < 0 ? 'left' : 'right';
       ctx.textBaseline = 'middle';
-      const label = userName.get(s.uid) + (s.count > 1 ? ' ×' + s.count : '');
+      const nm = userName.get(s.uid) || '';
       const dir = Math.cos(ang) < 0 ? -1 : 1;
-      ctx.fillText(label.length > 18 ? label.slice(0,17)+'…' : label, dir * R*0.30, 0);
+      ctx.fillText(nm.length > 16 ? nm.slice(0,15)+'…' : nm, dir * R*0.30, 0);
       ctx.restore();
     }
   }
@@ -243,12 +256,12 @@ function draw(){
 
 function easeOutCubic(t){ return 1 - Math.pow(1 - t, 3); }
 
-function animateTo(targetUid, cb){
-  // find target segment from current segments, land a random point inside it under the pointer
-  const { segs } = activeSegments();
-  const seg = segs.find(s => s.uid === targetUid);
+function animateTo(targetTicket, cb){
+  // find the eliminated ticket's slice and land a random point inside it under the pointer
+  const segs = wheelSlices();
+  const seg = segs.find(s => s.tid === targetTicket);
   if (!seg){ cb(); return; }
-  const p = seg.start + 0.15*(seg.end - seg.start) + Math.random()*0.7*(seg.end - seg.start);
+  const p = seg.start + 0.2*(seg.end - seg.start) + Math.random()*0.6*(seg.end - seg.start);
   const target = POINTER - p;
   const EXTRA = 5;
   let finalRot = target;
@@ -271,6 +284,7 @@ async function spin(){
   if (spinning || finished || remaining.length <= 1) return;
   spinning = true;
   document.getElementById('spinBtn').disabled = true;
+  document.getElementById('randBtn').disabled = true;
   let data;
   try {
     const resp = await fetch('/api/raffle-wheel/spin', {
@@ -282,16 +296,21 @@ async function spin(){
     data = await resp.json();
   } catch(e){
     document.getElementById('lastElim').textContent = 'Spin failed — try again.';
-    spinning = false; document.getElementById('spinBtn').disabled = false; return;
+    spinning = false;
+    document.getElementById('spinBtn').disabled = false;
+    document.getElementById('randBtn').disabled = false;
+    return;
   }
 
   const elimId = data.eliminated;
   const uid = String(data.user_id);
   const elimName = userName.get(uid) || data.username || ('User ' + uid);
-  animateTo(uid, () => {
+  animateTo(elimId, () => {
     // remove one ticket
     const i = remaining.indexOf(elimId);
     if (i >= 0) remaining.splice(i, 1);
+    const wi = wheelOrder.indexOf(elimId);
+    if (wi >= 0) wheelOrder.splice(wi, 1);
     userRemain.set(uid, (userRemain.get(uid) || 1) - 1);
     const knockedOut = (userRemain.get(uid) || 0) <= 0;
     if (knockedOut) eliminatedOrder.push(uid);
@@ -305,6 +324,7 @@ async function spin(){
       declareWinner();
     } else {
       document.getElementById('spinBtn').disabled = false;
+      document.getElementById('randBtn').disabled = false;
       if (document.getElementById('autoChk').checked) setTimeout(spin, 550);
     }
   });
@@ -318,6 +338,7 @@ function declareWinner(){
   document.getElementById('wbSub').textContent = `Survived ${totalEntries} entries from ${totalUsers} participants`;
   document.getElementById('winnerBanner').classList.add('show');
   document.getElementById('spinBtn').disabled = true;
+  document.getElementById('randBtn').disabled = true;
   document.getElementById('lastElim').innerHTML = `🏆 <b>${esc(name)}</b> wins!`;
   updateUI();
 }
@@ -349,21 +370,33 @@ function updateUI(){
 
 function resetState(){
   remaining = allTickets.map(t => t.id);
+  ticketUser = new Map();
   userRemain = new Map();
   eliminatedOrder = [];
   finished = false;
   rotation = 0;
   for (const t of allTickets){
-    userRemain.set(String(t.user_id), (userRemain.get(String(t.user_id)) || 0) + 1);
+    const uid = String(t.user_id);
+    ticketUser.set(t.id, uid);
+    userRemain.set(uid, (userRemain.get(uid) || 0) + 1);
   }
+  wheelOrder = shuffle(remaining.slice());   // scatter each user's slices by default
+  const few = remaining.length <= 1;
   document.getElementById('winnerBanner').classList.remove('show');
-  document.getElementById('spinBtn').disabled = remaining.length <= 1;
-  document.getElementById('lastElim').textContent = remaining.length <= 1 ? 'Need at least 2 entries.' : 'Ready. Hit spin!';
+  document.getElementById('spinBtn').disabled = few;
+  document.getElementById('randBtn').disabled = few;
+  document.getElementById('lastElim').textContent = few ? 'Need at least 2 entries.' : 'Ready. Hit spin!';
   draw();
   updateUI();
 }
 
 function resetWheel(){ if (allTickets.length) resetState(); }
+
+function randomize(){
+  if (spinning || finished) return;
+  shuffle(wheelOrder);
+  draw();
+}
 
 async function loadEntries(raffleId){
   document.getElementById('lastElim').textContent = 'Loading entries…';
