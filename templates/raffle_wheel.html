@@ -287,6 +287,7 @@ async function spin(){
 
   const elimId = data.eliminated;
   const uid = String(data.user_id);
+  const elimName = userName.get(uid) || data.username || ('User ' + uid);
   animateTo(uid, () => {
     // remove one ticket
     const i = remaining.indexOf(elimId);
@@ -295,7 +296,7 @@ async function spin(){
     const knockedOut = (userRemain.get(uid) || 0) <= 0;
     if (knockedOut) eliminatedOrder.push(uid);
     document.getElementById('lastElim').innerHTML =
-      `Eliminated: <b>${esc(data.username)}</b>` + (knockedOut ? ' (out)' : ` — ${userRemain.get(uid)} left`);
+      `Eliminated: <b>${esc(elimName)}</b>` + (knockedOut ? ' (out)' : ` — ${userRemain.get(uid)} left`);
     draw();
     updateUI();
     spinning = false;

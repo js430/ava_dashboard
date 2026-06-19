@@ -944,17 +944,26 @@ async def admin_api(
     ])
 
 # ---- Raffle Wheel (admin-only) ----
-# The raffles / raffle_entry tables are owned by the bot, so column names are
-# discovered at runtime from information_schema rather than hard-coded. Only
-# names matched against these fixed allowlists are ever interpolated into SQL,
-# so this is not an injection vector.
-_RAFFLE_ID_COLS   = ("id", "raffle_id", "uuid")
+# The raffles / raffle_entries tables are owned by the bot, so the table names
+# and columns are discovered at runtime from information_schema rather than
+# hard-coded. Only names matched against these fixed allowlists are ever
+# interpolated into SQL, so this is not an injection vector.
+_RAFFLE_TABLES    = ("raffles", "raffle")
+_ENTRY_TABLES     = ("raffle_entries", "raffle_entry")
+_RAFFLE_ID_COLS   = ("id", "raffle_id", "message_id", "uuid")
 _RAFFLE_NAME_COLS = ("name", "title", "raffle_name", "prize", "description", "label")
-_ENTRY_FK_COLS    = ("raffle_id", "raffle", "raffle_uuid", "raffle_fk")
+_ENTRY_FK_COLS    = ("raffle_id", "raffle", "message_id", "raffle_uuid", "raffle_fk")
 _ENTRY_USER_COLS  = ("user_id", "userid", "discord_id", "member_id")
-_ENTRY_NAME_COLS  = ("username", "display_name", "displayname", "user_name", "name")
-_ENTRY_COUNT_COLS = ("entries", "num_entries", "entry_count", "tickets", "ticket_count", "count", "quantity", "amount")
+_ENTRY_NAME_COLS  = ("username", "display_name", "displayname", "user_name")
+_ENTRY_COUNT_COLS = ("entries", "num_entries", "entry_count", "tickets", "ticket_count", "count", "quantity")
 _ENTRY_PK_COLS    = ("id", "entry_id", "raffle_entry_id")
+# Tables to resolve a user_id -> display name when the entries table has none.
+_NAME_SOURCES = (
+    "SELECT user_id, username FROM users WHERE user_id = ANY($1::bigint[])",
+    "SELECT DISTINCT ON (user_id) user_id, username FROM dashboard_sessions "
+    "WHERE user_id = ANY($1::bigint[]) ORDER BY user_id, logged_in_at DESC",
+    "SELECT DISTINCT ON (user_id) user_id, username FROM member_joins WHERE user_id = ANY($1::bigint[])",
+)
 
 MAX_WHEEL_TICKETS = 20000  # guard against pathological payloads
 
@@ -965,6 +974,17 @@ async def _table_columns(conn, table: str) -> set[str]:
     )
     return {r["column_name"] for r in rows}
 
+async def _find_table(conn, candidates: tuple[str, ...]) -> str | None:
+    rows = await conn.fetch(
+        "SELECT table_name FROM information_schema.tables WHERE table_name = ANY($1)",
+        list(candidates),
+    )
+    found = {r["table_name"] for r in rows}
+    for c in candidates:
+        if c in found:
+            return c
+    return None
+
 def _pick_col(cols: set[str], candidates: tuple[str, ...]) -> str | None:
     lower = {c.lower(): c for c in cols}
     for cand in candidates:
@@ -972,32 +992,62 @@ def _pick_col(cols: set[str], candidates: tuple[str, ...]) -> str | None:
             return lower[cand]
     return None
 
+async def _resolve_usernames(conn, uids) -> dict[str, str]:
+    """Map user_id (str) -> display name, drawing from users / dashboard_sessions
+    / member_joins. Each source is best-effort so a missing table is ignored."""
+    ints: list[int] = []
+    for u in uids:
+        try:
+            ints.append(int(u))
+        except (TypeError, ValueError):
+            pass
+    if not ints:
+        return {}
+    names: dict[str, str] = {}
+    for query in _NAME_SOURCES:
+        missing = [i for i in ints if str(i) not in names]
+        if not missing:
+            break
+        try:
+            rows = await conn.fetch(query, missing)
+        except Exception:
+            continue
+        for r in rows:
+            if r["username"]:
+                names[str(r["user_id"])] = r["username"]
+    return names
+
 async def _raffle_schema(conn) -> dict:
-    rcols = await _table_columns(conn, "raffles")
-    ecols = await _table_columns(conn, "raffle_entry")
-    if not rcols or not ecols:
-        raise HTTPException(status_code=500, detail="raffles/raffle_entry tables not found")
-    schema = {
-        "rid":    _pick_col(rcols, _RAFFLE_ID_COLS) or "id",
+    rtable = await _find_table(conn, _RAFFLE_TABLES)
+    etable = await _find_table(conn, _ENTRY_TABLES)
+    if not rtable or not etable:
+        raise HTTPException(status_code=500, detail="raffles / raffle_entries tables not found")
+    rcols = await _table_columns(conn, rtable)
+    ecols = await _table_columns(conn, etable)
+    return {
+        "rtable": rtable,
+        "etable": etable,
+        "rid":    _pick_col(rcols, _RAFFLE_ID_COLS) or "message_id",
         "rname":  _pick_col(rcols, _RAFFLE_NAME_COLS),
-        "efk":    _pick_col(ecols, _ENTRY_FK_COLS) or "raffle_id",
+        "efk":    _pick_col(ecols, _ENTRY_FK_COLS) or "message_id",
         "euid":   _pick_col(ecols, _ENTRY_USER_COLS) or "user_id",
         "ename":  _pick_col(ecols, _ENTRY_NAME_COLS),
         "ecount": _pick_col(ecols, _ENTRY_COUNT_COLS),
         "epk":    _pick_col(ecols, _ENTRY_PK_COLS),
     }
-    return schema
 
-async def _load_raffle_entries(conn, raffle_id: str) -> tuple[dict, list[dict], list[dict]]:
+async def _load_raffle_entries(conn, raffle_id: str, with_names: bool = True) -> tuple[dict, list[dict], list[dict]]:
     """Return (raffle_meta, users, tickets) for a raffle, normalized so the
-    front-end is schema-agnostic. Each ticket is one elimination unit."""
+    front-end is schema-agnostic. Each ticket is one elimination unit.
+    Pass with_names=False to skip the display-name lookup (e.g. on spins)."""
     s = await _raffle_schema(conn)
+    rtable, etable = s["rtable"], s["etable"]
     rid, rname = s["rid"], s["rname"]
     efk, euid, ename, ecount, epk = s["efk"], s["euid"], s["ename"], s["ecount"], s["epk"]
 
     name_sel = f'r."{rname}"' if rname else "NULL"
     raffle_row = await conn.fetchrow(
-        f'SELECT r."{rid}" AS id, {name_sel} AS name FROM raffles r WHERE r."{rid}"::text = $1',
+        f'SELECT r."{rid}" AS id, {name_sel} AS name FROM "{rtable}" r WHERE r."{rid}"::text = $1',
         raffle_id,
     )
     if raffle_row is None:
@@ -1013,16 +1063,21 @@ async def _load_raffle_entries(conn, raffle_id: str) -> tuple[dict, list[dict], 
         f'SELECT e."{euid}" AS uid, {name_col} AS uname'
         + (f', e."{ecount}" AS cnt' if ecount else "")
         + (f', e."{epk}" AS pk' if epk else "")
-        + f' FROM raffle_entry e WHERE e."{efk}"::text = $1'
+        + f' FROM "{etable}" e WHERE e."{efk}"::text = $1'
         + order_by,
         raffle_id,
     )
+
+    # Resolve display names from auxiliary tables when the entry table has none.
+    name_map: dict[str, str] = {}
+    if with_names and not ename:
+        name_map = await _resolve_usernames(conn, {str(r["uid"]) for r in rows})
 
     users: dict[str, dict] = {}
     tickets: list[dict] = []
     for row in rows:
         uid = str(row["uid"])
-        uname = row["uname"] or f"User {uid}"
+        uname = (row["uname"] if ename else None) or name_map.get(uid) or f"User {uid}"
         if ecount:
             # One row per user with a count column.
             try:
@@ -1069,16 +1124,17 @@ async def api_raffle_list(request: Request, user=Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Not authorized")
     async with request.app.state.db.acquire() as conn:
         s = await _raffle_schema(conn)
+        rtable, etable = s["rtable"], s["etable"]
         rid, rname = s["rid"], s["rname"]
         efk, euid, ecount = s["efk"], s["euid"], s["ecount"]
         name_sel = f'r."{rname}"' if rname else "NULL"
         raffles = await conn.fetch(
-            f'SELECT r."{rid}" AS id, {name_sel} AS name FROM raffles r ORDER BY r."{rid}" DESC'
+            f'SELECT r."{rid}" AS id, {name_sel} AS name FROM "{rtable}" r ORDER BY r."{rid}" DESC'
         )
         entry_expr = f'COALESCE(SUM(e."{ecount}"),0)' if ecount else "COUNT(*)"
         agg = await conn.fetch(
             f'SELECT e."{efk}"::text AS rid, {entry_expr} AS entries,'
-            f' COUNT(DISTINCT e."{euid}") AS users FROM raffle_entry e GROUP BY e."{efk}"'
+            f' COUNT(DISTINCT e."{euid}") AS users FROM "{etable}" e GROUP BY e."{efk}"'
         )
     agg_map = {a["rid"]: a for a in agg}
     out = []
@@ -1125,7 +1181,7 @@ async def api_raffle_spin(request: Request, user=Depends(get_current_user)):
     # Rebuild the authoritative ticket set and validate the submitted remaining
     # set is a genuine subset — the client cannot invent or duplicate tickets.
     async with request.app.state.db.acquire() as conn:
-        _, _, tickets = await _load_raffle_entries(conn, str(raffle_id))
+        _, _, tickets = await _load_raffle_entries(conn, str(raffle_id), with_names=False)
     owner = {t["id"]: t for t in tickets}
     seen = set()
     for tid in remaining:
