@@ -474,10 +474,7 @@ function renderSidebar(data){
     items.forEach(item=>{
       const compoundKey=`${store}||${item.location}`;
       const chk=selectedLocs.has(compoundKey);
-      const href=safeHref(item.link);
-      const lbl=href!=='#'
-        ?`<a class="loc-link has-link" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(item.location)}</a>`
-        :`<span class="loc-link">${esc(item.location)}</span>`;
+      const lbl=`<span class="loc-link">${esc(item.location)}</span>`;
       html+=`<label class="loc-item"><input type="checkbox" ${chk?'checked':''} onchange="toggleLocation('${compoundKey.replace(/'/g,"\\'")}',this.checked)">${lbl}</label>`;
     });
     html+=`</div></div>`;
@@ -643,8 +640,8 @@ function render(){
       const metaKey=Object.keys(locationMeta).find(k=>k.toLowerCase().endsWith('||'+locNorm));
       const link=metaKey?locationMeta[metaKey].link:null;
       const nameHtml=link
-        ?`<a class="loc-name-link" href="${link}" target="_blank" rel="noopener">${loc.location}</a>`
-        :`<span class="loc-name">${loc.location}</span>`;
+        ?`<a class="loc-name-link" href="${esc(safeHref(link))}" target="_blank" rel="noopener noreferrer">${esc(loc.location)}</a>`
+        :`<span class="loc-name">${esc(loc.location)}</span>`;
       html+=`<tr><td class='loc-cell'>${nameHtml}</td>`;
       dayList.forEach(({key,label},dayIdx)=>{
         const d=loc.days[key]||{Morning:[],Afternoon:[],Evening:[]};
