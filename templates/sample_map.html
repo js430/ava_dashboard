@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%23fff' stroke='%23111' stroke-width='2'/><path d='M2 16a14 14 0 0 1 28 0z' fill='%23ee1515'/><path d='M2 16h28' stroke='%23111' stroke-width='3'/><circle cx='16' cy='16' r='5' fill='%23fff' stroke='%23111' stroke-width='3'/></svg>">
+<script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sample Map — Restock Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; display: flex; flex-direction: column; }
+
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 200; flex-shrink: 0; }
+  .header-left { display: flex; align-items: center; gap: 10px; }
+  .avatar { width: 30px; height: 30px; border-radius: 50%; background: #5865F2; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: #fff; overflow: hidden; flex-shrink: 0; }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .header-title { font-size: 15px; font-weight: 600; color: #111; display:inline-flex; align-items:center; gap:6px; }
+  .title-emblem { width:18px; height:18px; flex-shrink:0; }
+  .sample-badge { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; color: #854d0e; background: #fef9c3; border: 1px solid #f5d76e; border-radius: 5px; padding: 2px 7px; }
+  .header-user { font-size: 12px; color: #888; }
+  .nav { display: flex; gap: 8px; align-items: center; }
+  .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; }
+  .nav a:hover { background: #f4f4f5; }
+  .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+
+  .promo-bar { background: #eef0ff; border-bottom: 1px solid #dfe2ff; padding: 7px 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 12px; color: #3b3f8f; flex-shrink: 0; }
+  .promo-bar b { color: #2a2d70; }
+  .promo-bar .cta-btn { margin-left: auto; font-size: 12px; font-weight: 600; color: #fff; background: #5865F2; border-radius: 6px; padding: 5px 12px; text-decoration: none; white-space: nowrap; }
+  .promo-bar .cta-btn:hover { background: #4752d4; }
+
+  .toolbar { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 10px 16px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; flex-shrink: 0; }
+  .toolbar-label { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
+  .toolbar-divider { width: 1px; height: 20px; background: #e4e4e7; flex-shrink: 0; }
+  .filter-row { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .btn-group { display: flex; }
+  .btn-group button { font-size: 12px; height: 30px; padding: 0 11px; border: 1px solid #ddd; background: #fff; color: #333; cursor: pointer; transition: background 0.1s; white-space: nowrap; }
+  .btn-group button:first-child { border-radius: 6px 0 0 6px; }
+  .btn-group button:last-child  { border-radius: 0 6px 6px 0; }
+  .btn-group button:not(:first-child) { border-left: none; }
+  .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+
+  .legend { display: flex; align-items: center; gap: 14px; margin-left: auto; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #555; white-space: nowrap; }
+  .legend-dot { width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; border: 1.5px solid rgba(0,0,0,0.08); }
+
+  .status-bar { padding: 6px 16px; font-size: 12px; color: #888; background: #fafafa; border-bottom: 1px solid #f0f0f0; flex-shrink: 0; }
+
+  .map-wrap { flex: 1; position: relative; min-height: calc(100vh - 210px); }
+  .mock-map { position: absolute; inset: 0; overflow: hidden; background: #e9eef0; }
+  .map-bg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .mb-base { fill: #e9eef0; }
+  .mb-park { fill: #dbe9d5; }
+  .mb-water { fill: #cfe2ec; }
+  .mb-road-major { stroke: #ffffff; }
+  .mb-road-minor { stroke: #dde3e6; }
+  .pin { position: absolute; transform: translate(-50%,-50%); border-radius: 50%; border: 2px solid #fff; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.35); transition: transform 0.1s; }
+  .pin:hover { transform: translate(-50%,-50%) scale(1.2); z-index: 20; }
+
+  .info-panel { position: absolute; top: 12px; right: 12px; width: 290px; background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.1); overflow: hidden; z-index: 30; display: none; }
+  .info-panel.visible { display: block; }
+  .info-header { padding: 12px 14px 10px; border-bottom: 1px solid #f0f0f0; display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+  .info-name { font-size: 14px; font-weight: 600; color: #111; line-height: 1.3; }
+  .info-store { font-size: 12px; color: #888; margin-top: 2px; }
+  .info-close { background: none; border: none; font-size: 16px; color: #aaa; cursor: pointer; padding: 0; line-height: 1; flex-shrink: 0; }
+  .info-close:hover { color: #555; }
+  .info-body { padding: 10px 14px 14px; }
+  .info-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 20px; margin-bottom: 10px; }
+  .info-badge-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .badge-green  { background: #dcfce7; color: #166534; }
+  .badge-green  .info-badge-dot { background: #22c55e; }
+  .badge-yellow { background: #fef9c3; color: #854d0e; }
+  .badge-yellow .info-badge-dot { background: #eab308; }
+  .badge-orange { background: #ffedd5; color: #9a3412; }
+  .badge-orange .info-badge-dot { background: #f97316; }
+  .badge-red    { background: #fee2e2; color: #991b1b; }
+  .badge-red    .info-badge-dot { background: #ef4444; }
+
+  .restock-list { list-style: none; margin-top: 4px; max-height: 180px; overflow-y: auto; }
+  .restock-list li { font-size: 12px; color: #444; padding: 5px 0; border-bottom: 1px solid #f5f5f5; display: flex; align-items: center; gap: 6px; }
+  .restock-list li:last-child { border-bottom: none; }
+  .restock-time { font-size: 12px; color: #888; margin-left: auto; white-space: nowrap; }
+  .no-restocks { font-size: 12px; color: #aaa; margin-top: 4px; }
+
+  .summary-card { position: absolute; bottom: 28px; left: 12px; background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 10px 14px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); z-index: 30; min-width: 175px; }
+  .summary-title { font-size: 12px; font-weight: 600; color: #aaa; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+  .summary-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #444; padding: 2px 0; }
+  .summary-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+
+  .sample-wm { position: fixed; inset: 0; pointer-events: none; z-index: 25; opacity: 0.07;
+    background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='190'><text x='6' y='110' transform='rotate(-20 160 95)' font-family='sans-serif' font-size='26' font-weight='700' fill='%23000'>SAMPLE DATA</text></svg>");
+    background-repeat: repeat; }
+
+  @media (max-width: 640px) {
+    .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 8px 12px; }
+    .nav { flex-wrap: wrap; gap: 5px; }
+    .nav a { font-size: 12px; padding: 3px 7px; }
+    .toolbar { padding: 8px 12px; gap: 0; flex-direction: column; align-items: stretch; }
+    .toolbar-divider { display: none; }
+    .filter-row { padding: 5px 0; border-bottom: 1px solid #f4f4f5; }
+    .filter-row:last-of-type { border-bottom: none; }
+    .filter-row .btn-group { overflow-x: auto; -webkit-overflow-scrolling: touch; flex: 1; min-width: 0; }
+    .btn-group button { font-size: 12px; height: 28px; padding: 0 9px; flex-shrink: 0; }
+    .legend { display: none; }
+    .info-panel { width: calc(100vw - 24px); right: 12px; }
+    .promo-bar .cta-btn { margin-left: 0; }
+  }
+  .theme-toggle { display: none; font-size: 16px; background: #f4f4f5; border: 1px solid #ddd; border-radius: 6px; padding: 4px 8px; cursor: pointer; line-height: 1; flex-shrink: 0; }
+  html[data-theme="dark"] { color-scheme: dark; }
+  html[data-theme="dark"] body { background: #111113; color: #f0f0f0; }
+  html[data-theme="dark"] .header { background: #1c1c1f; border-bottom-color: #303033; }
+  html[data-theme="dark"] .header-title { color: #f0f0f0; }
+  html[data-theme="dark"] .nav a { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .nav a:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .promo-bar { background: #1e2040; border-bottom-color: #2b2f5c; color: #b9bdf0; }
+  html[data-theme="dark"] .promo-bar b { color: #dfe2ff; }
+  html[data-theme="dark"] .toolbar { background: #1c1c1f; border-bottom-color: #303033; }
+  html[data-theme="dark"] .toolbar-divider { background: #383838; }
+  html[data-theme="dark"] .btn-group button { background: #252528; border-color: #383838; color: #ccc; }
+  html[data-theme="dark"] .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .legend-item { color: #888; }
+  html[data-theme="dark"] .status-bar { background: #161618; border-bottom-color: #252528; color: #888; }
+  html[data-theme="dark"] .mock-map { background: #1a2026; }
+  html[data-theme="dark"] .mb-base { fill: #1a2026; }
+  html[data-theme="dark"] .mb-park { fill: #22302a; }
+  html[data-theme="dark"] .mb-water { fill: #1c2c39; }
+  html[data-theme="dark"] .mb-road-major { stroke: #2e3742; }
+  html[data-theme="dark"] .mb-road-minor { stroke: #232a31; }
+  html[data-theme="dark"] .info-panel { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .info-header { border-bottom-color: #2a2a2d; }
+  html[data-theme="dark"] .info-name { color: #f0f0f0; }
+  html[data-theme="dark"] .restock-list li { border-bottom-color: #2a2a2d; color: #ccc; }
+  html[data-theme="dark"] .summary-card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .summary-row { color: #ccc; }
+  html[data-theme="dark"] .sample-wm { opacity: 0.1; }
+  html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
+  /* ── TCG accent ── */
+  .header { position: relative; }
+  .header::after { content:""; position:absolute; left:0; right:0; bottom:-1px; height:3px; z-index:1;
+    background: linear-gradient(90deg,#ee1515 0%,#f4a92e 34%,#5865F2 67%,#8b5cf6 100%); }
+</style>
+</head>
+<body>
+
+<div class="sample-wm"></div>
+
+<div class="header">
+  <div class="header-left">
+    <div class="avatar">
+      {% if avatar %}<img src="https://cdn.discordapp.com/avatars/{{ user_id }}/{{ avatar }}.png" alt="">{% else %}{{ username[0] | upper }}{% endif %}
+    </div>
+    <div>
+      <div class="header-title"><svg class="title-emblem" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="#fff" stroke="#111" stroke-width="2"/><path d="M2 16a14 14 0 0 1 28 0z" fill="#ee1515"/><path d="M2 16h28" stroke="#111" stroke-width="3"/><circle cx="16" cy="16" r="5" fill="#fff" stroke="#111" stroke-width="3"/></svg>Restock Map <span class="sample-badge">SAMPLE</span></div>
+      <div class="header-user">{{ username }}</div>
+    </div>
+  </div>
+  <div class="nav">
+    <a href="/sample">Dashboard</a>
+    <a href="/sample-map" class="active">Map</a>
+    <a href="/sample-status">Status</a>
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
+    <a href="/logout">Log out</a>
+  </div>
+</div>
+
+<div class="promo-bar">
+  <span><b>Sample map</b> — pins and restocks are randomly generated, not real. Live store locations unlock with premium.</span>
+  {% if upgrade_url %}<a class="cta-btn" href="{{ upgrade_url }}" target="_blank" rel="noopener noreferrer">Get premium access</a>{% endif %}
+</div>
+
+<div class="toolbar">
+  <div class="filter-row">
+    <span class="toolbar-label">State</span>
+    <div class="btn-group" id="stateGroup">
+      <button class="active" onclick="setRegion('VA', this)">NOVA</button>
+      <button onclick="setRegion('CVA', this)">CVA</button>
+      <button onclick="setRegion('DC', this)">DC</button>
+      <button onclick="setRegion('MD', this)">MD</button>
+    </div>
+  </div>
+  <div class="toolbar-divider"></div>
+  <div class="filter-row">
+    <span class="toolbar-label">Store</span>
+    <div class="btn-group" id="storeGroup">
+      <button class="active" onclick="setStore('all', this)">All</button>
+      <button onclick="setStore('Target', this)">Target</button>
+      <button onclick="setStore('Walmart', this)">Walmart</button>
+      <button onclick="setStore('Best Buy', this)">Best Buy</button>
+      <button onclick="setStore('Barnes and Noble', this)">B&amp;N</button>
+    </div>
+  </div>
+  <div class="toolbar-divider"></div>
+  <div class="filter-row">
+    <span class="toolbar-label">View</span>
+    <div class="btn-group" id="windowGroup">
+      <button class="active" onclick="setWindow('day', this)">Today</button>
+      <button onclick="setWindow('week', this)">This Week</button>
+    </div>
+  </div>
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#22c55e"></div>0 restocks</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#eab308"></div>1 restock</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#f97316"></div>2 restocks</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#ef4444"></div>3+ restocks</div>
+  </div>
+</div>
+
+<div class="status-bar" id="statusBar">—</div>
+
+<div class="map-wrap">
+  <div class="mock-map" id="mockMap">
+    <svg class="map-bg" viewBox="0 0 800 600" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+      <rect class="mb-base" x="0" y="0" width="800" height="600"/>
+      <ellipse class="mb-park" cx="150" cy="140" rx="95" ry="72"/>
+      <ellipse class="mb-park" cx="650" cy="470" rx="120" ry="88"/>
+      <ellipse class="mb-park" cx="720" cy="90" rx="70" ry="55"/>
+      <path class="mb-water" d="M0,430 C150,392 250,478 400,448 C560,416 690,505 800,466 L800,600 L0,600 Z"/>
+      <path class="mb-water" d="M405,-10 C430,120 372,190 436,300 C482,398 424,486 470,610 L440,610 C400,486 452,398 408,300 C356,190 402,120 380,-10 Z"/>
+      <g class="mb-road-major" stroke-width="7" opacity="0.95" fill="none" stroke-linecap="round">
+        <line x1="-10" y1="205" x2="810" y2="250"/>
+        <line x1="-10" y1="365" x2="810" y2="330"/>
+        <line x1="185" y1="-10" x2="225" y2="610"/>
+        <line x1="560" y1="-10" x2="600" y2="610"/>
+        <line x1="-10" y1="95" x2="810" y2="120"/>
+      </g>
+      <g class="mb-road-minor" stroke-width="2.5" opacity="0.9" fill="none">
+        <line x1="-10" y1="150" x2="810" y2="168"/>
+        <line x1="-10" y1="285" x2="810" y2="272"/>
+        <line x1="-10" y1="470" x2="810" y2="440"/>
+        <line x1="90" y1="-10" x2="120" y2="610"/>
+        <line x1="330" y1="-10" x2="360" y2="610"/>
+        <line x1="690" y1="-10" x2="720" y2="610"/>
+      </g>
+    </svg>
+  </div>
+
+  <div class="info-panel" id="infoPanel">
+    <div class="info-header">
+      <div>
+        <div class="info-name" id="infoName">—</div>
+        <div class="info-store" id="infoStore"></div>
+      </div>
+      <button class="info-close" onclick="closeInfo()">&#x2715;</button>
+    </div>
+    <div class="info-body">
+      <div id="infoBadge"></div>
+      <div id="infoRestocks"></div>
+    </div>
+  </div>
+
+  <div class="summary-card" id="summaryCard" style="display:none;">
+    <div class="summary-title" id="summaryTitle">Today</div>
+    <div class="summary-row"><div class="summary-dot" style="background:#22c55e"></div><span id="sum0">—</span></div>
+    <div class="summary-row"><div class="summary-dot" style="background:#eab308"></div><span id="sum1">—</span></div>
+    <div class="summary-row"><div class="summary-dot" style="background:#f97316"></div><span id="sum2">—</span></div>
+    <div class="summary-row"><div class="summary-dot" style="background:#ef4444"></div><span id="sum3">—</span></div>
+  </div>
+</div>
+
+<script>
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+function hashSeed(str){ let h=2166136261; for(let i=0;i<str.length;i++){ h^=str.charCodeAt(i); h=Math.imul(h,16777619); } return h>>>0; }
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+
+const SLOTS = ["Morning","Afternoon","Evening"];
+const STORE_ORDER = ["Target","Walmart","Best Buy","5 Below","Barnes and Noble"];
+const FAKE_LOCS_BY_REGION = {
+  VA: {
+    "Target":           ["Fair Lakes","Potomac Yard","Springfield Town Center","Chantilly Crossing","Sterling"],
+    "Walmart":          ["Dulles Landing","Burke Commons","Haymarket"],
+    "Best Buy":         ["Potomac Yard","Fair Lakes","Sterling"],
+    "5 Below":          ["Ashburn","Centreville","Manassas"],
+    "Barnes and Noble": ["Reston Town Center","Springfield"],
+  },
+  CVA: {
+    "Target":           ["Short Pump","Willow Lawn","Midlothian","Mechanicsville"],
+    "Walmart":          ["Glen Allen","Chesterfield","Ashland"],
+    "Best Buy":         ["Short Pump","Chesterfield Towne"],
+    "5 Below":          ["Carytown","Hull Street"],
+    "Barnes and Noble": ["Libbie Place"],
+  },
+  DC: {
+    "Target":           ["Columbia Heights","NoMa","Tenleytown","Capitol Hill"],
+    "Walmart":          ["H Street NE","Fort Totten"],
+    "Best Buy":         ["Downtown DC","Georgetown"],
+    "5 Below":          ["Gallery Place","Adams Morgan"],
+    "Barnes and Noble": ["Georgetown"],
+  },
+  MD: {
+    "Target":           ["Rockville","Silver Spring","Bowie","Columbia","Wheaton"],
+    "Walmart":          ["Laurel","Germantown","Waldorf"],
+    "Best Buy":         ["Rockville Pike","Annapolis"],
+    "5 Below":          ["Gaithersburg","Bel Air"],
+    "Barnes and Noble": ["Towson","Annapolis Harbour"],
+  },
+};
+
+let currentRegion = "VA", currentWindow = "day", currentStore = "all";
+let locations = [];
+
+function buildDayList(){
+  const list=[], now=new Date(), monday=new Date(now);
+  monday.setDate(now.getDate()-((now.getDay()+6)%7));
+  for(let i=0;i<7;i++){
+    const d=new Date(monday); d.setDate(monday.getDate()+i);
+    if(d>now) break;
+    const yy=d.getFullYear(), mm=String(d.getMonth()+1).padStart(2,'0'), dd=String(d.getDate()).padStart(2,'0');
+    list.push({ key:`${yy}-${mm}-${dd}`, md:d.toLocaleDateString("en-US",{month:"short",day:"numeric"}) });
+  }
+  return list;
+}
+
+function fakeRestocks(rng, count, slot, monthDay){
+  const base = slot==="Morning"?8 : slot==="Afternoon"?12 : 17;
+  const span = slot==="Evening"?4:5;
+  const out=[];
+  for(let i=0;i<count;i++){
+    const h = base + Math.floor(rng()*span);
+    const m = Math.floor(rng()*60);
+    const ap = h>=12?"PM":"AM"; let hh=h%12; if(hh===0) hh=12;
+    out.push(`${monthDay} ${hh}:${String(m).padStart(2,'0')} ${ap}`);
+  }
+  return out.sort();
+}
+
+// Build the location list for the current region/window, matching the sample
+// dashboard's numbers (same seed sequence per store/location/day).
+function buildLocations(region, windowMode){
+  const dayList = buildDayList();
+  const todayKey = dayList[dayList.length-1].key;
+  const locsByStore = FAKE_LOCS_BY_REGION[region] || {};
+  const out = [];
+  STORE_ORDER.forEach(store=>{
+    (locsByStore[store]||[]).forEach(location=>{
+      const pos = mulberry32(hashSeed("pos|"+region+"|"+store+"|"+location));
+      const x = 7 + pos()*86, y = 12 + pos()*74;
+      const restocks = [];
+      dayList.forEach(({key,md})=>{
+        if(windowMode==="day" && key!==todayKey) return;
+        const rng = mulberry32(hashSeed(region+"|"+store+"|"+location+"|"+key));
+        SLOTS.forEach(sl=>{
+          const roll = rng();
+          const count = roll<0.55?0 : roll<0.8?1 : roll<0.93?2 : 3;
+          fakeRestocks(rng, count, sl, md).forEach(t => restocks.push({ slot: sl, datetime: t }));
+        });
+      });
+      restocks.sort((a,b)=> a.datetime < b.datetime ? -1 : 1);
+      out.push({ store, location, x, y, restocks });
+    });
+  });
+  return out;
+}
+
+function markerStyle(count){
+  if (count === 0) return { color: "#22c55e", size: 15, z: 2 };
+  if (count === 1) return { color: "#eab308", size: 17, z: 3 };
+  if (count === 2) return { color: "#f97316", size: 19, z: 4 };
+  return             { color: "#ef4444", size: 21, z: 5 };
+}
+function badgeClass(count){ return count===0?"badge-green":count===1?"badge-yellow":count===2?"badge-orange":"badge-red"; }
+function badgeLabel(count){
+  const period = currentWindow === "week" ? "this week" : "today";
+  return count===0 ? `No restocks ${period}` : `${count} restock${count!==1?"s":""} ${period}`;
+}
+
+function render(){
+  const mapEl = document.getElementById("mockMap");
+  mapEl.querySelectorAll(".pin").forEach(p => p.remove());
+  const filtered = currentStore === "all" ? locations : locations.filter(l => l.store === currentStore);
+  const tally = { 0:0, 1:0, 2:0, 3:0 };
+
+  filtered.forEach(loc => {
+    const count = loc.restocks.length;
+    tally[Math.min(count,3)]++;
+    const { color, size, z } = markerStyle(count);
+    const pin = document.createElement("div");
+    pin.className = "pin";
+    pin.style.left = loc.x + "%";
+    pin.style.top = loc.y + "%";
+    pin.style.width = size + "px";
+    pin.style.height = size + "px";
+    pin.style.background = color;
+    pin.style.zIndex = z;
+    pin.title = loc.location;
+    pin.addEventListener("click", (e) => { e.stopPropagation(); showInfo(loc); });
+    mapEl.appendChild(pin);
+  });
+
+  const periodLabel = currentWindow === "week" ? "this week" : "today";
+  const withRestocks = filtered.filter(l => l.restocks.length > 0).length;
+  const timeStr = new Date().toLocaleTimeString("en-US", { hour:"numeric", minute:"2-digit" });
+  const dateStr = new Date().toLocaleDateString("en-US", { weekday:"long", month:"long", day:"numeric" });
+  const storeLabel = currentStore === "all" ? "" : ` · ${currentStore}`;
+  document.getElementById("statusBar").textContent =
+    `${filtered.length} locations${storeLabel} · ${withRestocks} restocked ${periodLabel} · as of ${timeStr} · ${dateStr}`;
+
+  document.getElementById("summaryTitle").textContent = currentWindow === "week" ? "This Week" : "Today";
+  document.getElementById("sum0").textContent = `${tally[0]} with no restocks`;
+  document.getElementById("sum1").textContent = `${tally[1]} with 1 restock`;
+  document.getElementById("sum2").textContent = `${tally[2]} with 2 restocks`;
+  document.getElementById("sum3").textContent = `${tally[3]} with 3+ restocks`;
+  document.getElementById("summaryCard").style.display = "block";
+}
+
+function showInfo(loc){
+  const count = loc.restocks.length;
+  document.getElementById("infoName").textContent = loc.location;
+  document.getElementById("infoStore").textContent = loc.store || "";
+  document.getElementById("infoBadge").innerHTML =
+    `<span class="info-badge ${badgeClass(count)}"><span class="info-badge-dot"></span>${badgeLabel(count)}</span>`;
+  const el = document.getElementById("infoRestocks");
+  if (count > 0){
+    el.innerHTML = `<ul class="restock-list">${
+      loc.restocks.map(r => `<li><span>${esc(r.slot)}</span><span class="restock-time">${esc(r.datetime)}</span></li>`).join("")
+    }</ul>`;
+  } else {
+    el.innerHTML = `<p class="no-restocks">${currentWindow === "week" ? "None reported this week." : "Check back later."}</p>`;
+  }
+  document.getElementById("infoPanel").classList.add("visible");
+}
+function closeInfo(){ document.getElementById("infoPanel").classList.remove("visible"); }
+
+function reload(){ locations = buildLocations(currentRegion, currentWindow); closeInfo(); render(); }
+function setRegion(r, btn){ currentRegion=r; btn.closest(".btn-group").querySelectorAll("button").forEach(b=>b.classList.remove("active")); btn.classList.add("active"); reload(); }
+function setStore(s, btn){ currentStore=s; btn.closest(".btn-group").querySelectorAll("button").forEach(b=>b.classList.remove("active")); btn.classList.add("active"); closeInfo(); render(); }
+function setWindow(w, btn){ currentWindow=w; btn.closest(".btn-group").querySelectorAll("button").forEach(b=>b.classList.remove("active")); btn.classList.add("active"); reload(); }
+
+document.getElementById("mockMap").addEventListener("click", closeInfo);
+
+reload();
+(function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();};upd();})();
+</script>
+</body>
+</html>
