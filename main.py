@@ -799,8 +799,10 @@ async def sample_page(request: Request):
     user = request.session.get("user")
     if not user:
         return RedirectResponse("/login")
-    # Full members have no reason to see the sample.
-    if not is_demo(request):
+    # Non-premium users see the sample; admins/mods may also preview it.
+    # Regular premium members have no reason to, so send them to the live board.
+    is_admin = int(user["id"]) in ADMIN_USER_IDS
+    if not is_demo(request) and not is_admin:
         return RedirectResponse("/")
     return templates.TemplateResponse("sample.html", {
         "request": request,
