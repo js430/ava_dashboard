@@ -114,6 +114,8 @@ DISCORD_REDIRECT_URI     = os.getenv("DISCORD_REDIRECT_URI")
 DISCORD_GUILD_ID         = os.getenv("DISCORD_GUILD_ID")
 REQUIRED_ROLE_IDS        = {r.strip() for r in os.getenv("REQUIRED_ROLE_ID", "").split(",") if r.strip()}
 DENY_ROLE_IDS            = {r.strip() for r in os.getenv("DENY_ROLE_IDS", "").split(",") if r.strip()}
+# Server-mod role(s): may preview the /sample page even as full members.
+MOD_ROLE_IDS             = {r.strip() for r in os.getenv("MOD_ROLE_IDS", "1406753334051737631").split(",") if r.strip()}
 GOOGLE_MAPS_API_KEY      = os.getenv("GOOGLE_MAPS_API_KEY", "")
 ANTHROPIC_API_KEY        = os.getenv("ANTHROPIC_API_KEY", "")
 # Reused across requests instead of constructing a client per scan.
@@ -799,10 +801,10 @@ async def sample_page(request: Request):
     user = request.session.get("user")
     if not user:
         return RedirectResponse("/login")
-    # Non-premium users see the sample; admins/mods may also preview it.
-    # Regular premium members have no reason to, so send them to the live board.
-    is_admin = int(user["id"]) in ADMIN_USER_IDS
-    if not is_demo(request) and not is_admin:
+    # Non-premium users see the sample; admins and server mods may also preview
+    # it. Regular premium members have no reason to, so send them to the live board.
+    is_staff = int(user["id"]) in ADMIN_USER_IDS or request.session.get("mod", False)
+    if not is_demo(request) and not is_staff:
         return RedirectResponse("/")
     return templates.TemplateResponse("sample.html", {
         "request": request,
@@ -908,6 +910,7 @@ async def callback(request: Request, code: str = None, error: str = None, state:
         "avatar": user.get("avatar")
     }
     request.session["member"] = is_member
+    request.session["mod"] = bool(MOD_ROLE_IDS & set(member_roles)) or is_admin_user
     if is_member:
         request.session["max_position"] = _get_max_position(member_roles)
 
