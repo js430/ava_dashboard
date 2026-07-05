@@ -50,7 +50,8 @@
   .loc-name { color: #111; font-weight: 500; }
   .col-head { font-size: 12px; color: #888; text-align: center; padding: 2px 1px; min-width: 40px; }
   .sub-head { font-size: 12px; color: #aaa; text-align: center; padding: 1px; }
-  .cell { width: 40px; height: 22px; text-align: center; vertical-align: middle; font-size: 12px; font-weight: 500; border-radius: 3px; border: 1px solid transparent; }
+  .cell { width: 40px; height: 22px; text-align: center; vertical-align: middle; font-size: 12px; font-weight: 500; border-radius: 3px; border: 1px solid transparent; cursor: default; }
+  .cell:hover { border-color: #999; }
   .day-divider { border-left: 2px solid #d1d5db !important; }
   .total-head { font-size: 12px; color: #888; text-align: center; padding: 2px 6px; }
   .total-cell { font-size: 12px; font-weight: 600; text-align: center; padding: 0 6px; }
@@ -63,6 +64,16 @@
   .store-chevron.open { transform: rotate(90deg); }
   .legend { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 12px; color: #888; }
   .legend-swatch { width: 16px; height: 10px; border-radius: 2px; }
+
+  .tip { position: fixed; background: #fff; border: 1px solid #e4e4e7; border-radius: 8px; padding: 8px 12px; font-size: 12px; color: #111; pointer-events: none; z-index: 1000; display: none; box-shadow: 0 2px 8px rgba(0,0,0,0.1); max-width: 260px; line-height: 1.6; }
+  .tip-title { font-weight: 600; margin-bottom: 4px; font-size: 12px; }
+  .tip-dates { color: #555; font-size: 12px; white-space: pre-line; }
+  .tip-close { display: none; float: right; margin: -2px -4px 4px 8px; font-size: 16px; line-height: 1; color: #aaa; cursor: pointer; padding: 2px 4px; }
+  @media (hover: none) and (pointer: coarse) {
+    .tip { left: 8px; right: 8px; bottom: 8px; top: auto !important; width: auto; max-width: none; pointer-events: auto; border-radius: 12px; padding: 14px 16px; box-shadow: 0 -2px 16px rgba(0,0,0,0.15); }
+    .tip-close { display: block; }
+    .cell { cursor: pointer; }
+  }
 
   .sample-wm { position: fixed; inset: 0; pointer-events: none; z-index: 5; opacity: 0.06;
     background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='190'><text x='6' y='110' transform='rotate(-20 160 95)' font-family='sans-serif' font-size='26' font-weight='700' fill='%23000'>SAMPLE DATA</text></svg>");
@@ -88,6 +99,8 @@
   html[data-theme="dark"] .store-header-inner { border-top-color: #303033; }
   html[data-theme="dark"] .store-header-name, html[data-theme="dark"] .loc-name { color: #f0f0f0; }
   html[data-theme="dark"] .day-divider { border-left-color: #555 !important; }
+  html[data-theme="dark"] .tip { background: #1c1c1f; border-color: #303033; color: #f0f0f0; }
+  html[data-theme="dark"] .tip-dates { color: #bbb; }
   html[data-theme="dark"] .sample-wm { opacity: 0.09; }
   html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
 </style>
@@ -130,7 +143,12 @@
     <div class="ctrl-divider"></div>
     <div class="ctrl-row">
       <label>State</label>
-      <div class="btn-group"><button class="active">NOVA</button><button>CVA</button><button>DC</button></div>
+      <div class="btn-group" id="stateBtns">
+        <button class="active" onclick="setRegion('VA',this)">NOVA</button>
+        <button onclick="setRegion('CVA',this)">CVA</button>
+        <button onclick="setRegion('DC',this)">DC</button>
+        <button onclick="setRegion('MD',this)">MD</button>
+      </div>
     </div>
     <div class="ctrl-divider"></div>
     <div class="ctrl-row">
@@ -155,19 +173,51 @@
 
 </div>
 
+<div class="tip" id="tip">
+  <span class="tip-close" id="tipClose">✕</span>
+  <div class="tip-title" id="tipTitle"></div>
+  <div class="tip-dates" id="tipDates"></div>
+</div>
+
 <script>
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 
 const SLOTS   = ["Morning","Afternoon","Evening"];
 const SLOT_S  = ["AM","PM","Eve"];
 const STORE_ORDER = ["Target","Walmart","Best Buy","5 Below","Barnes and Noble"];
-const FAKE_LOCS = {
-  "Target":           ["Riverbend Commons","Oak Hollow","Maple Grove","Cedar Crossing","Stonebridge Plaza"],
-  "Walmart":          ["Willow Creek","Pine Valley","Harbor Point","Granite Ridge"],
-  "Best Buy":         ["Summit Plaza","Brookfield Center","Kingsway Mall"],
-  "5 Below":          ["Ashford Park","Fox Run","Devon Square"],
-  "Barnes and Noble": ["Highgrove","Wyndham Center"],
+
+const FAKE_LOCS_BY_REGION = {
+  VA: {
+    "Target":           ["Fair Lakes","Potomac Yard","Springfield Town Center","Chantilly Crossing","Sterling"],
+    "Walmart":          ["Dulles Landing","Burke Commons","Haymarket"],
+    "Best Buy":         ["Potomac Yard","Fair Lakes","Sterling"],
+    "5 Below":          ["Ashburn","Centreville","Manassas"],
+    "Barnes and Noble": ["Reston Town Center","Springfield"],
+  },
+  CVA: {
+    "Target":           ["Short Pump","Willow Lawn","Midlothian","Mechanicsville"],
+    "Walmart":          ["Glen Allen","Chesterfield","Ashland"],
+    "Best Buy":         ["Short Pump","Chesterfield Towne"],
+    "5 Below":          ["Carytown","Hull Street"],
+    "Barnes and Noble": ["Libbie Place"],
+  },
+  DC: {
+    "Target":           ["Columbia Heights","NoMa","Tenleytown","Capitol Hill"],
+    "Walmart":          ["H Street NE","Fort Totten"],
+    "Best Buy":         ["Downtown DC","Georgetown"],
+    "5 Below":          ["Gallery Place","Adams Morgan"],
+    "Barnes and Noble": ["Georgetown"],
+  },
+  MD: {
+    "Target":           ["Rockville","Silver Spring","Bowie","Columbia","Wheaton"],
+    "Walmart":          ["Laurel","Germantown","Waldorf"],
+    "Best Buy":         ["Rockville Pike","Annapolis"],
+    "5 Below":          ["Gaithersburg","Bel Air"],
+    "Barnes and Noble": ["Towson","Annapolis Harbour"],
+  },
 };
+
+let currentRegion = "VA";
 let showSlots = true;
 const expandedStores = new Set(STORE_ORDER);
 
@@ -182,36 +232,42 @@ function buildDayList(){
     const d=new Date(monday); d.setDate(monday.getDate()+i);
     if(d>now) break;
     const yy=d.getFullYear(), mm=String(d.getMonth()+1).padStart(2,'0'), dd=String(d.getDate()).padStart(2,'0');
-    list.push({ key:`${yy}-${mm}-${dd}`, label:d.toLocaleDateString("en-US",{weekday:"short"}) });
+    list.push({
+      key:`${yy}-${mm}-${dd}`,
+      label:d.toLocaleDateString("en-US",{weekday:"short"}),
+      md:d.toLocaleDateString("en-US",{month:"short",day:"numeric"}),
+    });
   }
   return list;
 }
 
-function fakeTimes(rng, count, slot){
+// Fake restock events for one slot -> ["Jun 16 9:14 AM", ...]
+function fakeRestocks(rng, count, slot, monthDay){
   const base = slot==="Morning"?8 : slot==="Afternoon"?12 : 17;
   const span = slot==="Evening"?4:5;
   const out=[];
   for(let i=0;i<count;i++){
-    let h = base + Math.floor(rng()*span);
+    const h = base + Math.floor(rng()*span);
     const m = Math.floor(rng()*60);
     const ap = h>=12?"PM":"AM"; let hh=h%12; if(hh===0) hh=12;
-    out.push(`${hh}:${String(m).padStart(2,'0')} ${ap}`);
+    out.push(`${monthDay} ${hh}:${String(m).padStart(2,'0')} ${ap}`);
   }
   return out.sort();
 }
 
-function buildData(dayList){
+function buildData(region, dayList){
+  const locsByStore = FAKE_LOCS_BY_REGION[region] || {};
   const data={};
   STORE_ORDER.forEach(store=>{
-    data[store]=(FAKE_LOCS[store]||[]).map(location=>{
+    data[store]=(locsByStore[store]||[]).map(location=>{
       const days={};
-      dayList.forEach(({key})=>{
-        const rng=mulberry32(hashSeed(store+"|"+location+"|"+key));
+      dayList.forEach(({key,md})=>{
+        const rng=mulberry32(hashSeed(region+"|"+store+"|"+location+"|"+key));
         const slots={};
         SLOTS.forEach(sl=>{
           const roll=rng();
-          let count = roll<0.55?0 : roll<0.8?1 : roll<0.93?2 : 3;
-          slots[sl]=fakeTimes(rng,count,sl);
+          const count = roll<0.55?0 : roll<0.8?1 : roll<0.93?2 : 3;
+          slots[sl]=fakeRestocks(rng,count,sl,md);
         });
         days[key]=slots;
       });
@@ -231,12 +287,18 @@ function getHeatColor(val,max){
 }
 
 const DAY_LIST = buildDayList();
-const DATA = buildData(DAY_LIST);
+const DATA_CACHE = {};
+function regionData(){
+  if(!DATA_CACHE[currentRegion]) DATA_CACHE[currentRegion]=buildData(currentRegion, DAY_LIST);
+  return DATA_CACHE[currentRegion];
+}
 
 function toggleStore(name){ if(expandedStores.has(name)) expandedStores.delete(name); else expandedStores.add(name); render(); }
 function setSlot(slots, btn){ showSlots=slots; document.querySelectorAll('#btnSlot,#btnDay').forEach(b=>b.classList.remove('active')); btn.classList.add('active'); render(); }
+function setRegion(code, btn){ currentRegion=code; document.querySelectorAll('#stateBtns button').forEach(b=>b.classList.remove('active')); btn.classList.add('active'); render(); }
 
 function render(){
+  const DATA = regionData();
   let maxVal=0;
   STORE_ORDER.forEach(store=>(DATA[store]||[]).forEach(loc=>DAY_LIST.forEach(({key})=>{
     const d=loc.days[key];
@@ -275,20 +337,24 @@ function render(){
     group.forEach(loc=>{
       let rowTotal=0;
       html+=`<tr><td class='loc-cell'><span class="loc-name">${esc(loc.location)}</span></td>`;
-      DAY_LIST.forEach(({key},dayIdx)=>{
+      DAY_LIST.forEach(({key,label},dayIdx)=>{
         const d=loc.days[key];
         if(showSlots){
           SLOTS.forEach((sl,slIdx)=>{
-            const count=d[sl].length; rowTotal+=count;
+            const times=d[sl], count=times.length; rowTotal+=count;
             const {bg,fg}=getHeatColor(count,maxVal);
             const div=slIdx===0&&dayIdx>0?" day-divider":"";
-            html+=`<td class='cell${div}' style='background:${bg};color:${fg}'>${count>0?count:"<span style='opacity:0.3'>·</span>"}</td>`;
+            const st=`${loc.location} · ${label} ${sl} (${count})`;
+            const sd=times.length?times.join("\n"):"No restocks";
+            html+=`<td class='cell${div}' style='background:${bg};color:${fg}' data-title="${esc(st)}" data-dates="${esc(sd)}">${count>0?count:"<span style='opacity:0.3'>·</span>"}</td>`;
           });
         } else {
-          const count=SLOTS.reduce((s,sl)=>s+d[sl].length,0); rowTotal+=count;
+          const times=SLOTS.flatMap(sl=>d[sl]), count=times.length; rowTotal+=count;
           const {bg,fg}=getHeatColor(count,maxVal);
           const div=dayIdx>0?" day-divider":"";
-          html+=`<td class='cell${div}' style='background:${bg};color:${fg}'>${count>0?count:"<span style='opacity:0.3'>·</span>"}</td>`;
+          const st=`${loc.location} · ${label} (${count})`;
+          const sd=times.length?times.slice().sort().join("\n"):"No restocks";
+          html+=`<td class='cell${div}' style='background:${bg};color:${fg}' data-title="${esc(st)}" data-dates="${esc(sd)}">${count>0?count:"<span style='opacity:0.3'>·</span>"}</td>`;
         }
       });
       html+=`<td class='total-cell'>${rowTotal}</td></tr>`;
@@ -300,6 +366,38 @@ function render(){
   document.getElementById("legendBar").innerHTML=
     ["#f4f4f5","#34a853","#6dbf4a","#b5d940","#e6c832","#e68220","#dc3232"]
     .map((c,i)=>`<div class='legend-swatch' style='background:${c};${i===0?"border:1px solid #e4e4e7":""}'></div>`).join("");
+
+  setupTips();
+}
+
+function setupTips(){
+  const tip=document.getElementById("tip");
+  const isTouch=()=>window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+  function showTip(cell){
+    document.getElementById("tipTitle").textContent=cell.getAttribute("data-title");
+    document.getElementById("tipDates").textContent=cell.getAttribute("data-dates");
+    tip.style.display="block";
+  }
+  function hideTip(){ tip.style.display="none"; }
+  function positionTip(cx,cy){
+    const vw=window.innerWidth,vh=window.innerHeight,tw=tip.offsetWidth,th=tip.offsetHeight;
+    let left=cx+14; if(left+tw+8>vw) left=cx-tw-14; left=Math.max(8,Math.min(left,vw-tw-8));
+    let top=cy-th/2; top=Math.max(8,Math.min(top,vh-th-8));
+    tip.style.left=left+"px"; tip.style.top=top+"px";
+  }
+  document.getElementById("tipClose").onclick=e=>{ e.stopPropagation(); hideTip(); };
+  document.querySelectorAll("#ht .cell").forEach(cell=>{
+    cell.addEventListener("mouseenter",()=>{ if(!isTouch()) showTip(cell); });
+    cell.addEventListener("mousemove",e=>{ if(!isTouch()) positionTip(e.clientX,e.clientY); });
+    cell.addEventListener("mouseleave",()=>{ if(!isTouch()) hideTip(); });
+    cell.addEventListener("click",e=>{
+      if(!isTouch()) return;
+      e.stopPropagation();
+      if(tip.style.display==="block" && tip._cell===cell){ hideTip(); tip._cell=null; }
+      else { showTip(cell); tip._cell=cell; }
+    });
+  });
+  document.addEventListener("click",()=>{ if(isTouch()) hideTip(); });
 }
 
 render();
