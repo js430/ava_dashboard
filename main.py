@@ -791,6 +791,7 @@ async def index(request: Request):
         "avatar": user.get("avatar"),
         "user_id": user["id"],
         "is_admin": is_admin,
+        "is_mod": request.session.get("mod", False),
         "max_position": max_position,
     })
 
@@ -1545,6 +1546,7 @@ async def status_page(request: Request):
         "avatar": user.get("avatar"),
         "user_id": user["id"],
         "is_admin": is_admin,
+        "is_mod": request.session.get("mod", False),
     })
 
 @app.get("/api/status")
@@ -1752,6 +1754,7 @@ async def map_page(request: Request):
         "avatar": user.get("avatar"),
         "user_id": user["id"],
         "is_admin": is_admin,
+        "is_mod": request.session.get("mod", False),
         "google_maps_api_key": GOOGLE_MAPS_API_KEY,
     })
 
@@ -1771,6 +1774,7 @@ async def scan_page(request: Request):
         "avatar": user.get("avatar"),
         "user_id": user["id"],
         "is_admin": is_admin,
+        "is_mod": request.session.get("mod", False),
     })
 
 
