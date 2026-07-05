@@ -814,6 +814,23 @@ async def sample_page(request: Request):
         "upgrade_url": os.getenv("DEMO_UPGRADE_URL", "https://discord.com/channels/1406738815854317658/1502114854335549470"),
     })
 
+@app.get("/sample-status", response_class=HTMLResponse)
+async def sample_status_page(request: Request):
+    """Demo store-status page with fake data. Same audience as /sample."""
+    user = request.session.get("user")
+    if not user:
+        return RedirectResponse("/login")
+    is_staff = int(user["id"]) in ADMIN_USER_IDS or request.session.get("mod", False)
+    if not is_demo(request) and not is_staff:
+        return RedirectResponse("/status")
+    return templates.TemplateResponse("sample_status.html", {
+        "request": request,
+        "username": user["username"],
+        "avatar": user.get("avatar"),
+        "user_id": user["id"],
+        "upgrade_url": os.getenv("DEMO_UPGRADE_URL", "https://discord.com/channels/1406738815854317658/1502114854335549470"),
+    })
+
 @app.get("/terms", response_class=HTMLResponse)
 async def terms_page(request: Request):
     user = request.session.get("user")
@@ -1518,7 +1535,7 @@ async def status_page(request: Request):
     if not user:
         return RedirectResponse("/login")
     if is_demo(request):
-        return RedirectResponse("/sample")
+        return RedirectResponse("/sample-status")
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
     is_admin = int(user["id"]) in ADMIN_USER_IDS

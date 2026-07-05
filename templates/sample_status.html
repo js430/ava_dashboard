@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%23fff' stroke='%23111' stroke-width='2'/><path d='M2 16a14 14 0 0 1 28 0z' fill='%23ee1515'/><path d='M2 16h28' stroke='%23111' stroke-width='3'/><circle cx='16' cy='16' r='5' fill='%23fff' stroke='%23111' stroke-width='3'/></svg>">
+<script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sample Status — Restock Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
+
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 200; }
+  .header-left { display: flex; align-items: center; gap: 10px; }
+  .avatar { width: 30px; height: 30px; border-radius: 50%; background: #5865F2; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: #fff; overflow: hidden; flex-shrink: 0; }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .header-title { font-size: 15px; font-weight: 600; color: #111; display:inline-flex; align-items:center; gap:6px; }
+  .title-emblem { width:18px; height:18px; flex-shrink:0; }
+  .sample-badge { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; color: #854d0e; background: #fef9c3; border: 1px solid #f5d76e; border-radius: 5px; padding: 2px 7px; }
+  .header-user { font-size: 12px; color: #888; }
+  .nav { display: flex; gap: 8px; align-items: center; }
+  .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; }
+  .nav a:hover { background: #f4f4f5; }
+  .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+
+  .main { padding: 20px; max-width: 1200px; margin: 0 auto; }
+
+  .promo { background: #fff; border: 1px solid #e4e4e7; border-left: 4px solid #5865F2; border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .promo-text { flex: 1; min-width: 220px; }
+  .promo-title { font-size: 14px; font-weight: 700; color: #111; margin-bottom: 3px; }
+  .promo-sub { font-size: 12px; color: #666; line-height: 1.5; }
+  .cta-btn { font-size: 13px; font-weight: 600; color: #fff; background: #5865F2; border: none; border-radius: 8px; padding: 9px 18px; text-decoration: none; white-space: nowrap; cursor: pointer; }
+  .cta-btn:hover { background: #4752d4; }
+
+  .toolbar { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 10px 14px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  .toolbar-label { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
+  .search-input { font-size: 12px; height: 30px; padding: 0 10px; border: 1px solid #ddd; border-radius: 6px; color: #111; width: 200px; }
+  .btn-group { display: flex; }
+  .btn-group button { font-size: 12px; height: 30px; padding: 0 11px; border: 1px solid #ddd; background: #fff; color: #333; cursor: pointer; transition: background 0.1s; white-space: nowrap; }
+  .btn-group button:first-child { border-radius: 6px 0 0 6px; }
+  .btn-group button:last-child { border-radius: 0 6px 6px 0; }
+  .btn-group button:not(:first-child) { border-left: none; }
+  .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .row-count { font-size: 12px; color: #aaa; margin-left: auto; }
+
+  .card { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; overflow: hidden; }
+  .tbl-wrap { overflow-x: auto; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  thead th { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.04em; padding: 8px 12px; border-bottom: 1px solid #e4e4e7; text-align: left; white-space: nowrap; background: #fafafa; cursor: pointer; user-select: none; }
+  thead th:hover { color: #333; }
+  tbody tr { border-bottom: 1px solid #f5f5f5; transition: background 0.1s; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: #fafafa; }
+  tbody td { padding: 8px 12px; white-space: nowrap; }
+
+  .store-name { font-weight: 600; color: #111; }
+  .city-name { color: #555; }
+  .time-cell { color: #888; font-size: 12px; }
+
+  .badge { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 4px; }
+  .badge-empty   { background: #fee2e2; color: #991b1b; }
+  .badge-remain  { background: #fef9c3; color: #854d0e; }
+  .badge-restock { background: #dcfce7; color: #166534; }
+  .badge-hope    { background: #ede9fe; color: #5b21b6; }
+
+  .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .dot-empty   { background: #ef4444; }
+  .dot-remain  { background: #eab308; }
+  .dot-restock { background: #22c55e; }
+  .dot-hope    { background: #8b5cf6; }
+
+  .empty-state { text-align: center; padding: 40px; color: #aaa; font-size: 12px; }
+
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .legend-item { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #555; }
+
+  .sample-wm { position: fixed; inset: 0; pointer-events: none; z-index: 5; opacity: 0.06;
+    background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='190'><text x='6' y='110' transform='rotate(-20 160 95)' font-family='sans-serif' font-size='26' font-weight='700' fill='%23000'>SAMPLE DATA</text></svg>");
+    background-repeat: repeat; }
+
+  @media (max-width: 640px) {
+    .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px; }
+    .nav { flex-wrap: wrap; gap: 5px; }
+    .nav a { font-size: 12px; padding: 3px 7px; }
+    .main { padding: 12px; }
+    .toolbar { gap: 8px; padding: 10px 12px; }
+    .search-input { width: 100%; }
+    .btn-group { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .btn-group button { font-size: 12px; padding: 0 8px; height: 28px; }
+    .legend { display: none; }
+    .row-count { margin-left: 0; }
+    tbody td { padding: 6px 8px; font-size: 12px; }
+    thead th { padding: 6px 8px; }
+    .badge { font-size: 12px; padding: 2px 6px; }
+  }
+  .theme-toggle { display: none; font-size: 16px; background: #f4f4f5; border: 1px solid #ddd; border-radius: 6px; padding: 4px 8px; cursor: pointer; line-height: 1; flex-shrink: 0; }
+  html[data-theme="dark"] { color-scheme: dark; }
+  html[data-theme="dark"] body { background: #111113; color: #f0f0f0; }
+  html[data-theme="dark"] .header { background: #1c1c1f; border-bottom-color: #303033; }
+  html[data-theme="dark"] .header-title { color: #f0f0f0; }
+  html[data-theme="dark"] .nav a { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .nav a:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .promo, html[data-theme="dark"] .toolbar, html[data-theme="dark"] .card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .promo-title { color: #f0f0f0; }
+  html[data-theme="dark"] .search-input { background: #252528; border-color: #383838; color: #f0f0f0; }
+  html[data-theme="dark"] .btn-group button { background: #252528; border-color: #383838; color: #ccc; }
+  html[data-theme="dark"] .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] thead th { background: #161618; border-bottom-color: #303033; color: #888; }
+  html[data-theme="dark"] tbody tr { border-bottom-color: #2a2a2d; }
+  html[data-theme="dark"] tbody tr:hover { background: #222226; }
+  html[data-theme="dark"] tbody td { color: #ccc; }
+  html[data-theme="dark"] .store-name { color: #f0f0f0; }
+  html[data-theme="dark"] .city-name { color: #9a9aa8; }
+  html[data-theme="dark"] .sample-wm { opacity: 0.09; }
+  html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
+  /* ── TCG accent ── */
+  .header { position: relative; }
+  .header::after { content:""; position:absolute; left:0; right:0; bottom:-1px; height:3px; z-index:1;
+    background: linear-gradient(90deg,#ee1515 0%,#f4a92e 34%,#5865F2 67%,#8b5cf6 100%); }
+</style>
+</head>
+<body>
+
+<div class="sample-wm"></div>
+
+<div class="header">
+  <div class="header-left">
+    <div class="avatar">
+      {% if avatar %}<img src="https://cdn.discordapp.com/avatars/{{ user_id }}/{{ avatar }}.png" alt="">{% else %}{{ username[0] | upper }}{% endif %}
+    </div>
+    <div>
+      <div class="header-title"><svg class="title-emblem" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="#fff" stroke="#111" stroke-width="2"/><path d="M2 16a14 14 0 0 1 28 0z" fill="#ee1515"/><path d="M2 16h28" stroke="#111" stroke-width="3"/><circle cx="16" cy="16" r="5" fill="#fff" stroke="#111" stroke-width="3"/></svg>Store Status <span class="sample-badge">SAMPLE</span></div>
+      <div class="header-user">{{ username }}</div>
+    </div>
+  </div>
+  <div class="nav">
+    <a href="/sample">Dashboard</a>
+    <a href="/sample-status" class="active">Status</a>
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
+    <a href="/logout">Log out</a>
+  </div>
+</div>
+
+<div class="main">
+
+  <div class="promo">
+    <div class="promo-text">
+      <div class="promo-title">You're viewing a sample with demo data</div>
+      <div class="promo-sub">These store statuses are randomly generated — not real. Get the member role in the server to unlock live status tracking.</div>
+    </div>
+    {% if upgrade_url %}<a class="cta-btn" href="{{ upgrade_url }}" target="_blank" rel="noopener noreferrer">Get premium access</a>{% endif %}
+  </div>
+
+  <div class="toolbar">
+    <span class="toolbar-label">Last Status</span>
+    <input class="search-input" type="text" placeholder="Search store or location…" oninput="applyFilters()">
+    <div class="btn-group" id="storeFilter">
+      <button class="active" data-store="all" onclick="setStore('all', this)">All</button>
+      <button data-store="Target"           onclick="setStore('Target', this)">Target</button>
+      <button data-store="Walmart"          onclick="setStore('Walmart', this)">Walmart</button>
+      <button data-store="Best Buy"         onclick="setStore('Best Buy', this)">Best Buy</button>
+      <button data-store="5 Below"          onclick="setStore('5 Below', this)">5 Below</button>
+      <button data-store="Barnes and Noble" onclick="setStore('Barnes and Noble', this)">B&amp;N</button>
+    </div>
+    <div class="legend">
+      <span class="legend-item"><span class="dot dot-restock"></span>Restocked</span>
+      <span class="legend-item"><span class="dot dot-remain"></span>Stock Remaining</span>
+      <span class="legend-item"><span class="dot dot-empty"></span>Empty</span>
+      <span class="legend-item"><span class="dot dot-hope"></span>Hope Alert</span>
+    </div>
+    <span class="row-count" id="rowCount">—</span>
+  </div>
+
+  <div class="card">
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th onclick="sortBy('store')">Store</th>
+            <th onclick="sortBy('city')">Location</th>
+            <th onclick="sortBy('status')">Last Status</th>
+            <th onclick="sortBy('time')">Time</th>
+          </tr>
+        </thead>
+        <tbody id="statusBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+
+let allRows = [];
+let activeStore = 'all';
+let sortKey = 'time';
+let sortAsc = false;
+
+const STATUS_LABELS = { restock:'Restocked', remain:'Stock Remaining', empty:'Empty', hope:'Hope Alert' };
+const STORES_POOL = [
+  {store:"Target", cities:["(Alexandria) Potomac Yard","(Chantilly) Chantilly Crossing","(Springfield) Town Center","(Reston) Sunset Hills Rd","(Leesburg) Edwards Ferry Rd","Wheaton","Laurel","(Gainesville) Virginia Gateway","Crofton / Waugh Chapel","(Sterling) Potomac Run"]},
+  {store:"Walmart", cities:["(South Riding) Dulles Landing","(Burke) Burke Commons Rd","(Sterling) Dulles Crossing","(Chantilly) Chantilly Shopping Center","Haymarket"]},
+  {store:"Best Buy", cities:["(Alexandria) Potomac Yard","Fair Lakes","Sterling"]},
+  {store:"5 Below", cities:["Ashburn","Centreville","Manassas"]},
+  {store:"Barnes and Noble", cities:["Reston Town Center","Springfield"]},
+  {store:"BJ's Wholesale Club", cities:["(Fairfax) Fair Lakes","Alexandria"]},
+  {store:"CVS", cities:["Van Dorn St","110 Edds Ln Sterling","(Burke) Old Keene Mill"]},
+  {store:"Walgreens", cities:["(Ashburn) Goose Creek Village","(Ashburn) Claiborne Pkwy","(Centreville) Lee Hwy"]},
+  {store:"Costco", cities:["Hybla Valley","Pentagon City"]},
+];
+
+function badge(status){
+  const label = STATUS_LABELS[status] || status;
+  return `<span class="badge badge-${status}"><span class="dot dot-${status}"></span>${label}</span>`;
+}
+function fullTime(isoStr){
+  return new Date(isoStr).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit', hour12:true });
+}
+
+function buildRows(){
+  const combos=[];
+  STORES_POOL.forEach(s=>s.cities.forEach(c=>combos.push({store:s.store, city:c})));
+  const rng=mulberry32(778291);
+  for(let i=combos.length-1;i>0;i--){ const j=Math.floor(rng()*(i+1)); [combos[i],combos[j]]=[combos[j],combos[i]]; }
+  const STATUSES=["empty","empty","empty","empty","empty","empty","remain","remain","restock","restock","hope"];
+  let t=Date.now()-2*60*1000;
+  return combos.map(c=>{
+    const status=STATUSES[Math.floor(rng()*STATUSES.length)];
+    const row={ store:c.store, city:c.city, status, time:new Date(t).toISOString() };
+    t -= (8 + Math.floor(rng()*72))*60*1000;
+    return row;
+  });
+}
+
+function setStore(store, btn){
+  activeStore = store;
+  document.querySelectorAll('#storeFilter button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  applyFilters();
+}
+function sortBy(key){
+  if (sortKey === key) sortAsc = !sortAsc;
+  else { sortKey = key; sortAsc = key !== 'time'; }
+  applyFilters();
+}
+
+function applyFilters(){
+  const q = document.querySelector('.search-input').value.trim().toLowerCase();
+  let rows = allRows.filter(r => {
+    if (activeStore !== 'all' && r.store !== activeStore) return false;
+    if (q && !r.store.toLowerCase().includes(q) && !r.city.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  rows.sort((a, b) => {
+    let va = a[sortKey] ?? '', vb = b[sortKey] ?? '';
+    if (sortKey === 'time') { va = new Date(a.time); vb = new Date(b.time); }
+    if (va < vb) return sortAsc ? -1 : 1;
+    if (va > vb) return sortAsc ? 1 : -1;
+    return 0;
+  });
+  render(rows);
+}
+
+function render(rows){
+  const body = document.getElementById('statusBody');
+  document.getElementById('rowCount').textContent = `${rows.length} location${rows.length !== 1 ? 's' : ''}`;
+  if (!rows.length){
+    body.innerHTML = '<tr><td colspan="4" class="empty-state">No stores match — try a different filter or search.</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(r => `
+    <tr>
+      <td class="store-name">${esc(r.store)}</td>
+      <td class="city-name">${esc(r.city)}</td>
+      <td>${badge(r.status)}</td>
+      <td class="time-cell">${fullTime(r.time)}</td>
+    </tr>`).join('');
+}
+
+allRows = buildRows();
+applyFilters();
+(function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();};upd();})();
+</script>
+</body>
+</html>
