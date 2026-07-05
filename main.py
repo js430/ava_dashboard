@@ -685,10 +685,18 @@ def verify_oauth_state(state: str | None) -> bool:
         return False
 
 # ---- Helpers ----
+def is_demo(request: Request) -> bool:
+    """True if the session belongs to a role-less 'sample' viewer. Missing flag
+    (pre-existing member sessions) defaults to full access."""
+    return request.session.get("member", True) is False
+
 def get_current_user(request: Request):
     user = request.session.get("user")
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    # Sample/demo viewers never reach live-data endpoints.
+    if is_demo(request):
+        raise HTTPException(status_code=403, detail="Live data requires the member role.")
     return user
 
 async def terms_current(request: Request, user: dict) -> bool:
@@ -769,6 +777,8 @@ async def index(request: Request):
     user = request.session.get("user")
     if not user:
         return RedirectResponse("/login")
+    if is_demo(request):
+        return RedirectResponse("/sample")
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
     is_admin = int(user["id"]) in ADMIN_USER_IDS
@@ -780,6 +790,24 @@ async def index(request: Request):
         "user_id": user["id"],
         "is_admin": is_admin,
         "max_position": max_position,
+    })
+
+@app.get("/sample", response_class=HTMLResponse)
+async def sample_page(request: Request):
+    """Demo dashboard with fake data for authenticated users who lack the
+    member role. Serves no live data — all numbers are generated client-side."""
+    user = request.session.get("user")
+    if not user:
+        return RedirectResponse("/login")
+    # Full members have no reason to see the sample.
+    if not is_demo(request):
+        return RedirectResponse("/")
+    return templates.TemplateResponse("sample.html", {
+        "request": request,
+        "username": user["username"],
+        "avatar": user.get("avatar"),
+        "user_id": user["id"],
+        "upgrade_url": os.getenv("DEMO_UPGRADE_URL", ""),
     })
 
 @app.get("/terms", response_class=HTMLResponse)
@@ -862,9 +890,13 @@ async def callback(request: Request, code: str = None, error: str = None, state:
     if not user:
         return HTMLResponse("<h3>Could not verify your Discord account.</h3>", status_code=403)
 
-    if not has_role:
+    is_admin_user = int(user["id"]) in ADMIN_USER_IDS
+    is_member = bool(has_role) or is_admin_user
+
+    # Users explicitly on the deny list are hard-blocked — no sample access.
+    if not is_member and (DENY_ROLE_IDS & set(member_roles)):
         return HTMLResponse(
-            "<h3>Access denied.</h3><p>You need the required role in the server to view this dashboard.</p>",
+            "<h3>Access denied.</h3><p>Your access to this dashboard has been restricted.</p>",
             status_code=403
         )
 
@@ -873,7 +905,10 @@ async def callback(request: Request, code: str = None, error: str = None, state:
         "username": user["username"],
         "avatar": user.get("avatar")
     }
-    request.session["max_position"] = _get_max_position(member_roles)
+    request.session["member"] = is_member
+    if is_member:
+        request.session["max_position"] = _get_max_position(member_roles)
+
     ip_address = get_real_ip(request)
     try:
         async with app.state.db.acquire() as conn:
@@ -886,11 +921,12 @@ async def callback(request: Request, code: str = None, error: str = None, state:
                 user["username"],
                 ip_address
             )
-        logger.info(f"Dashboard login: {user['username']} ({user['id']}) from {ip_address}")
+        logger.info(f"Dashboard login: {user['username']} ({user['id']}) from {ip_address} "
+                    f"[{'member' if is_member else 'sample'}]")
     except Exception as e:
         logger.error(f"Failed to log dashboard session: {e}")
 
-    return RedirectResponse("/")
+    return RedirectResponse("/" if is_member else "/sample")
 
 @app.get("/logout")
 async def logout(request: Request):
@@ -1476,6 +1512,8 @@ async def status_page(request: Request):
     user = request.session.get("user")
     if not user:
         return RedirectResponse("/login")
+    if is_demo(request):
+        return RedirectResponse("/sample")
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
     is_admin = int(user["id"]) in ADMIN_USER_IDS
@@ -1681,6 +1719,8 @@ async def map_page(request: Request):
     user = request.session.get("user")
     if not user:
         return RedirectResponse("/login")
+    if is_demo(request):
+        return RedirectResponse("/sample")
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
     is_admin = int(user["id"]) in ADMIN_USER_IDS
@@ -1698,6 +1738,8 @@ async def scan_page(request: Request):
     user = request.session.get("user")
     if not user:
         return RedirectResponse("/login")
+    if is_demo(request):
+        return RedirectResponse("/sample")
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
     is_admin = int(user["id"]) in ADMIN_USER_IDS

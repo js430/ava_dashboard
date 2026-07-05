@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%23fff' stroke='%23111' stroke-width='2'/><path d='M2 16a14 14 0 0 1 28 0z' fill='%23ee1515'/><path d='M2 16h28' stroke='%23111' stroke-width='3'/><circle cx='16' cy='16' r='5' fill='%23fff' stroke='%23111' stroke-width='3'/></svg>">
+<script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sample — Restock Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
+
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 200; }
+  .header::after { content:""; position:absolute; left:0; right:0; bottom:-1px; height:3px; background: linear-gradient(90deg,#ee1515 0%,#f4a92e 34%,#5865F2 67%,#8b5cf6 100%); }
+  .header-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .avatar { width: 30px; height: 30px; border-radius: 50%; background: #5865F2; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: #fff; overflow: hidden; flex-shrink: 0; }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .header-title { font-size: 15px; font-weight: 600; color: #111; display:inline-flex; align-items:center; gap:6px; white-space: nowrap; }
+  .title-emblem { width:18px; height:18px; flex-shrink:0; }
+  .sample-badge { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; color: #854d0e; background: #fef9c3; border: 1px solid #f5d76e; border-radius: 5px; padding: 2px 7px; }
+  .header-user { font-size: 12px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+  .header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .logout { font-size: 12px; color: #888; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; white-space: nowrap; }
+
+  .main { padding: 16px; max-width: 1200px; margin: 0 auto; }
+
+  .promo { background: #fff; border: 1px solid #e4e4e7; border-left: 4px solid #5865F2; border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .promo-text { flex: 1; min-width: 220px; }
+  .promo-title { font-size: 14px; font-weight: 700; color: #111; margin-bottom: 3px; }
+  .promo-sub { font-size: 12px; color: #666; line-height: 1.5; }
+  .cta-btn { font-size: 13px; font-weight: 600; color: #fff; background: #5865F2; border: none; border-radius: 8px; padding: 9px 18px; text-decoration: none; white-space: nowrap; cursor: pointer; }
+  .cta-btn:hover { background: #4752d4; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 16px; background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px 14px; }
+  .ctrl-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .controls label { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
+  .btn-group { display: flex; }
+  .btn-group button { font-size: 12px; height: 30px; padding: 0 11px; border: 1px solid #ddd; background: #fff; color: #333; cursor: pointer; white-space: nowrap; }
+  .btn-group button:first-child { border-radius: 6px 0 0 6px; }
+  .btn-group button:last-child  { border-radius: 0 6px 6px 0; }
+  .btn-group button:not(:first-child) { border-left: none; }
+  .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .ctrl-divider { width: 100%; height: 1px; background: #f0f0f0; }
+  .pill-static { font-size: 12px; font-weight: 500; color:#111; }
+
+  .table-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px; position: relative; overflow: hidden; }
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { border-collapse: collapse; font-size: 12px; }
+  .loc-cell { font-size: 12px; white-space: nowrap; padding: 3px 8px 3px 0; text-align: right; min-width: 120px; }
+  .loc-name { color: #111; font-weight: 500; }
+  .col-head { font-size: 12px; color: #888; text-align: center; padding: 2px 1px; min-width: 40px; }
+  .sub-head { font-size: 12px; color: #aaa; text-align: center; padding: 1px; }
+  .cell { width: 40px; height: 22px; text-align: center; vertical-align: middle; font-size: 12px; font-weight: 500; border-radius: 3px; border: 1px solid transparent; }
+  .day-divider { border-left: 2px solid #d1d5db !important; }
+  .total-head { font-size: 12px; color: #888; text-align: center; padding: 2px 6px; }
+  .total-cell { font-size: 12px; font-weight: 600; text-align: center; padding: 0 6px; }
+  .store-group-header { cursor: pointer; user-select: none; }
+  .store-group-header:hover .store-header-inner { background: #f9f9f9; }
+  .store-header-inner { display: flex; align-items: center; gap: 8px; padding: 7px 8px 7px 0; border-top: 2px solid #e4e4e7; margin-top: 6px; }
+  .store-header-name { font-size: 12px; font-weight: 700; color: #111; }
+  .store-header-count { font-size: 12px; color: #999; font-weight: 400; }
+  .store-chevron { margin-left: auto; font-size: 12px; color: #aaa; transition: transform 0.2s; display: inline-block; }
+  .store-chevron.open { transform: rotate(90deg); }
+  .legend { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 12px; color: #888; }
+  .legend-swatch { width: 16px; height: 10px; border-radius: 2px; }
+
+  .sample-wm { position: fixed; inset: 0; pointer-events: none; z-index: 5; opacity: 0.06;
+    background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='190'><text x='6' y='110' transform='rotate(-20 160 95)' font-family='sans-serif' font-size='26' font-weight='700' fill='%23000'>SAMPLE DATA</text></svg>");
+    background-repeat: repeat; }
+
+  @media (max-width: 768px) {
+    .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 8px 12px; }
+    .header-right { flex-wrap: wrap; gap: 5px; width: 100%; }
+    .main { padding: 12px; }
+    .btn-group { overflow-x: auto; }
+  }
+  .theme-toggle { display: none; font-size: 16px; background: #f4f4f5; border: 1px solid #ddd; border-radius: 6px; padding: 4px 8px; cursor: pointer; line-height: 1; flex-shrink: 0; }
+  html[data-theme="dark"] { color-scheme: dark; }
+  html[data-theme="dark"] body { background: #111113; color: #f0f0f0; }
+  html[data-theme="dark"] .header { background: #1c1c1f; border-bottom-color: #303033; }
+  html[data-theme="dark"] .header-title { color: #f0f0f0; }
+  html[data-theme="dark"] .logout { color: #bbbbc5; border-color: #383838; background: #252528; }
+  html[data-theme="dark"] .promo, html[data-theme="dark"] .controls, html[data-theme="dark"] .table-card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .promo-title { color: #f0f0f0; }
+  html[data-theme="dark"] .btn-group button { background: #252528; border-color: #383838; color: #ccc; }
+  html[data-theme="dark"] .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .ctrl-divider { background: #2a2a2d; }
+  html[data-theme="dark"] .store-header-inner { border-top-color: #303033; }
+  html[data-theme="dark"] .store-header-name, html[data-theme="dark"] .loc-name { color: #f0f0f0; }
+  html[data-theme="dark"] .day-divider { border-left-color: #555 !important; }
+  html[data-theme="dark"] .sample-wm { opacity: 0.09; }
+  html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
+</style>
+</head>
+<body>
+
+<div class="sample-wm"></div>
+
+<div class="header">
+  <div class="header-left">
+    <div class="avatar">
+      {% if avatar %}<img src="https://cdn.discordapp.com/avatars/{{ user_id }}/{{ avatar }}.png" alt="">{% else %}{{ username[0] | upper }}{% endif %}
+    </div>
+    <div>
+      <div class="header-title"><svg class="title-emblem" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="#fff" stroke="#111" stroke-width="2"/><path d="M2 16a14 14 0 0 1 28 0z" fill="#ee1515"/><path d="M2 16h28" stroke="#111" stroke-width="3"/><circle cx="16" cy="16" r="5" fill="#fff" stroke="#111" stroke-width="3"/></svg>Restock Dashboard <span class="sample-badge">SAMPLE</span></div>
+      <div class="header-user">{{ username }}</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
+    <a href="/logout" class="logout">Log out</a>
+  </div>
+</div>
+
+<div class="main">
+
+  <div class="promo">
+    <div class="promo-text">
+      <div class="promo-title">You're viewing a sample with demo data</div>
+      <div class="promo-sub">Everything below is randomly generated — not real restocks. Get the member role in the server to unlock live restock tracking, the store map, and the card scanner.</div>
+    </div>
+    {% if upgrade_url %}<a class="cta-btn" href="{{ upgrade_url }}" target="_blank" rel="noopener noreferrer">Get access</a>{% endif %}
+  </div>
+
+  <div class="controls">
+    <div class="ctrl-row">
+      <label>Period</label>
+      <span class="pill-static">This week</span>
+    </div>
+    <div class="ctrl-divider"></div>
+    <div class="ctrl-row">
+      <label>State</label>
+      <div class="btn-group"><button class="active">NOVA</button><button>CVA</button><button>DC</button></div>
+    </div>
+    <div class="ctrl-divider"></div>
+    <div class="ctrl-row">
+      <label>Time</label>
+      <div class="btn-group">
+        <button id="btnSlot" class="active" onclick="setSlot(true,this)">AM / PM / Eve</button>
+        <button id="btnDay" onclick="setSlot(false,this)">Day total</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="table-card">
+    <div class="table-scroll">
+      <table id="ht"></table>
+    </div>
+    <div class="legend">
+      <span>None</span>
+      <div style="display:flex;gap:2px;" id="legendBar"></div>
+      <span>High</span>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+
+const SLOTS   = ["Morning","Afternoon","Evening"];
+const SLOT_S  = ["AM","PM","Eve"];
+const STORE_ORDER = ["Target","Walmart","Best Buy","5 Below","Barnes and Noble"];
+const FAKE_LOCS = {
+  "Target":           ["Riverbend Commons","Oak Hollow","Maple Grove","Cedar Crossing","Stonebridge Plaza"],
+  "Walmart":          ["Willow Creek","Pine Valley","Harbor Point","Granite Ridge"],
+  "Best Buy":         ["Summit Plaza","Brookfield Center","Kingsway Mall"],
+  "5 Below":          ["Ashford Park","Fox Run","Devon Square"],
+  "Barnes and Noble": ["Highgrove","Wyndham Center"],
+};
+let showSlots = true;
+const expandedStores = new Set(STORE_ORDER);
+
+// Deterministic PRNG so the fake data stays stable across re-renders.
+function hashSeed(str){ let h=2166136261; for(let i=0;i<str.length;i++){ h^=str.charCodeAt(i); h=Math.imul(h,16777619); } return h>>>0; }
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+
+function buildDayList(){
+  const list=[], now=new Date(), monday=new Date(now);
+  monday.setDate(now.getDate()-((now.getDay()+6)%7));
+  for(let i=0;i<7;i++){
+    const d=new Date(monday); d.setDate(monday.getDate()+i);
+    if(d>now) break;
+    const yy=d.getFullYear(), mm=String(d.getMonth()+1).padStart(2,'0'), dd=String(d.getDate()).padStart(2,'0');
+    list.push({ key:`${yy}-${mm}-${dd}`, label:d.toLocaleDateString("en-US",{weekday:"short"}) });
+  }
+  return list;
+}
+
+function fakeTimes(rng, count, slot){
+  const base = slot==="Morning"?8 : slot==="Afternoon"?12 : 17;
+  const span = slot==="Evening"?4:5;
+  const out=[];
+  for(let i=0;i<count;i++){
+    let h = base + Math.floor(rng()*span);
+    const m = Math.floor(rng()*60);
+    const ap = h>=12?"PM":"AM"; let hh=h%12; if(hh===0) hh=12;
+    out.push(`${hh}:${String(m).padStart(2,'0')} ${ap}`);
+  }
+  return out.sort();
+}
+
+function buildData(dayList){
+  const data={};
+  STORE_ORDER.forEach(store=>{
+    data[store]=(FAKE_LOCS[store]||[]).map(location=>{
+      const days={};
+      dayList.forEach(({key})=>{
+        const rng=mulberry32(hashSeed(store+"|"+location+"|"+key));
+        const slots={};
+        SLOTS.forEach(sl=>{
+          const roll=rng();
+          let count = roll<0.55?0 : roll<0.8?1 : roll<0.93?2 : 3;
+          slots[sl]=fakeTimes(rng,count,sl);
+        });
+        days[key]=slots;
+      });
+      return { location, days };
+    });
+  });
+  return data;
+}
+
+function getHeatColor(val,max){
+  if(val===0) return {bg:"#f4f4f5",fg:"#bbb"};
+  const t=Math.min(val/max,1); let r,g,b;
+  if(t<0.5){ const p=t/0.5; r=Math.round(52+p*(230-52)); g=Math.round(168+p*(210-168)); b=Math.round(83+p*(40-83)); }
+  else { const p=(t-0.5)/0.5; r=Math.round(230+p*(220-230)); g=Math.round(210+p*(50-210)); b=Math.round(40+p*(50-40)); }
+  const br=(r*299+g*587+b*114)/1000;
+  return {bg:`rgb(${r},${g},${b})`,fg:br>140?"#111":"#fff"};
+}
+
+const DAY_LIST = buildDayList();
+const DATA = buildData(DAY_LIST);
+
+function toggleStore(name){ if(expandedStores.has(name)) expandedStores.delete(name); else expandedStores.add(name); render(); }
+function setSlot(slots, btn){ showSlots=slots; document.querySelectorAll('#btnSlot,#btnDay').forEach(b=>b.classList.remove('active')); btn.classList.add('active'); render(); }
+
+function render(){
+  let maxVal=0;
+  STORE_ORDER.forEach(store=>(DATA[store]||[]).forEach(loc=>DAY_LIST.forEach(({key})=>{
+    const d=loc.days[key];
+    if(showSlots){ SLOTS.forEach(sl=>{ if(d[sl].length>maxVal) maxVal=d[sl].length; }); }
+    else { const t=SLOTS.reduce((s,sl)=>s+d[sl].length,0); if(t>maxVal) maxVal=t; }
+  })));
+  if(maxVal===0) maxVal=1;
+
+  let html="<thead>";
+  if(showSlots){
+    html+="<tr><th class='loc-cell'></th>";
+    DAY_LIST.forEach(({label},i)=>{ html+=`<th class='col-head${i>0?" day-divider":""}' colspan='3'>${label}</th>`; });
+    html+="<th class='total-head'>Total</th></tr><tr><th class='loc-cell'></th>";
+    DAY_LIST.forEach((_,i)=>{ SLOT_S.forEach((s,si)=>{ html+=`<th class='sub-head${si===0&&i>0?" day-divider":""}'>${s}</th>`; }); });
+    html+="<th></th></tr>";
+  } else {
+    html+="<tr><th class='loc-cell'></th>";
+    DAY_LIST.forEach(({label},i)=>{ html+=`<th class='col-head${i>0?" day-divider":""}'>${label}</th>`; });
+    html+="<th class='total-head'>Total</th></tr>";
+  }
+  html+="</thead><tbody>";
+  const spanCols=showSlots?DAY_LIST.length*3:DAY_LIST.length;
+
+  STORE_ORDER.forEach(store=>{
+    const group=DATA[store]||[];
+    if(!group.length) return;
+    const isOpen=expandedStores.has(store);
+    const totalRestocks=group.reduce((sum,loc)=>sum+DAY_LIST.reduce((s,{key})=>s+SLOTS.reduce((ss,sl)=>ss+loc.days[key][sl].length,0),0),0);
+    html+=`<tr class='store-group-header' onclick='toggleStore(${JSON.stringify(store)})'>
+      <td colspan='${spanCols+2}'><div class='store-header-inner'>
+        <span class='store-header-name'>${esc(store)}</span>
+        <span class='store-header-count'>${group.length} loc · ${totalRestocks} restocks</span>
+        <span class='store-chevron${isOpen?" open":""}'>&#9654;</span>
+      </div></td></tr>`;
+    if(!isOpen) return;
+    group.forEach(loc=>{
+      let rowTotal=0;
+      html+=`<tr><td class='loc-cell'><span class="loc-name">${esc(loc.location)}</span></td>`;
+      DAY_LIST.forEach(({key},dayIdx)=>{
+        const d=loc.days[key];
+        if(showSlots){
+          SLOTS.forEach((sl,slIdx)=>{
+            const count=d[sl].length; rowTotal+=count;
+            const {bg,fg}=getHeatColor(count,maxVal);
+            const div=slIdx===0&&dayIdx>0?" day-divider":"";
+            html+=`<td class='cell${div}' style='background:${bg};color:${fg}'>${count>0?count:"<span style='opacity:0.3'>·</span>"}</td>`;
+          });
+        } else {
+          const count=SLOTS.reduce((s,sl)=>s+d[sl].length,0); rowTotal+=count;
+          const {bg,fg}=getHeatColor(count,maxVal);
+          const div=dayIdx>0?" day-divider":"";
+          html+=`<td class='cell${div}' style='background:${bg};color:${fg}'>${count>0?count:"<span style='opacity:0.3'>·</span>"}</td>`;
+        }
+      });
+      html+=`<td class='total-cell'>${rowTotal}</td></tr>`;
+    });
+  });
+  html+="</tbody>";
+  document.getElementById("ht").innerHTML=html;
+
+  document.getElementById("legendBar").innerHTML=
+    ["#f4f4f5","#34a853","#6dbf4a","#b5d940","#e6c832","#e68220","#dc3232"]
+    .map((c,i)=>`<div class='legend-swatch' style='background:${c};${i===0?"border:1px solid #e4e4e7":""}'></div>`).join("");
+}
+
+render();
+(function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();};upd();})();
+</script>
+</body>
+</html>
