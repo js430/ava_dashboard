@@ -807,7 +807,7 @@ async def sample_page(request: Request):
         "username": user["username"],
         "avatar": user.get("avatar"),
         "user_id": user["id"],
-        "upgrade_url": os.getenv("DEMO_UPGRADE_URL", ""),
+        "upgrade_url": os.getenv("DEMO_UPGRADE_URL", "https://discord.gg/v6VGGw7cEz"),
     })
 
 @app.get("/terms", response_class=HTMLResponse)
