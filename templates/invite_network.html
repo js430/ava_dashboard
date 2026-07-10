@@ -69,6 +69,11 @@
   .tree-row.focus-row .gen-chip { background: #5865F2; color: #fff; }
   .locate-btn { font-size: 12px; border: none; background: none; color: #aaa; cursor: pointer; padding: 0 3px; flex-shrink: 0; }
   .locate-btn:hover { color: #5865F2; }
+  .depth-ctl { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #555; }
+  .depth-ctl input[type=range] { width: 110px; accent-color: #5865F2; }
+  .depth-val { min-width: 46px; font-weight: 600; color: #111; }
+  html[data-theme="dark"] .depth-ctl { color: #bbb; }
+  html[data-theme="dark"] .depth-val { color: #f0f0f0; }
 
   @media (max-width: 640px) {
     .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px; }
@@ -188,7 +193,11 @@
     <div class="explorer-toolbar">
       <span class="explorer-title">Network explorer</span>
       <input class="search-input" id="explorerInput" type="text" placeholder="Username or ID…" oninput="explorerSearch()" style="width:220px">
-      <span class="explorer-sub">Everyone within 3 invite steps — up the inviter chain, down through invitees, and across siblings. Click a name to re-center; ◎ locates them in the graph above.</span>
+      <label class="depth-ctl">Steps
+        <input type="range" id="depthSlider" min="1" max="5" step="1" value="1" oninput="onDepthChange()">
+        <span class="depth-val" id="depthLabel">1 step</span>
+      </label>
+      <span class="explorer-sub">Everyone within the chosen number of invite steps — up the inviter chain, down through invitees, and across siblings. Click a name to re-center; ◎ locates them in the graph above.</span>
     </div>
     <div class="match-chips" id="matchChips" style="display:none"></div>
     <div class="explorer-body" id="explorerBody">
@@ -372,12 +381,19 @@ function searchUser() {
   }
 }
 
-// ── Network explorer (3 steps in either direction) ──
-const MAX_DEPTH = 3;
+// ── Network explorer (N steps in either direction) ──
+let explorerDepth = 1;   // slider-controlled, 1–5
 const MAX_TREE_NODES = 500;
+let currentFocus = null; // uid the explorer is centered on
 let nodeById = {};       // uid -> raw node
 let childrenMap = {};    // inviter uid -> [invitee uids]
 let parentMap = {};      // invitee uid -> inviter uid
+
+function onDepthChange() {
+  explorerDepth = parseInt(document.getElementById('depthSlider').value, 10) || 1;
+  document.getElementById('depthLabel').textContent = explorerDepth + (explorerDepth === 1 ? ' step' : ' steps');
+  if (currentFocus) renderExplorer(currentFocus);
+}
 
 function buildExplorerMaps() {
   nodeById = {}; childrenMap = {}; parentMap = {};
@@ -401,11 +417,11 @@ function neighborsOf(uid) {
   return out;
 }
 
-// Undirected BFS -> Map(uid -> distance from focus), capped at MAX_DEPTH
+// Undirected BFS -> Map(uid -> distance from focus), capped at explorerDepth
 function bfsWithin(focus) {
   const dist = new Map([[focus, 0]]);
   let frontier = [focus];
-  for (let d = 1; d <= MAX_DEPTH; d++) {
+  for (let d = 1; d <= explorerDepth; d++) {
     const next = [];
     frontier.forEach(uid => neighborsOf(uid).forEach(nb => {
       if (!dist.has(nb)) { dist.set(nb, d); next.push(nb); }
@@ -483,6 +499,7 @@ function treeRowHtml(uid, focus, gen) {
 function renderExplorer(focus) {
   focus = String(focus);
   if (!nodeById[focus]) return;
+  currentFocus = focus;
   const input = document.getElementById('explorerInput');
   if (input.value !== nodeById[focus].label) input.value = nodeById[focus].label;
   document.getElementById('matchChips').style.display = 'none';
@@ -492,7 +509,7 @@ function renderExplorer(focus) {
 
   // Root the tree at the highest ancestor within reach of the focus
   let root = focus, hops = 0;
-  while (hops < MAX_DEPTH && parentMap[root] && dist.has(parentMap[root])) { root = parentMap[root]; hops++; }
+  while (hops < explorerDepth && parentMap[root] && dist.has(parentMap[root])) { root = parentMap[root]; hops++; }
 
   let rendered = 0;
   function renderSubtree(uid) {
@@ -510,7 +527,7 @@ function renderExplorer(focus) {
   const capNote = rendered >= MAX_TREE_NODES
     ? `<div class="explorer-empty">Large network — showing the first ${MAX_TREE_NODES} members.</div>` : '';
   const summary = `<div class="explorer-sub" style="margin-bottom:10px;">
-    <strong>${escHtml(nodeById[focus].label)}</strong> — ${dist.size - 1} member${dist.size - 1 === 1 ? '' : 's'} within ${MAX_DEPTH} steps</div>`;
+    <strong>${escHtml(nodeById[focus].label)}</strong> — ${dist.size - 1} member${dist.size - 1 === 1 ? '' : 's'} within ${explorerDepth} step${explorerDepth === 1 ? '' : 's'}</div>`;
   document.getElementById('explorerBody').innerHTML =
     summary + (dist.size > 1 ? treeHtml + capNote : treeHtml + '<div class="explorer-empty">No invite connections found for this user.</div>');
 }
