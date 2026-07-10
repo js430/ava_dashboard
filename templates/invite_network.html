@@ -47,6 +47,29 @@
   .tooltip-name { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
   .tooltip-row { color: #666; }
 
+  /* ── Network explorer ── */
+  .explorer-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; overflow: hidden; margin-top: 16px; }
+  .explorer-toolbar { padding: 12px 16px; border-bottom: 1px solid #e4e4e7; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .explorer-title { font-size: 14px; font-weight: 600; color: #111; }
+  .explorer-sub { font-size: 12px; color: #999; }
+  .match-chips { padding: 10px 16px; display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid #f0f0f0; }
+  .match-chip { font-size: 12px; padding: 4px 10px; border: 1px solid #ddd; border-radius: 20px; background: #fff; color: #333; cursor: pointer; }
+  .match-chip:hover { border-color: #5865F2; color: #5865F2; }
+  .explorer-body { padding: 14px 16px; overflow-x: auto; }
+  .explorer-empty { color: #aaa; font-size: 12px; padding: 20px; text-align: center; }
+  .tree-children { margin-left: 11px; padding-left: 14px; border-left: 1px solid #e4e4e7; }
+  .tree-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 6px; font-size: 12px; min-width: 0; white-space: nowrap; }
+  .tree-row:hover { background: #f6f6f8; }
+  .tree-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .tree-name { font-weight: 600; color: #111; cursor: pointer; }
+  .tree-name:hover { color: #5865F2; text-decoration: underline; }
+  .tree-meta { color: #999; font-size: 12px; }
+  .gen-chip { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 10px; background: #f0f1ff; color: #4752d4; flex-shrink: 0; }
+  .tree-row.focus-row { background: #eef0ff; outline: 1.5px solid #5865F2; }
+  .tree-row.focus-row .gen-chip { background: #5865F2; color: #fff; }
+  .locate-btn { font-size: 12px; border: none; background: none; color: #aaa; cursor: pointer; padding: 0 3px; flex-shrink: 0; }
+  .locate-btn:hover { color: #5865F2; }
+
   @media (max-width: 640px) {
     .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px; }
     .nav { gap: 5px; }
@@ -85,6 +108,18 @@
   html[data-theme="dark"] .node-tooltip { background: #1c1c1f; border-color: #303033; color: #f0f0f0; }
   html[data-theme="dark"] .tooltip-row { color: #aaa; }
   html[data-theme="dark"] #graphContainer { background: #161618; }
+  html[data-theme="dark"] .explorer-card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .explorer-toolbar { border-bottom-color: #303033; }
+  html[data-theme="dark"] .explorer-title { color: #f0f0f0; }
+  html[data-theme="dark"] .match-chips { border-bottom-color: #2a2a2d; }
+  html[data-theme="dark"] .match-chip { background: #252528; border-color: #383838; color: #ccc; }
+  html[data-theme="dark"] .match-chip:hover { border-color: #818cf8; color: #818cf8; }
+  html[data-theme="dark"] .tree-children { border-left-color: #303033; }
+  html[data-theme="dark"] .tree-row:hover { background: #222226; }
+  html[data-theme="dark"] .tree-name { color: #f0f0f0; }
+  html[data-theme="dark"] .tree-name:hover { color: #818cf8; }
+  html[data-theme="dark"] .gen-chip { background: #1e2040; color: #a5acf5; }
+  html[data-theme="dark"] .tree-row.focus-row { background: #1e2040; outline-color: #5865F2; }
 </style>
 </head>
 <body>
@@ -149,6 +184,18 @@
     </div>
   </div>
 
+  <div class="explorer-card">
+    <div class="explorer-toolbar">
+      <span class="explorer-title">Network explorer</span>
+      <input class="search-input" id="explorerInput" type="text" placeholder="Username or ID…" oninput="explorerSearch()" style="width:220px">
+      <span class="explorer-sub">Everyone within 3 invite steps — up the inviter chain, down through invitees, and across siblings. Click a name to re-center; ◎ locates them in the graph above.</span>
+    </div>
+    <div class="match-chips" id="matchChips" style="display:none"></div>
+    <div class="explorer-body" id="explorerBody">
+      <div class="explorer-empty">Search a username or ID to map their invite network.</div>
+    </div>
+  </div>
+
 </div>
 
 <div class="node-tooltip" id="nodeTooltip"></div>
@@ -161,13 +208,14 @@ let network = null;
 let allNodes = null;
 let allEdges = null;
 let rawNodes = [];
+let rawEdges = [];
 
 function isDarkMode() {
   return document.documentElement.getAttribute('data-theme') === 'dark';
 }
 
 function escHtml(s) {
-  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function buildTooltip(node) {
@@ -193,6 +241,8 @@ async function loadGraph() {
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
     rawNodes = data.nodes;
+    rawEdges = data.edges;
+    buildExplorerMaps();
 
     // ── Stats ──
     const inviters = rawNodes.filter(n => n.invites > 0);
@@ -280,6 +330,12 @@ async function loadGraph() {
     network.on('blurNode', function() {
       tooltip.style.display = 'none';
     });
+    // Clicking a node in the graph opens it in the explorer below
+    network.on('click', function(params) {
+      if (params.nodes && params.nodes.length === 1) {
+        renderExplorer(String(params.nodes[0]));
+      }
+    });
     document.addEventListener('mousemove', function(e) {
       if (tooltip.style.display !== 'block') return;
       const x = e.clientX + 16;
@@ -314,6 +370,157 @@ function searchUser() {
   } else {
     network.fit({ nodes: ids, animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
   }
+}
+
+// ── Network explorer (3 steps in either direction) ──
+const MAX_DEPTH = 3;
+const MAX_TREE_NODES = 500;
+let nodeById = {};       // uid -> raw node
+let childrenMap = {};    // inviter uid -> [invitee uids]
+let parentMap = {};      // invitee uid -> inviter uid
+
+function buildExplorerMaps() {
+  nodeById = {}; childrenMap = {}; parentMap = {};
+  rawNodes.forEach(n => { nodeById[n.uid] = n; });
+  rawEdges.forEach(e => {
+    const from = String(e.from), to = String(e.to);
+    (childrenMap[from] = childrenMap[from] || []).push(to);
+    parentMap[to] = from;
+  });
+  // Sort each inviter's invitees chronologically by join date
+  Object.values(childrenMap).forEach(list => list.sort((a, b) => {
+    const ja = nodeById[a] && nodeById[a].joined || '';
+    const jb = nodeById[b] && nodeById[b].joined || '';
+    return ja < jb ? -1 : ja > jb ? 1 : 0;
+  }));
+}
+
+function neighborsOf(uid) {
+  const out = childrenMap[uid] ? childrenMap[uid].slice() : [];
+  if (parentMap[uid]) out.push(parentMap[uid]);
+  return out;
+}
+
+// Undirected BFS -> Map(uid -> distance from focus), capped at MAX_DEPTH
+function bfsWithin(focus) {
+  const dist = new Map([[focus, 0]]);
+  let frontier = [focus];
+  for (let d = 1; d <= MAX_DEPTH; d++) {
+    const next = [];
+    frontier.forEach(uid => neighborsOf(uid).forEach(nb => {
+      if (!dist.has(nb)) { dist.set(nb, d); next.push(nb); }
+    }));
+    frontier = next;
+  }
+  return dist;
+}
+
+// Generation of every reachable node relative to focus (+1 = invited below, -1 = inviter side)
+function generationsFor(focus, dist) {
+  const gen = new Map([[focus, 0]]);
+  const queue = [focus];
+  while (queue.length) {
+    const uid = queue.shift();
+    const g = gen.get(uid);
+    (childrenMap[uid] || []).forEach(c => { if (dist.has(c) && !gen.has(c)) { gen.set(c, g + 1); queue.push(c); } });
+    const p = parentMap[uid];
+    if (p && dist.has(p) && !gen.has(p)) { gen.set(p, g - 1); queue.push(p); }
+  }
+  return gen;
+}
+
+function explorerSearch() {
+  const q = document.getElementById('explorerInput').value.trim().toLowerCase();
+  const chips = document.getElementById('matchChips');
+  chips.style.display = 'none';
+  chips.innerHTML = '';
+  if (!q) return;
+  if (nodeById[q]) { renderExplorer(q); return; }  // exact ID
+  const matches = rawNodes.filter(n => (n.label || '').toLowerCase().includes(q));
+  if (!matches.length) {
+    document.getElementById('explorerBody').innerHTML = '<div class="explorer-empty">No user matches that search.</div>';
+    return;
+  }
+  const exact = matches.filter(n => (n.label || '').toLowerCase() === q);
+  if (matches.length === 1 || exact.length === 1) {
+    renderExplorer((exact[0] || matches[0]).uid);
+    return;
+  }
+  // Ambiguous — offer chips
+  chips.style.display = 'flex';
+  matches.slice(0, 15).forEach(n => {
+    const b = document.createElement('button');
+    b.className = 'match-chip';
+    b.textContent = `${n.label} (${n.uid})`;
+    b.onclick = () => { chips.style.display = 'none'; renderExplorer(n.uid); };
+    chips.appendChild(b);
+  });
+  document.getElementById('explorerBody').innerHTML =
+    `<div class="explorer-empty">${matches.length} users match — pick one above.</div>`;
+}
+
+function genChip(g) {
+  const label = g === 0 ? 'G0' : (g > 0 ? 'G+' + g : 'G−' + (-g));
+  return `<span class="gen-chip">${label}</span>`;
+}
+
+function treeRowHtml(uid, focus, gen) {
+  const n = nodeById[uid] || { label: 'User ' + uid, color: '#5865F2', invites: 0 };
+  const joined = n.joined
+    ? new Date(n.joined).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+    : '—';
+  const isFocus = uid === focus;
+  const g = gen.has(uid) ? gen.get(uid) : 0;
+  return `<div class="tree-row${isFocus ? ' focus-row' : ''}">
+    ${genChip(g)}
+    <span class="tree-dot" style="background:${escHtml(n.color || '#5865F2')}"></span>
+    <span class="tree-name" onclick="renderExplorer('${escHtml(uid)}')" title="Explore ${escHtml(n.label)}">${escHtml(n.label)}</span>
+    <span class="tree-meta">${n.invites || 0} invite${(n.invites || 0) === 1 ? '' : 's'} · joined ${joined} · ${escHtml(uid)}</span>
+    <button class="locate-btn" onclick="locateInGraph('${escHtml(uid)}')" title="Locate in graph">◎</button>
+  </div>`;
+}
+
+function renderExplorer(focus) {
+  focus = String(focus);
+  if (!nodeById[focus]) return;
+  const input = document.getElementById('explorerInput');
+  if (input.value !== nodeById[focus].label) input.value = nodeById[focus].label;
+  document.getElementById('matchChips').style.display = 'none';
+
+  const dist = bfsWithin(focus);
+  const gen = generationsFor(focus, dist);
+
+  // Root the tree at the highest ancestor within reach of the focus
+  let root = focus, hops = 0;
+  while (hops < MAX_DEPTH && parentMap[root] && dist.has(parentMap[root])) { root = parentMap[root]; hops++; }
+
+  let rendered = 0;
+  function renderSubtree(uid) {
+    if (rendered >= MAX_TREE_NODES) return '';
+    rendered++;
+    let html = treeRowHtml(uid, focus, gen);
+    const kids = (childrenMap[uid] || []).filter(c => dist.has(c));
+    if (kids.length && rendered < MAX_TREE_NODES) {
+      html += `<div class="tree-children">${kids.map(renderSubtree).join('')}</div>`;
+    }
+    return html;
+  }
+
+  const treeHtml = renderSubtree(root);
+  const capNote = rendered >= MAX_TREE_NODES
+    ? `<div class="explorer-empty">Large network — showing the first ${MAX_TREE_NODES} members.</div>` : '';
+  const summary = `<div class="explorer-sub" style="margin-bottom:10px;">
+    <strong>${escHtml(nodeById[focus].label)}</strong> — ${dist.size - 1} member${dist.size - 1 === 1 ? '' : 's'} within ${MAX_DEPTH} steps</div>`;
+  document.getElementById('explorerBody').innerHTML =
+    summary + (dist.size > 1 ? treeHtml + capNote : treeHtml + '<div class="explorer-empty">No invite connections found for this user.</div>');
+}
+
+function locateInGraph(uid) {
+  if (!network) return;
+  network.unselectAll();
+  network.selectNodes([uid]);
+  network.focus(uid, { scale: 1.5, animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
+  document.querySelector('.graph-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 loadGraph();
