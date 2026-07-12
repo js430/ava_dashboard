@@ -20,13 +20,18 @@ logger = logging.getLogger("dashboard.card_tracker")
 # free-tier call budget from burning on an outage or a wrong endpoint shape.
 MAX_CONSECUTIVE_FAILURES = 8
 
-# Per-run JustTCG call caps, sized against the free tier's 100 requests/DAY:
-# resolution (searches, incl. name-variant fallbacks) + pricing (batches of
-# 20) <= 80, leaving ~20/day headroom for retries and manual testing. A big
-# fresh import therefore resolves incrementally across daily runs instead of
-# torching the whole day's budget at once.
-RESOLUTION_CALL_CAP = 55
-PRICING_CALL_CAP = 25
+# Per-run JustTCG call caps, keyed by the ACTIVE key's detected plan and
+# sized against that plan's daily/monthly limits (free: 100/day · 1K/month;
+# starter: 1K/day but 10K/month ≈ 333/day sustainable). Resolution covers
+# searches (incl. name-variant fallbacks); pricing covers batch fetches.
+# A big fresh import resolves incrementally across runs instead of torching
+# the budget at once.
+PLAN_RUN_CAPS = {
+    "free":       {"resolution": 55,  "pricing": 25},
+    "starter":    {"resolution": 240, "pricing": 60},
+    "pro":        {"resolution": 240, "pricing": 60},
+    "enterprise": {"resolution": 500, "pricing": 100},
+}
 
 # Global ceiling on tracked cards. Guards the JustTCG free tier (1,000
 # calls/month): if the batch endpoint works, 400 cards ≈ 4 pricing calls/day
@@ -143,13 +148,14 @@ async def run_ingest(pool) -> dict:
         logger.warning("Ingest: no tracked cards — run sync_watchlist first")
         return summary
 
-    resolution_budget = justtcg.CallBudget(RESOLUTION_CALL_CAP)
-    pricing_budget = justtcg.CallBudget(PRICING_CALL_CAP)
-
     async with httpx.AsyncClient(timeout=20) as client:
         # ── Pass 0: resolve JustTCG's real game slugs (1 call, cached
-        #    process-wide; falls back to built-in guesses on failure) ──
-        await justtcg.resolve_game_slugs(client, budget=resolution_budget)
+        #    process-wide). The response also tells us the active key's plan,
+        #    so the run caps below match the plan we're actually on. ──
+        await justtcg.resolve_game_slugs(client)
+        caps = PLAN_RUN_CAPS.get(justtcg.current_plan(), PLAN_RUN_CAPS["free"])
+        resolution_budget = justtcg.CallBudget(caps["resolution"])
+        pricing_budget = justtcg.CallBudget(caps["pricing"])
 
         # ── Pass 1: resolve missing JustTCG ids (one+ search calls per card,
         #    paced for the 10/min limit, capped for the 100/day limit) ──
@@ -163,7 +169,7 @@ async def run_ingest(pool) -> dict:
                              consecutive_failures)
                 return summary
             if searched:
-                await asyncio.sleep(justtcg.SEARCH_INTERVAL)
+                await asyncio.sleep(justtcg.current_interval())
             searched = True
             try:
                 match = await justtcg.search_card(
@@ -195,7 +201,8 @@ async def run_ingest(pool) -> dict:
                     "resolution paused: daily-safe JustTCG call budget reached — "
                     "remaining cards resolve on the next run")
                 logger.warning("Ingest: resolution call budget (%d) reached — deferring "
-                               "remaining unresolved cards to the next run", RESOLUTION_CALL_CAP)
+                               "remaining unresolved cards to the next run",
+                               resolution_budget.limit)
                 break
             except Exception as e:
                 consecutive_failures += 1

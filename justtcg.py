@@ -18,10 +18,18 @@ import httpx
 
 logger = logging.getLogger("dashboard.justtcg")
 
-# ── JustTCG FREE-TIER LIMITS (per their pricing page, 2026-07):
-#    1,000 requests/month · 100 requests/day · 10 requests/minute ·
-#    20 cards per request. The constants below enforce them.
-SEARCH_INTERVAL = 6.5          # 10 req/min -> >=6s between calls
+# ── JustTCG plan limits (pricing page, 2026-07). Each key's plan is detected
+# from _metadata.apiPlan on live responses; until detected we assume FREE
+# (the conservative choice). Keys can be on different plans — pacing/batch
+# size always follow the ACTIVE key's plan.
+#   free:    1K/month · 100/day · 10/min · 20 cards/request
+#   starter: 10K/month · 1K/day · 50/min · 100 cards/request
+PLAN_PROFILES = {
+    "free":       {"interval": 6.5, "batch": 20},
+    "starter":    {"interval": 1.4, "batch": 100},   # 50/min -> >=1.2s
+    "pro":        {"interval": 1.4, "batch": 100},
+    "enterprise": {"interval": 0.8, "batch": 200},
+}
 _429_WAITS = (10.0, 30.0)      # fallback backoff when no Retry-After header
 _MAX_TRIES = 3
 
@@ -137,7 +145,8 @@ async def resolve_game_slugs(client: httpx.AsyncClient, budget=None) -> dict:
         logger.exception("GET /games failed; using fallback game slugs")
         return _FALLBACK_GAME_SLUGS
 
-BATCH_SIZE = 20  # free tier: 20 cards per request
+# Batch size is plan-dependent — use current_batch_size(). Kept for reference:
+# free=20, starter/pro=100, enterprise=200 cards per request.
 
 # Field names scanned when extracting prices from a card/variant object.
 _PRICE_FIELDS = ("price", "marketPrice", "market_price", "midPrice", "mid_price")
@@ -155,7 +164,37 @@ class JustTCGError(Exception):
 # _metadata.apiRequestsRemaining hits 0, a hard 401/402/403, or 429s that
 # survive every backoff retry. Key state is process-lifetime (resets on
 # deploy), which is fine — an exhausted key just gets re-discovered fast.
-_key_state = {"active": 0, "exhausted": set()}
+_key_state = {"active": 0, "exhausted": set(), "plans": {}}
+
+
+def current_plan() -> str:
+    """Detected plan of the ACTIVE key ('free' until a response tells us)."""
+    return _key_state["plans"].get(_key_state["active"], "free")
+
+
+def current_interval() -> float:
+    """Seconds to sleep between bulk calls, per the active key's plan."""
+    return PLAN_PROFILES[current_plan()]["interval"]
+
+
+def current_batch_size() -> int:
+    """Cards per batch request, per the active key's plan."""
+    return PLAN_PROFILES[current_plan()]["batch"]
+
+
+def _set_plan_for_active(raw_plan: str) -> None:
+    plan = (raw_plan or "").strip().lower()
+    for known in ("enterprise", "starter", "pro"):
+        if known in plan:
+            break
+    else:
+        known = "free"
+    idx = _key_state["active"]
+    if _key_state["plans"].get(idx) != known:
+        _key_state["plans"][idx] = known
+        logger.info("JustTCG %s key plan detected: %s (interval %.1fs, batch %d)",
+                    _key_label(idx), known,
+                    PLAN_PROFILES[known]["interval"], PLAN_PROFILES[known]["batch"])
 
 
 def _api_keys() -> list:
@@ -199,9 +238,11 @@ def _switch_key(reason: str, exhaust_current: bool) -> bool:
 
 
 def _note_quota(resp) -> None:
-    """Watch _metadata.apiRequestsRemaining and fail over at zero."""
+    """Watch _metadata: detect the key's plan and fail over at zero quota."""
     try:
         meta = (resp.json() or {}).get("_metadata") or {}
+        if meta.get("apiPlan"):
+            _set_plan_for_active(str(meta["apiPlan"]))
         rem = meta.get("apiRequestsRemaining")
         if isinstance(rem, (int, float)):
             if rem <= 0:
@@ -359,7 +400,7 @@ async def search_card(client: httpx.AsyncClient, name: str, game: str,
 
     for i, query in enumerate(_search_variants(name)):
         if i:
-            await asyncio.sleep(SEARCH_INTERVAL)
+            await asyncio.sleep(current_interval())
         _charge(budget)
         resp = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/cards",
                                            params={"q": query, "game": slug, "limit": 20})
@@ -367,7 +408,7 @@ async def search_card(client: httpx.AsyncClient, name: str, game: str,
             # 'q' is the one search param the docs didn't confirm — retry once
             # with 'name' in case that's the real parameter.
             _charge(budget)
-            await asyncio.sleep(SEARCH_INTERVAL)
+            await asyncio.sleep(current_interval())
             resp = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/cards",
                                                params={"name": query, "game": slug, "limit": 20})
         if resp.status_code == 401:
@@ -403,10 +444,15 @@ async def fetch_cards_by_ids(client: httpx.AsyncClient, ids: list,
     """
     history_params = {"priceHistoryDuration": "30d"} if include_history else None
     out: dict = {}
-    for i in range(0, len(ids), BATCH_SIZE):
-        chunk = ids[i:i + BATCH_SIZE]
+    i = 0
+    while i < len(ids):
+        # Chunk size re-read each pass: the plan may be detected (or the key
+        # switched to one on a different plan) mid-run.
+        size = current_batch_size()
+        chunk = ids[i:i + size]
+        i += size
         if i:
-            await asyncio.sleep(SEARCH_INTERVAL)
+            await asyncio.sleep(current_interval())
         try:
             _charge(budget)
         except BudgetExhausted:
@@ -432,7 +478,7 @@ async def fetch_cards_by_ids(client: httpx.AsyncClient, ids: list,
             logger.exception("JustTCG batch lookup failed (falling back to per-id)")
         # Per-id fallback
         for cid in chunk:
-            await asyncio.sleep(SEARCH_INTERVAL)
+            await asyncio.sleep(current_interval())
             try:
                 _charge(budget)
             except BudgetExhausted:
