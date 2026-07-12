@@ -61,6 +61,30 @@
   .score-none { background: #f3f4f6; color: #6b7280; }
   .empty { text-align: center; padding: 36px; color: #aaa; font-size: 12px; }
 
+  .import-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; overflow: hidden; margin-bottom: 16px; }
+  .import-header { padding: 12px 16px; border-bottom: 1px solid #e4e4e7; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .import-title { font-size: 14px; font-weight: 600; color: #111; }
+  .import-header select, .import-header input[type=text] { font-size: 12px; height: 30px; padding: 0 8px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #111; }
+  .import-note { font-size: 12px; color: #999; margin-left: auto; }
+  .import-body { padding: 12px 16px; display: none; }
+  .import-body.visible { display: block; }
+  .preview-summary { font-size: 12px; color: #555; margin-bottom: 8px; }
+  .preview-list { max-height: 260px; overflow-y: auto; border: 1px solid #f0f0f0; border-radius: 8px; }
+  .preview-row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; font-size: 12px; border-bottom: 1px solid #f7f7f7; }
+  .preview-row:last-child { border-bottom: none; }
+  .preview-row.dup { opacity: .5; }
+  .preview-row .pname { font-weight: 600; color: #111; }
+  .preview-row .pmeta { color: #999; }
+  .dup-tag { font-size: 11px; font-weight: 700; color: #9a3412; background: #ffedd5; border-radius: 8px; padding: 1px 6px; }
+  .import-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+  .import-actions .refresh-btn { background: #16a34a; }
+  .import-actions .refresh-btn:disabled { background: #16a34a; }
+  html[data-theme="dark"] .import-card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .import-header { border-bottom-color: #303033; }
+  html[data-theme="dark"] .import-title, html[data-theme="dark"] .preview-row .pname { color: #f0f0f0; }
+  html[data-theme="dark"] .import-header select, html[data-theme="dark"] .import-header input[type=text] { background: #252528; border-color: #383838; color: #f0f0f0; }
+  html[data-theme="dark"] .preview-list { border-color: #2a2a2d; }
+  html[data-theme="dark"] .preview-row { border-bottom-color: #242427; }
   .detail-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; overflow: hidden; display: none; }
   .detail-card.visible { display: block; }
   .detail-header { padding: 14px 16px 10px; border-bottom: 1px solid #f0f0f0; }
@@ -163,6 +187,32 @@
       </table>
     </div>
   </div>
+
+  {% if is_admin %}
+  <div class="import-card">
+    <div class="import-header">
+      <span class="import-title">Import a set</span>
+      <select id="impGame" onchange="onImportGameChange()">
+        <option value="pokemon">Pokémon</option>
+        <option value="one_piece">One Piece</option>
+      </select>
+      <select id="impSet" style="min-width:220px"><option value="">Loading sets…</option></select>
+      <input type="text" id="impSetCode" placeholder="Set code, e.g. OP09" style="display:none;width:150px" maxlength="10">
+      <select id="impRarity" style="min-width:160px"><option value="">All rarities</option></select>
+      <button class="refresh-btn" id="impPreviewBtn" onclick="importPreview()">Preview</button>
+      <span class="import-note" id="impNote">Free catalog APIs — no JustTCG budget used until ingest.</span>
+    </div>
+    <div class="import-body" id="impBody">
+      <div class="preview-summary" id="impSummary"></div>
+      <div class="preview-list" id="impList"></div>
+      <div class="import-actions">
+        <button class="refresh-btn" id="impRunBtn" onclick="importRun()" disabled>Import selected</button>
+        <label style="font-size:12px;color:#555;"><input type="checkbox" id="impSelectAll" checked onchange="impToggleAll(this.checked)"> Select all new</label>
+        <span class="import-note" id="impRunNote"></span>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 
   <div class="detail-card" id="detailCard">
     <div class="detail-header">
@@ -347,6 +397,120 @@ async function load(){
       '<tr><td colspan="9" class="empty">Failed to load data.</td></tr>';
   }
 }
+
+// ── Set import (admin only — panel exists only when is_admin) ──
+let lastPreview = null;
+
+function impEl(id){ return document.getElementById(id); }
+
+async function loadImportSets(){
+  if (!impEl('impSet')) return;
+  try {
+    const resp = await fetch('/api/card-tracker/import/sets?game=pokemon');
+    if (!resp.ok) throw new Error(resp.status);
+    const sets = await resp.json();
+    impEl('impSet').innerHTML = '<option value="">Pick a set…</option>' + sets.map(s =>
+      `<option value="${esc(s.id)}">${esc(s.name)}${s.release_date ? ' (' + s.release_date.slice(0,4) + ')' : ''}</option>`
+    ).join('');
+  } catch(e) {
+    impEl('impSet').innerHTML = '<option value="">Failed to load sets</option>';
+  }
+}
+
+function onImportGameChange(){
+  const g = impEl('impGame').value;
+  impEl('impSet').style.display = g === 'pokemon' ? '' : 'none';
+  impEl('impSetCode').style.display = g === 'one_piece' ? '' : 'none';
+  impEl('impRarity').innerHTML = '<option value="">All rarities</option>';
+  impEl('impBody').classList.remove('visible');
+  lastPreview = null;
+}
+
+function impSetId(){
+  return impEl('impGame').value === 'pokemon'
+    ? impEl('impSet').value
+    : impEl('impSetCode').value.trim();
+}
+
+async function importPreview(){
+  const game = impEl('impGame').value;
+  const setId = impSetId();
+  if (!setId){ impEl('impNote').textContent = 'Pick a set first.'; return; }
+  const btn = impEl('impPreviewBtn');
+  btn.disabled = true;
+  impEl('impNote').textContent = 'Fetching set…';
+  try {
+    const resp = await fetch('/api/card-tracker/import/preview', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ game, set_id: setId, rarity: impEl('impRarity').value })
+    });
+    const d = await resp.json();
+    if (!resp.ok) throw new Error(d.detail || ('HTTP ' + resp.status));
+    lastPreview = { game, set_id: setId, rarity: impEl('impRarity').value, cards: d.cards };
+    // Refresh the rarity dropdown from what the set actually contains (keep selection)
+    const cur = impEl('impRarity').value;
+    impEl('impRarity').innerHTML = '<option value="">All rarities</option>' +
+      d.rarities.map(r => `<option value="${esc(r)}"${r === cur ? ' selected' : ''}>${esc(r)}</option>`).join('');
+    const dups = d.cards.filter(c => c.already_tracked).length;
+    const fresh = d.cards.length - dups;
+    impEl('impSummary').textContent =
+      `${esc(d.set_name || setId)}: ${d.cards.length} card(s) matched — ${fresh} new, ${dups} already tracked. ` +
+      `Tracker at ${d.tracked_count}/${d.max_tracked}.`;
+    impEl('impList').innerHTML = d.cards.length ? d.cards.map((c, i) => `
+      <label class="preview-row${c.already_tracked ? ' dup' : ''}">
+        <input type="checkbox" data-num="${esc(c.card_number)}" ${c.already_tracked ? 'disabled' : 'checked'}>
+        <span class="pname">${esc(c.name)}</span>
+        <span class="pmeta">#${esc(c.card_number)}${c.variant ? ' · ' + esc(c.variant) : ''}</span>
+        ${c.already_tracked ? '<span class="dup-tag">tracked</span>' : ''}
+      </label>`).join('') : '<div class="preview-row">Nothing matched that set/rarity.</div>';
+    impEl('impRunBtn').disabled = fresh === 0;
+    impEl('impSelectAll').checked = true;
+    impEl('impRunNote').textContent = '';
+    impEl('impBody').classList.add('visible');
+    impEl('impNote').textContent = 'Free catalog APIs — no JustTCG budget used until ingest.';
+  } catch(e) {
+    impEl('impNote').textContent = 'Preview failed: ' + e.message;
+    impEl('impBody').classList.remove('visible');
+    lastPreview = null;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function impToggleAll(checked){
+  impEl('impList').querySelectorAll('input[type=checkbox]:not(:disabled)').forEach(cb => { cb.checked = checked; });
+}
+
+async function importRun(){
+  if (!lastPreview) return;
+  const exclude = [];
+  impEl('impList').querySelectorAll('input[type=checkbox]:not(:disabled)').forEach(cb => {
+    if (!cb.checked) exclude.push(cb.getAttribute('data-num'));
+  });
+  const btn = impEl('impRunBtn');
+  btn.disabled = true;
+  impEl('impRunNote').textContent = 'Importing…';
+  try {
+    const resp = await fetch('/api/card-tracker/import/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ game: lastPreview.game, set_id: lastPreview.set_id,
+                             rarity: impEl('impRarity').value, exclude_numbers: exclude })
+    });
+    const d = await resp.json();
+    if (!resp.ok || !d.ok) throw new Error(d.detail || d.error || ('HTTP ' + resp.status));
+    impEl('impRunNote').textContent =
+      `Added ${d.added} card(s) (${d.skipped_duplicates} duplicate(s) skipped) — tracker now at ${d.total_tracked}. ` +
+      `New cards get prices on the next ingest/refresh.`;
+    await load();
+    await importPreview();   // re-render preview so new cards show as tracked
+  } catch(e) {
+    impEl('impRunNote').textContent = 'Import failed: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+if (impEl('impSet')) loadImportSets();
 
 load();
 (function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();if(selectedId)showDetail(selectedId);};upd();})();

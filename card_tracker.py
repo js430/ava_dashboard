@@ -19,6 +19,13 @@ logger = logging.getLogger("dashboard.card_tracker")
 # free-tier call budget from burning on an outage or a wrong endpoint shape.
 MAX_CONSECUTIVE_FAILURES = 8
 
+# Global ceiling on tracked cards. Guards the JustTCG free tier (1,000
+# calls/month): if the batch endpoint works, 400 cards ≈ 4 pricing calls/day
+# plus one-time id resolution; if batch falls back to per-card, 400/day would
+# blow the budget in 2.5 days — the ingest's consecutive-failure abort plus
+# this cap bound the damage. Raise deliberately, not casually.
+MAX_TRACKED_CARDS = 400
+
 VALID_GAMES = ("pokemon", "one_piece")
 
 # set_name / card_number are NOT NULL DEFAULT '' (not nullable) so the UNIQUE

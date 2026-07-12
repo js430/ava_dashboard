@@ -25,8 +25,10 @@ from anthropic import AsyncAnthropic
 from PIL import Image
 from dotenv import load_dotenv
 
-from card_tracker import ensure_card_tracker_schema, sync_watchlist, run_ingest, run_scoring
+from card_tracker import (ensure_card_tracker_schema, sync_watchlist, run_ingest,
+                          run_scoring, MAX_TRACKED_CARDS)
 import card_scoring
+import set_import
 
 load_dotenv()
 
@@ -1424,6 +1426,163 @@ async def api_card_tracker_refresh(request: Request, user=Depends(require_staff)
         "failures": ingest["failed"][:20],
         "scored": scoring["scored"],
     }, headers={"Cache-Control": "no-store"})
+
+# ── Set import (admin-only): enumerate a set from the free catalog APIs,
+#    preview, then import into tracked_cards. The import re-fetches from the
+#    source API server-side — the client never supplies card data directly. ──
+
+def _require_tracker_admin(request: Request) -> dict:
+    user = require_staff(request)
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Importing is admin-only")
+    return user
+
+async def _fetch_set_candidates(game: str, set_id: str, rarity: str) -> tuple:
+    """(set_name, cards) from the free catalog APIs, rarity-filtered."""
+    async with httpx.AsyncClient(timeout=25) as client:
+        if game == "pokemon":
+            set_name, cards = await set_import.fetch_pokemon_set_cards(client, set_id)
+        else:
+            set_name, cards = await set_import.fetch_onepiece_set_cards(client, set_id)
+    if rarity:
+        cards = [c for c in cards if rarity.lower() in (c["variant"] or "").lower()]
+    return set_name, cards[: set_import.MAX_CARDS_PER_IMPORT]
+
+async def _existing_card_keys(conn) -> tuple:
+    """Sets used for duplicate detection: exact identity and (game|set|number)."""
+    rows = await conn.fetch("SELECT game, name, set_name, card_number FROM tracked_cards")
+    exact = {(r["game"], r["name"].lower(), r["set_name"].lower(), r["card_number"].lower()) for r in rows}
+    by_number = {(r["game"], r["set_name"].lower(), r["card_number"].lower())
+                 for r in rows if r["card_number"]}
+    return exact, by_number
+
+def _validate_import_params(game: str, set_id: str, rarity: str) -> None:
+    if game not in ("pokemon", "one_piece"):
+        raise HTTPException(status_code=400, detail="Invalid game")
+    if not set_id or len(set_id) > 40:
+        raise HTTPException(status_code=400, detail="Invalid set")
+    if len(rarity) > 60:
+        raise HTTPException(status_code=400, detail="Invalid rarity")
+
+@app.get("/api/card-tracker/import/sets")
+@limiter.limit("30/hour")
+async def api_import_sets(request: Request, game: str = "pokemon"):
+    _require_tracker_admin(request)
+    if game != "pokemon":
+        # One Piece has no reliable free set-list API; the UI uses a set-code
+        # field (OP09, EB01, ...) instead of a dropdown.
+        return JSONResponse([])
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            sets = await set_import.fetch_pokemon_sets(client)
+    except Exception as e:
+        logger.exception("Set list fetch failed")
+        raise HTTPException(status_code=502, detail=f"Couldn't fetch the set list: {e}")
+    return JSONResponse(sets, headers={"Cache-Control": "no-store"})
+
+@app.post("/api/card-tracker/import/preview")
+@limiter.limit("20/hour")
+async def api_import_preview(request: Request):
+    _require_tracker_admin(request)
+    body = await request.json()
+    game = body.get("game", "")
+    set_id = (body.get("set_id") or "").strip()
+    rarity = (body.get("rarity") or "").strip()
+    _validate_import_params(game, set_id, rarity)
+    try:
+        set_name, cards = await _fetch_set_candidates(game, set_id, rarity)
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Import preview failed")
+        raise HTTPException(status_code=502, detail=f"Couldn't fetch that set: {e}")
+
+    async with request.app.state.db.acquire() as conn:
+        exact, by_number = await _existing_card_keys(conn)
+        tracked_count = await conn.fetchval("SELECT COUNT(*) FROM tracked_cards")
+
+    out = []
+    for c in cards:
+        key_exact = (game, c["name"].lower(), (set_name or "").lower(), c["card_number"].lower())
+        key_num = (game, (set_name or "").lower(), c["card_number"].lower())
+        dup = key_exact in exact or (bool(c["card_number"]) and key_num in by_number)
+        out.append({**c, "already_tracked": dup})
+    rarities = sorted({(c["variant"] or "").strip() for c in out if (c["variant"] or "").strip()})
+    return JSONResponse({
+        "set_name": set_name,
+        "cards": out,
+        "rarities": rarities,
+        "tracked_count": tracked_count,
+        "max_tracked": MAX_TRACKED_CARDS,
+    }, headers={"Cache-Control": "no-store"})
+
+@app.post("/api/card-tracker/import/run")
+@limiter.limit("10/hour")
+async def api_import_run(request: Request):
+    _require_tracker_admin(request)
+    body = await request.json()
+    game = body.get("game", "")
+    set_id = (body.get("set_id") or "").strip()
+    rarity = (body.get("rarity") or "").strip()
+    exclude = body.get("exclude_numbers") or []
+    _validate_import_params(game, set_id, rarity)
+    if not isinstance(exclude, list) or len(exclude) > 1000 or \
+            any(not isinstance(x, str) or len(x) > 40 for x in exclude):
+        raise HTTPException(status_code=400, detail="Invalid exclusion list")
+    excluded = {x.lower() for x in exclude}
+
+    # Server-side re-fetch — the client only says WHAT set/rarity to import
+    # and which numbers to leave out; it can't inject card rows.
+    try:
+        set_name, cards = await _fetch_set_candidates(game, set_id, rarity)
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Import run fetch failed")
+        raise HTTPException(status_code=502, detail=f"Couldn't fetch that set: {e}")
+    cards = [c for c in cards if c["card_number"].lower() not in excluded and c["name"]]
+
+    pool = request.app.state.db
+    added, skipped = 0, 0
+    async with pool.acquire() as conn:
+        exact, by_number = await _existing_card_keys(conn)
+        tracked_count = await conn.fetchval("SELECT COUNT(*) FROM tracked_cards")
+        new_cards = []
+        for c in cards:
+            key_exact = (game, c["name"].lower(), (set_name or "").lower(), c["card_number"].lower())
+            key_num = (game, (set_name or "").lower(), c["card_number"].lower())
+            if key_exact in exact or (c["card_number"] and key_num in by_number):
+                skipped += 1
+                continue
+            new_cards.append(c)
+        if tracked_count + len(new_cards) > MAX_TRACKED_CARDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Import would take the tracker to {tracked_count + len(new_cards)} cards "
+                       f"(cap {MAX_TRACKED_CARDS}, currently {tracked_count}). The cap protects the "
+                       f"JustTCG monthly call budget — trim the selection or raise MAX_TRACKED_CARDS "
+                       f"in card_tracker.py deliberately.")
+        async with conn.transaction():
+            for c in new_cards:
+                result = await conn.execute(
+                    """
+                    INSERT INTO tracked_cards (name, game, set_name, card_number, variant, release_date)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    ON CONFLICT (game, name, set_name, card_number) DO NOTHING
+                    """,
+                    c["name"], game, set_name or "", c["card_number"], c["variant"] or None,
+                    datetime.strptime(c["release_date"], "%Y-%m-%d").date() if c.get("release_date") else None,
+                )
+                if result.endswith("1"):
+                    added += 1
+                else:
+                    skipped += 1
+        total = await conn.fetchval("SELECT COUNT(*) FROM tracked_cards")
+    logger.info("Set import: %s/%s rarity=%r -> +%d added, %d skipped as duplicates (total %d)",
+                game, set_id, rarity or "all", added, skipped, total)
+    return JSONResponse({"ok": True, "set_name": set_name, "added": added,
+                         "skipped_duplicates": skipped, "total_tracked": total},
+                        headers={"Cache-Control": "no-store"})
 
 # ---- Analytics ----
 
