@@ -156,7 +156,9 @@ async def run_ingest(pool) -> dict:
                 if match is None:
                     consecutive_failures += 1
                     summary["failed"].append(f"{c['name']}: no JustTCG match")
-                    logger.warning("Ingest: no JustTCG match for %r (%s / %s)",
+                    logger.warning("Ingest: no JustTCG match for %r (%s / %s) — set may be "
+                                   "too new for their catalog or named differently; "
+                                   "will retry next ingest",
                                    c["name"], c["game"], c["set_name"])
                     continue
                 consecutive_failures = 0

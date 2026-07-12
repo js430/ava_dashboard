@@ -8,6 +8,7 @@ logs enough to tune the endpoints after the first real run. Free tier is
 """
 
 import os
+import re
 import asyncio
 import logging
 import statistics
@@ -120,36 +121,79 @@ def card_identity(card: dict) -> str:
     return str(card.get("id") or card.get("cardId") or "")
 
 
+def _canon(s: str) -> str:
+    """Punctuation/case-insensitive form for name comparison ("Team Rocket's
+    Mewtwo ex" == "team rockets mewtwo ex")."""
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", "", (s or "").lower())).strip()
+
+
+def _search_variants(name: str) -> list:
+    """Query strings to try, in order. Apostrophe-heavy trainer names
+    ("Lillie's Clefairy ex") are classic search-breakers; the last variant
+    drops the possessive prefix entirely (guarded by strict acceptance)."""
+    variants = [name,
+                name.replace("’", "'"),
+                name.replace("'", "’"),
+                name.replace("'", "").replace("’", "")]
+    m = re.match(r"^.+?[’']s\s+(\S.*)$", name)
+    if m:
+        variants.append(m.group(1))
+    out = []
+    for v in variants:
+        v = v.strip()
+        if v and v not in out:
+            out.append(v)
+    return out
+
+
 async def search_card(client: httpx.AsyncClient, name: str, game: str,
                       set_name: str = "", card_number: str = "") -> dict | None:
-    """Search JustTCG for a card; returns the best-matching card object or None."""
+    """Search JustTCG for a card; returns the best-matching card object or None.
+
+    Tries several query variants for punctuation-heavy names. A candidate is
+    accepted ONLY if it matches on card number, set, or canonical name —
+    never "first result and hope", which could silently track the wrong
+    card's prices. No acceptable candidate -> None (retried next ingest).
+    """
     slug = GAME_SLUGS.get(game)
     if not slug:
         return None
-    params = {"q": name, "game": slug, "limit": 20}
-    resp = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/cards",
-                                       params=params, headers=_headers())
-    if resp.status_code == 401:
-        raise JustTCGError("JustTCG rejected the API key (401)")
-    if resp.status_code != 200:
-        logger.warning("JustTCG search %r (%s) -> HTTP %s: %s",
-                       name, slug, resp.status_code, resp.text[:200])
-        return None
-    payload = resp.json()
-    cards = payload.get("data") if isinstance(payload, dict) else payload
-    if not isinstance(cards, list) or not cards:
-        return None
 
     def match_rank(c: dict) -> tuple:
-        cname = str(c.get("name") or "").lower()
+        cname = str(c.get("name") or "")
         cset = str(c.get("set") if isinstance(c.get("set"), str) else (c.get("set") or {}).get("name") or c.get("set_name") or "").lower()
         cnum = str(c.get("number") or c.get("card_number") or "").lower()
-        name_exact = cname == name.lower()
+        name_close = _canon(cname) == _canon(name)
         set_hit = bool(set_name) and set_name.lower() in cset
         num_hit = bool(card_number) and card_number.lower() in cnum
-        return (num_hit, set_hit, name_exact)
+        return (num_hit, set_hit, name_close)
 
-    return sorted(cards, key=match_rank, reverse=True)[0]
+    for i, query in enumerate(_search_variants(name)):
+        if i:
+            await asyncio.sleep(SEARCH_INTERVAL)
+        resp = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/cards",
+                                           params={"q": query, "game": slug, "limit": 20},
+                                           headers=_headers())
+        if resp.status_code == 401:
+            raise JustTCGError("JustTCG rejected the API key (401)")
+        if resp.status_code != 200:
+            logger.warning("JustTCG search %r (%s) -> HTTP %s: %s",
+                           query, slug, resp.status_code, resp.text[:200])
+            continue
+        payload = resp.json()
+        cards = payload.get("data") if isinstance(payload, dict) else payload
+        if not isinstance(cards, list) or not cards:
+            continue
+        best = sorted(cards, key=match_rank, reverse=True)[0]
+        rank = match_rank(best)
+        if any(rank):
+            if i:
+                logger.info("JustTCG matched %r via fallback query %r", name, query)
+            return best
+        logger.info("JustTCG search %r returned %d result(s) but none matched "
+                    "number/set/name — rejecting to avoid tracking the wrong card",
+                    query, len(cards))
+    return None
 
 
 async def fetch_cards_by_ids(client: httpx.AsyncClient, ids: list) -> dict:
