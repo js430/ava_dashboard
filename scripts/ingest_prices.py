@@ -43,6 +43,7 @@ async def main() -> int:
 
     print(f"\nWatchlist: +{added} new card(s)")
     print(f"Snapshots inserted: {summary['snapshots']} / {summary['cards']} tracked")
+    print(f"History rows backfilled (first-fetch cards): {summary.get('backfilled', 0)}")
     print(f"Newly resolved JustTCG ids: {summary['resolved']}")
     if summary["failed"]:
         print(f"Failures ({len(summary['failed'])}):")

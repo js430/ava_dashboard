@@ -130,7 +130,7 @@ async def run_ingest(pool) -> dict:
 
     Returns a summary dict: {"cards", "snapshots", "resolved", "failed": [...]}.
     """
-    summary = {"cards": 0, "snapshots": 0, "resolved": 0, "failed": []}
+    summary = {"cards": 0, "snapshots": 0, "resolved": 0, "backfilled": 0, "failed": []}
     consecutive_failures = 0
 
     async with pool.acquire() as conn:
@@ -221,10 +221,18 @@ async def run_ingest(pool) -> dict:
             cards = await conn.fetch(
                 "SELECT id, name, justtcg_card_id FROM tracked_cards "
                 "WHERE justtcg_card_id IS NOT NULL ORDER BY id")
+            have_rows = await conn.fetch(
+                "SELECT DISTINCT card_id FROM price_snapshots WHERE card_id = ANY($1::int[])",
+                [c["id"] for c in cards])
+        have_snapshots = {r["card_id"] for r in have_rows}
         by_jid = {c["justtcg_card_id"]: c for c in cards}
+        # Ask for 30d of priceHistory when any card is on its first fetch —
+        # same number of API calls, just a bigger payload.
+        need_history = any(c["id"] not in have_snapshots for c in cards)
         try:
             fetched = await justtcg.fetch_cards_by_ids(client, list(by_jid.keys()),
-                                                       budget=pricing_budget)
+                                                       budget=pricing_budget,
+                                                       include_history=need_history)
         except justtcg.JustTCGError:
             raise
         except Exception as e:
@@ -232,6 +240,8 @@ async def run_ingest(pool) -> dict:
             logger.exception("Ingest: price fetch failed")
             return summary
 
+        from datetime import datetime as _dt, timezone as _tz
+        today_utc = _dt.now(_tz.utc).date()
         async with pool.acquire() as conn:
             for jid, card_row in by_jid.items():
                 obj = fetched.get(jid)
@@ -244,6 +254,20 @@ async def run_ingest(pool) -> dict:
                     logger.warning("Ingest: no prices found for %r — raw keys: %s",
                                    card_row["name"], sorted(obj.keys())[:15])
                     continue
+                # First fetch for this card: backfill its 30d history so
+                # momentum/liquidity are meaningful immediately. Only days
+                # BEFORE today — today's live snapshot is inserted below.
+                if card_row["id"] not in have_snapshots:
+                    history = justtcg.extract_price_history(obj)
+                    for h in history:
+                        if h["captured_at"].date() >= today_utc:
+                            continue
+                        await conn.execute(
+                            "INSERT INTO price_snapshots (card_id, captured_at, price_low, "
+                            "price_mid, price_high, source) VALUES ($1, $2, $3, $4, $5, 'justtcg-history')",
+                            card_row["id"], h["captured_at"], h["price_low"],
+                            h["price_mid"], h["price_high"])
+                        summary["backfilled"] += 1
                 await conn.execute(
                     "INSERT INTO price_snapshots (card_id, price_low, price_mid, price_high, source) "
                     "VALUES ($1, $2, $3, $4, 'justtcg')",
@@ -251,10 +275,10 @@ async def run_ingest(pool) -> dict:
                 summary["snapshots"] += 1
 
     summary["justtcg_calls"] = resolution_budget.used + pricing_budget.used
-    logger.info("Ingest done: %d snapshot(s) across %d card(s), %d newly resolved, "
-                "%d failure(s), %d JustTCG call(s) used",
-                summary["snapshots"], summary["cards"], summary["resolved"],
-                len(summary["failed"]), summary["justtcg_calls"])
+    logger.info("Ingest done: %d snapshot(s) across %d card(s), %d backfilled history "
+                "row(s), %d newly resolved, %d failure(s), %d JustTCG call(s) used",
+                summary["snapshots"], summary["cards"], summary["backfilled"],
+                summary["resolved"], len(summary["failed"]), summary["justtcg_calls"])
     return summary
 
 

@@ -1426,6 +1426,7 @@ async def _run_tracker_refresh(app) -> None:
             "watchlist_added": added,
             "snapshots": ingest["snapshots"],
             "resolved": ingest["resolved"],
+            "backfilled": ingest.get("backfilled", 0),
             "failures": ingest["failed"][:20],
             "justtcg_calls": ingest.get("justtcg_calls", 0),
             "scored": scoring["scored"],

@@ -404,6 +404,7 @@ function pollRefresh(t0){
       } else if (st.result){
         const r = st.result;
         note.textContent = `Done — ${r.snapshots} snapshot(s), ${r.scored} scored, ${r.justtcg_calls} API call(s)` +
+          (r.backfilled ? `, ${r.backfilled} history row(s) backfilled` : '') +
           (r.failures && r.failures.length ? `, ${r.failures.length} issue(s) (see logs)` : '');
       } else {
         note.textContent = 'Refresh finished.';

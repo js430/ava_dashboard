@@ -12,7 +12,7 @@ import re
 import asyncio
 import logging
 import statistics
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 
 import httpx
 
@@ -178,6 +178,40 @@ def extract_prices(card: dict) -> tuple:
     return low, mid, high
 
 
+def extract_price_history(card: dict) -> list:
+    """Daily history points from NM-preferred variants' priceHistory arrays
+    ([{"p": price, "t": epoch}] per the docs; seconds or ms auto-detected).
+    Multiple NM printings on the same day collapse to low/median/high.
+    Returns [{"captured_at", "price_low", "price_mid", "price_high"}, ...]
+    sorted by day."""
+    variants = [v for v in (card.get("variants") or []) if isinstance(v, dict)]
+    nm = [v for v in variants
+          if str(v.get("condition") or "").strip().upper() in _NM_CONDITIONS]
+    by_day: dict = {}
+    for v in (nm or variants):
+        for pt in (v.get("priceHistory") or v.get("price_history") or []):
+            if not isinstance(pt, dict):
+                continue
+            p, t = pt.get("p"), pt.get("t")
+            if not isinstance(p, (int, float)) or p <= 0 or not isinstance(t, (int, float)):
+                continue
+            ts = float(t)
+            if ts > 1e12:  # milliseconds
+                ts /= 1000.0
+            day = datetime.fromtimestamp(ts, tz=timezone.utc).date()
+            by_day.setdefault(day, []).append(float(p))
+    out = []
+    for day in sorted(by_day):
+        prices = by_day[day]
+        out.append({
+            "captured_at": datetime(day.year, day.month, day.day, 12, tzinfo=timezone.utc),
+            "price_low": min(prices),
+            "price_mid": statistics.median(prices),
+            "price_high": max(prices),
+        })
+    return out
+
+
 def extract_release_date(card: dict):
     """Best-effort release date from a JustTCG card object (card or nested set)."""
     objs = [card]
@@ -287,12 +321,15 @@ async def search_card(client: httpx.AsyncClient, name: str, game: str,
 
 
 async def fetch_cards_by_ids(client: httpx.AsyncClient, ids: list,
-                             budget: CallBudget | None = None) -> dict:
+                             budget: CallBudget | None = None,
+                             include_history: bool = False) -> dict:
     """Fetch current pricing for known JustTCG ids, batched 20/request (free
     tier cap). Falls back to per-id GETs if the batch shape is rejected.
     Stops (returning partial results) if the run's call budget runs out.
-    Returns {id: card_obj}.
+    include_history asks for 30 days of priceHistory on the same calls
+    (bigger payload, zero extra API-call cost). Returns {id: card_obj}.
     """
+    history_params = {"priceHistoryDuration": "30d"} if include_history else None
     out: dict = {}
     for i in range(0, len(ids), BATCH_SIZE):
         chunk = ids[i:i + BATCH_SIZE]
@@ -307,6 +344,7 @@ async def fetch_cards_by_ids(client: httpx.AsyncClient, ids: list,
         try:
             resp = await _request_with_backoff(client, "POST", f"{JUSTTCG_API_BASE}/cards",
                                                json=[{"cardId": cid} for cid in chunk],
+                                               params=history_params,
                                                headers=_headers())
             if resp.status_code == 200:
                 payload = resp.json()
@@ -331,8 +369,11 @@ async def fetch_cards_by_ids(client: httpx.AsyncClient, ids: list,
                                "fetched %d/%d cards this run", len(out), len(ids))
                 return out
             try:
+                per_id_params = {"cardId": cid}
+                if history_params:
+                    per_id_params.update(history_params)
                 r = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/cards",
-                                                params={"cardId": cid}, headers=_headers())
+                                                params=per_id_params, headers=_headers())
                 if r.status_code != 200:
                     logger.warning("JustTCG per-id %s -> HTTP %s", cid, r.status_code)
                     continue
