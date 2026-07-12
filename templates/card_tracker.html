@@ -197,7 +197,6 @@
         <option value="one_piece">One Piece</option>
       </select>
       <select id="impSet" style="min-width:220px"><option value="">Loading sets…</option></select>
-      <input type="text" id="impSetCode" placeholder="Set code, e.g. OP09" style="display:none;width:150px" maxlength="10">
       <select id="impRarity" style="min-width:160px"><option value="">All rarities</option></select>
       <button class="refresh-btn" id="impPreviewBtn" onclick="importPreview()">Preview</button>
       <span class="import-note" id="impNote">Free catalog APIs — no JustTCG budget used until ingest.</span>
@@ -403,33 +402,38 @@ let lastPreview = null;
 
 function impEl(id){ return document.getElementById(id); }
 
-async function loadImportSets(){
+const setsCache = {};   // game -> sets list
+
+async function loadImportSets(game){
   if (!impEl('impSet')) return;
+  if (setsCache[game]){ renderSetOptions(setsCache[game]); return; }
+  impEl('impSet').innerHTML = '<option value="">Loading sets…</option>';
   try {
-    const resp = await fetch('/api/card-tracker/import/sets?game=pokemon');
+    const resp = await fetch('/api/card-tracker/import/sets?game=' + encodeURIComponent(game));
     if (!resp.ok) throw new Error(resp.status);
     const sets = await resp.json();
-    impEl('impSet').innerHTML = '<option value="">Pick a set…</option>' + sets.map(s =>
-      `<option value="${esc(s.id)}">${esc(s.name)}${s.release_date ? ' (' + s.release_date.slice(0,4) + ')' : ''}</option>`
-    ).join('');
+    setsCache[game] = sets;
+    renderSetOptions(sets);
   } catch(e) {
     impEl('impSet').innerHTML = '<option value="">Failed to load sets</option>';
   }
 }
 
+function renderSetOptions(sets){
+  impEl('impSet').innerHTML = '<option value="">Pick a set…</option>' + sets.map(s =>
+    `<option value="${esc(s.id)}">${esc(s.name)}${s.release_date ? ' (' + s.release_date.slice(0,4) + ')' : ''}</option>`
+  ).join('');
+}
+
 function onImportGameChange(){
-  const g = impEl('impGame').value;
-  impEl('impSet').style.display = g === 'pokemon' ? '' : 'none';
-  impEl('impSetCode').style.display = g === 'one_piece' ? '' : 'none';
   impEl('impRarity').innerHTML = '<option value="">All rarities</option>';
   impEl('impBody').classList.remove('visible');
   lastPreview = null;
+  loadImportSets(impEl('impGame').value);
 }
 
 function impSetId(){
-  return impEl('impGame').value === 'pokemon'
-    ? impEl('impSet').value
-    : impEl('impSetCode').value.trim();
+  return impEl('impSet').value;
 }
 
 async function importPreview(){
@@ -510,7 +514,7 @@ async function importRun(){
   }
 }
 
-if (impEl('impSet')) loadImportSets();
+if (impEl('impSet')) loadImportSets(impEl('impGame').value);
 
 load();
 (function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();if(selectedId)showDetail(selectedId);};upd();})();

@@ -24,7 +24,9 @@ OPTCG_BASE = "https://www.optcgapi.com/api"
 
 # Hard caps — safeguards against a bad API response flooding the tracker.
 MAX_CARDS_PER_IMPORT = 250
-OP_SET_CODE_RE = re.compile(r"^(OP|EB|ST|PRB)-?\d{1,3}$", re.IGNORECASE)
+# Compact set codes like "OP13" normalize to optcgapi's hyphenated ids ("OP-13").
+_OP_COMPACT_RE = re.compile(r"^(OP|EB|ST|PRB)-?(\d{1,3})$", re.IGNORECASE)
+_OP_ID_RE = re.compile(r"^[A-Z0-9-]{2,20}$")
 
 
 def _pokemon_headers() -> dict:
@@ -107,50 +109,58 @@ def _split_op_name(raw_name: str) -> tuple:
     return (raw_name or "").strip(), ""
 
 
+async def fetch_onepiece_sets(client: httpx.AsyncClient) -> list:
+    """All One Piece sets from optcgapi: [{id, name, release_date, total}].
+    Verified shape (2026-07-12): GET /allSets/ -> [{"set_name","set_id"}, ...]
+    with hyphenated ids like "OP-13". No release dates available."""
+    resp = await client.get(f"{OPTCG_BASE}/allSets/")
+    resp.raise_for_status()
+    out = []
+    for s in resp.json():
+        sid = (s.get("set_id") or "").strip()
+        if sid:
+            out.append({"id": sid, "name": s.get("set_name") or sid,
+                        "release_date": None, "total": None})
+    return out
+
+
+def _normalize_op_set_id(raw: str) -> str:
+    """Accept dropdown ids as-is ("OP-13", "OP14-EB04") and normalize typed
+    compact codes ("op13" -> "OP-13"). optcgapi requires the hyphenated form."""
+    code = (raw or "").strip().upper().replace(" ", "")
+    m = _OP_COMPACT_RE.match(code)
+    if m:
+        return f"{m.group(1)}-{m.group(2).zfill(2)}"
+    if not _OP_ID_RE.match(code):
+        raise ValueError("Set code should look like OP-13, EB-01, or PRB-01")
+    return code
+
+
 async def fetch_onepiece_set_cards(client: httpx.AsyncClient, set_code: str) -> tuple:
-    """(set_name, cards) for one One Piece set code (e.g. OP09, EB01).
-
-    Tries two plausible optcgapi endpoints; neither is verified against docs,
-    so failures raise with a clear message instead of guessing further.
-    """
-    code = set_code.strip().upper().replace(" ", "")
-    if not OP_SET_CODE_RE.match(code):
-        raise ValueError("Set code should look like OP09, EB01, ST13, or PRB01")
-    code = code.replace("-", "")
-
-    batch = None
-    for url in (f"{OPTCG_BASE}/sets/{code}/", f"{OPTCG_BASE}/sets/filtered/"):
-        try:
-            params = {"set_id": code} if url.endswith("filtered/") else None
-            resp = await client.get(url, params=params)
-            if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, list) and data:
-                    batch = data
-                    break
-        except Exception:
-            logger.exception("optcgapi set fetch failed at %s", url)
-    if not batch:
-        raise RuntimeError(
-            f"Couldn't enumerate One Piece set {code} from optcgapi — the set-listing "
-            "endpoint may differ from what this trial assumes. Add these cards via "
-            "watchlist.py for now and check the server logs.")
+    """(set_name, cards) for one One Piece set.
+    Verified shape (2026-07-12): GET /sets/{SET-ID}/ (hyphenated, e.g. OP-01)
+    -> list of card objects with card_name/card_set_id/rarity/set_name.
+    No release-date field exists, so release_date stays null for OP cards."""
+    code = _normalize_op_set_id(set_code)
+    resp = await client.get(f"{OPTCG_BASE}/sets/{code}/")
+    if resp.status_code == 404:
+        raise RuntimeError(f"Set {code} isn't on optcgapi (yet) — check the set list.")
+    resp.raise_for_status()
+    batch = resp.json()
+    if not isinstance(batch, list) or not batch:
+        raise RuntimeError(f"optcgapi returned no cards for set {code}.")
 
     set_name, cards = None, []
     for c in batch:
         num = str(c.get("card_set_id") or "")
-        # Guard against a fuzzy endpoint returning cards from other sets.
-        if code[:2] in ("OP", "EB", "ST") and num and not num.upper().startswith(code):
-            continue
         set_name = set_name or c.get("set_name")
         name, suffix = _split_op_name(c.get("card_name") or "")
         rarity = (c.get("rarity") or "").strip()
         variant = f"{rarity} ({suffix})" if suffix else rarity
-        release = _parse_date(c.get("release_date") or c.get("set_release_date"))
         cards.append({
             "name": name,
             "card_number": num,
             "variant": variant,
-            "release_date": release.isoformat() if release else None,
+            "release_date": None,
         })
     return set_name or code, cards

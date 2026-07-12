@@ -1481,13 +1481,14 @@ def _validate_import_params(game: str, set_id: str, rarity: str) -> None:
 @limiter.limit("30/hour")
 async def api_import_sets(request: Request, game: str = "pokemon"):
     _require_tracker_admin(request)
-    if game != "pokemon":
-        # One Piece has no reliable free set-list API; the UI uses a set-code
-        # field (OP09, EB01, ...) instead of a dropdown.
-        return JSONResponse([])
+    if game not in ("pokemon", "one_piece"):
+        raise HTTPException(status_code=400, detail="Invalid game")
     try:
         async with httpx.AsyncClient(timeout=_CATALOG_TIMEOUT) as client:
-            sets = await set_import.fetch_pokemon_sets(client)
+            if game == "pokemon":
+                sets = await set_import.fetch_pokemon_sets(client)
+            else:
+                sets = await set_import.fetch_onepiece_sets(client)
     except Exception as e:
         logger.exception("Set list fetch failed")
         raise HTTPException(status_code=502, detail=f"Couldn't fetch the set list: {e}")
