@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%23fff' stroke='%23111' stroke-width='2'/><path d='M2 16a14 14 0 0 1 28 0z' fill='%23ee1515'/><path d='M2 16h28' stroke='%23111' stroke-width='3'/><circle cx='16' cy='16' r='5' fill='%23fff' stroke='%23111' stroke-width='3'/></svg>">
+<script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Card Tracker — Restock Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .header-title { font-size: 16px; font-weight: 600; color: #111; }
+  .header-sub { font-size: 12px; color: #999; margin-top: 1px; }
+  .nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; }
+  .nav a:hover { background: #f4f4f5; }
+  .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .main { padding: 24px; max-width: 1300px; margin: 0 auto; }
+
+  .stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; margin-bottom: 16px; }
+  .stat-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 14px 16px; }
+  .stat-label { font-size: 12px; color: #888; margin-bottom: 6px; }
+  .stat-value { font-size: 22px; font-weight: 600; color: #111; }
+
+  .table-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; overflow: hidden; margin-bottom: 16px; }
+  .table-header { padding: 12px 16px; border-bottom: 1px solid #e4e4e7; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .table-header-title { font-size: 14px; font-weight: 600; color: #111; }
+  .btn-group { display: flex; }
+  .btn-group button { font-size: 12px; height: 30px; padding: 0 11px; border: 1px solid #ddd; background: #fff; color: #333; cursor: pointer; white-space: nowrap; }
+  .btn-group button:first-child { border-radius: 6px 0 0 6px; }
+  .btn-group button:last-child { border-radius: 0 6px 6px 0; }
+  .btn-group button:not(:first-child) { border-left: none; }
+  .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .search-input { font-size: 12px; height: 30px; padding: 0 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #111; width: 180px; }
+  .refresh-btn { font-size: 12px; height: 30px; padding: 0 12px; border: none; border-radius: 6px; background: #5865F2; color: #fff; cursor: pointer; font-weight: 600; }
+  .refresh-btn:disabled { opacity: .6; cursor: not-allowed; }
+  .refresh-note { font-size: 12px; color: #999; margin-left: auto; }
+
+  .table-scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  thead th { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; padding: 9px 12px; text-align: right; border-bottom: 1px solid #e4e4e7; background: #fafafa; white-space: nowrap; }
+  thead th.left { text-align: left; }
+  tbody tr { border-bottom: 1px solid #f0f0f0; cursor: pointer; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: #fafafa; }
+  tbody tr.selected { background: #eef0ff; }
+  tbody td { padding: 8px 12px; color: #333; text-align: right; white-space: nowrap; }
+  tbody td.left { text-align: left; }
+  .rank { color: #aaa; width: 30px; }
+  .card-name { font-weight: 600; color: #111; }
+  .card-sub { font-size: 12px; color: #999; }
+  .pos { color: #16a34a; font-weight: 600; }
+  .neg { color: #dc2626; font-weight: 600; }
+  .muted { color: #aaa; }
+  .score-badge { display: inline-block; min-width: 44px; text-align: center; font-weight: 700; padding: 2px 8px; border-radius: 12px; font-size: 12px; }
+  .score-hi   { background: #dcfce7; color: #166534; }
+  .score-mid  { background: #fef9c3; color: #854d0e; }
+  .score-low  { background: #ffedd5; color: #9a3412; }
+  .score-none { background: #f3f4f6; color: #6b7280; }
+  .empty { text-align: center; padding: 36px; color: #aaa; font-size: 12px; }
+
+  .detail-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; overflow: hidden; display: none; }
+  .detail-card.visible { display: block; }
+  .detail-header { padding: 14px 16px 10px; border-bottom: 1px solid #f0f0f0; }
+  .detail-title { font-size: 15px; font-weight: 700; color: #111; }
+  .detail-sub { font-size: 12px; color: #999; margin-top: 2px; }
+  .detail-body { padding: 14px 16px; }
+  .chart-wrap { position: relative; height: 300px; margin-bottom: 14px; }
+  .why-grid { display: flex; gap: 8px; flex-wrap: wrap; }
+  .why-chip { font-size: 12px; background: #f6f6f8; border: 1px solid #ececef; border-radius: 8px; padding: 6px 10px; color: #444; }
+  .why-chip b { color: #111; }
+  .why-note { font-size: 12px; color: #999; margin-top: 10px; line-height: 1.5; }
+
+  @media (max-width: 720px) {
+    .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px; }
+    .nav { gap: 5px; }
+    .main { padding: 12px; }
+    .stat-grid { grid-template-columns: repeat(2,1fr); gap: 8px; }
+    .search-input { width: 130px; }
+    thead th, tbody td { padding: 7px 8px; }
+    .chart-wrap { height: 220px; }
+  }
+  .theme-toggle { display: none; font-size: 16px; background: #f4f4f5; border: 1px solid #ddd; border-radius: 6px; padding: 4px 8px; cursor: pointer; line-height: 1; flex-shrink: 0; }
+  html[data-theme="dark"] { color-scheme: dark; }
+  html[data-theme="dark"] body { background: #111113; color: #f0f0f0; }
+  html[data-theme="dark"] .header { background: #1c1c1f; border-bottom-color: #303033; }
+  html[data-theme="dark"] .header-title { color: #f0f0f0; }
+  html[data-theme="dark"] .nav a { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .nav a:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .stat-card, html[data-theme="dark"] .table-card, html[data-theme="dark"] .detail-card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .stat-value, html[data-theme="dark"] .table-header-title, html[data-theme="dark"] .detail-title, html[data-theme="dark"] .card-name { color: #f0f0f0; }
+  html[data-theme="dark"] .table-header, html[data-theme="dark"] .detail-header { border-bottom-color: #303033; }
+  html[data-theme="dark"] .btn-group button { background: #252528; border-color: #383838; color: #ccc; }
+  html[data-theme="dark"] .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .search-input { background: #252528; border-color: #383838; color: #f0f0f0; }
+  html[data-theme="dark"] thead th { background: #161618; border-bottom-color: #303033; }
+  html[data-theme="dark"] tbody tr { border-bottom-color: #2a2a2d; }
+  html[data-theme="dark"] tbody tr:hover { background: #222226; }
+  html[data-theme="dark"] tbody tr.selected { background: #1e2040; }
+  html[data-theme="dark"] tbody td { color: #ccc; }
+  html[data-theme="dark"] .why-chip { background: #232327; border-color: #303033; color: #bbb; }
+  html[data-theme="dark"] .why-chip b { color: #f0f0f0; }
+  html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="header-title">Card Tracker</div>
+    <div class="header-sub">Profit-potential watchlist (trial) — mods &amp; admins</div>
+  </div>
+  <div class="nav">
+    <a href="/">Dashboard</a>
+    <a href="/map">Map</a>
+    <a href="/status">Status</a>
+    <a href="/scan">Scan</a>
+    {% if is_admin %}<a href="/admin">Admin</a>{% endif %}
+    {% if is_admin %}<a href="/contributors">Contributors</a>{% endif %}
+    {% if is_admin %}<a href="/invite-network">Network</a>{% endif %}
+    {% if is_admin %}<a href="/raffle-wheel">Raffle</a>{% endif %}
+    <a href="/card-tracker" class="active">Tracker</a>
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
+    <a href="/logout">Log out</a>
+  </div>
+</div>
+
+<div class="main">
+
+  <div class="stat-grid">
+    <div class="stat-card"><div class="stat-label">Tracked cards</div><div class="stat-value" id="statTracked">—</div></div>
+    <div class="stat-card"><div class="stat-label">With scores</div><div class="stat-value" id="statScored">—</div></div>
+    <div class="stat-card"><div class="stat-label">Top card</div><div class="stat-value" id="statTop" style="font-size:14px;margin-top:4px;">—</div></div>
+    <div class="stat-card"><div class="stat-label">Last snapshot</div><div class="stat-value" id="statLast" style="font-size:14px;margin-top:4px;">—</div></div>
+  </div>
+
+  <div class="table-card">
+    <div class="table-header">
+      <span class="table-header-title">Ranked by potential</span>
+      <div class="btn-group" id="gameFilter">
+        <button class="active" data-g="all" onclick="setGame('all',this)">All</button>
+        <button data-g="pokemon" onclick="setGame('pokemon',this)">Pokémon</button>
+        <button data-g="one_piece" onclick="setGame('one_piece',this)">One Piece</button>
+      </div>
+      <input class="search-input" id="searchInput" type="text" placeholder="Search card…" oninput="renderTable()">
+      {% if is_admin %}<button class="refresh-btn" id="refreshBtn" onclick="refreshData()">Refresh prices</button>{% endif %}
+      <span class="refresh-note" id="refreshNote"></span>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th class="left">#</th><th class="left">Card</th><th class="left">Game</th>
+            <th>Price</th><th>7d</th><th>30d</th><th>Age</th><th>Liquidity</th><th>Score</th>
+          </tr>
+        </thead>
+        <tbody id="trackerBody">
+          <tr><td colspan="9" class="empty">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="detail-card" id="detailCard">
+    <div class="detail-header">
+      <div class="detail-title" id="detailTitle">—</div>
+      <div class="detail-sub" id="detailSub"></div>
+    </div>
+    <div class="detail-body">
+      <div class="chart-wrap"><canvas id="priceChart"></canvas></div>
+      <div class="why-grid" id="whyGrid"></div>
+      <div class="why-note">Score = 100 × (0.35·momentum7 + 0.25·momentum30 + 0.40·age bonus) × liquidity multiplier. Momentum saturates at ±30%; the age bonus peaks ~240 days after release; liquidity scales the total between 0.5× and 1×. Knobs live in <code>card_scoring.py</code>.</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+
+const GAME_LABELS = { pokemon: 'Pokémon', one_piece: 'One Piece' };
+let allRows = [];
+let activeGame = 'all';
+let selectedId = null;
+let chart = null;
+
+function money(v){ return v == null ? '—' : '$' + Number(v).toFixed(2); }
+function pct(v){
+  if (v == null) return '<span class="muted">—</span>';
+  const cls = v > 0.005 ? 'pos' : v < -0.005 ? 'neg' : 'muted';
+  const sign = v > 0 ? '+' : '';
+  return `<span class="${cls}">${sign}${Number(v).toFixed(1)}%</span>`;
+}
+function scoreBadge(v){
+  if (v == null) return '<span class="score-badge score-none">—</span>';
+  const cls = v >= 65 ? 'score-hi' : v >= 45 ? 'score-mid' : 'score-low';
+  return `<span class="score-badge ${cls}">${Number(v).toFixed(0)}</span>`;
+}
+function ageStr(d){
+  if (d == null) return '—';
+  return d >= 365 ? (d/365).toFixed(1) + 'y' : d + 'd';
+}
+
+function setGame(g, btn){
+  activeGame = g;
+  document.querySelectorAll('#gameFilter button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderTable();
+}
+
+function renderTable(){
+  const q = document.getElementById('searchInput').value.trim().toLowerCase();
+  const rows = allRows.filter(r => {
+    if (activeGame !== 'all' && r.game !== activeGame) return false;
+    if (q && !r.name.toLowerCase().includes(q) && !(r.set_name||'').toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const body = document.getElementById('trackerBody');
+  if (!rows.length){
+    body.innerHTML = '<tr><td colspan="9" class="empty">No cards yet — run the ingest (scripts/ingest_prices) or hit Refresh prices.</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map((r, i) => `
+    <tr data-id="${r.id}" class="${r.id === selectedId ? 'selected' : ''}" onclick="showDetail(${r.id})">
+      <td class="left rank">${i + 1}</td>
+      <td class="left">
+        <div class="card-name">${esc(r.name)}</div>
+        <div class="card-sub">${esc(r.set_name || '')}${r.variant ? ' · ' + esc(r.variant) : ''}${r.card_number ? ' · #' + esc(r.card_number) : ''}</div>
+      </td>
+      <td class="left">${esc(GAME_LABELS[r.game] || r.game)}</td>
+      <td>${money(r.price_mid)}</td>
+      <td>${pct(r.momentum_7d)}</td>
+      <td>${pct(r.momentum_30d)}</td>
+      <td>${ageStr(r.age_days)}</td>
+      <td>${r.liquidity_score == null ? '—' : (r.liquidity_score * 100).toFixed(0) + '%'}</td>
+      <td>${scoreBadge(r.potential_score)}</td>
+    </tr>`).join('');
+}
+
+function buildStats(){
+  document.getElementById('statTracked').textContent = allRows.length;
+  const scored = allRows.filter(r => r.potential_score != null);
+  document.getElementById('statScored').textContent = scored.length;
+  if (scored.length){
+    const top = scored[0];
+    document.getElementById('statTop').textContent = `${top.name} (${Number(top.potential_score).toFixed(0)})`;
+  }
+  const times = allRows.map(r => r.captured_at).filter(Boolean).sort();
+  if (times.length){
+    document.getElementById('statLast').textContent =
+      new Date(times[times.length - 1]).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' });
+  }
+}
+
+async function showDetail(id){
+  selectedId = id;
+  renderTable();
+  try {
+    const resp = await fetch('/api/card-tracker/history?card_id=' + id);
+    if (!resp.ok) throw new Error(resp.status);
+    const d = await resp.json();
+    const c = d.card;
+    document.getElementById('detailTitle').textContent = c.name;
+    document.getElementById('detailSub').textContent =
+      [GAME_LABELS[c.game] || c.game, c.set_name, c.variant, c.card_number ? '#' + c.card_number : null,
+       c.release_date ? 'released ' + c.release_date : 'release date unknown'].filter(Boolean).join(' · ');
+
+    const labels = d.snapshots.map(s => new Date(s.captured_at).toLocaleDateString('en-US', { month:'short', day:'numeric' }));
+    const mids = d.snapshots.map(s => s.price_mid);
+    const lows = d.snapshots.map(s => s.price_low);
+    const highs = d.snapshots.map(s => s.price_high);
+    const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const gridColor = dark ? '#2a2a2d' : '#f0f0f0';
+    const tickColor = dark ? '#888' : '#999';
+
+    if (chart) chart.destroy();
+    chart = new Chart(document.getElementById('priceChart'), {
+      type: 'line',
+      data: { labels, datasets: [
+        { label: 'Mid', data: mids, borderColor: '#5865F2', backgroundColor: 'rgba(88,101,242,0.08)', fill: true, tension: 0.25, pointRadius: 2, borderWidth: 2 },
+        { label: 'Low', data: lows, borderColor: 'rgba(34,197,94,0.6)', borderDash: [4,3], pointRadius: 0, borderWidth: 1, fill: false },
+        { label: 'High', data: highs, borderColor: 'rgba(239,68,68,0.55)', borderDash: [4,3], pointRadius: 0, borderWidth: 1, fill: false },
+      ]},
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { labels: { color: tickColor, boxWidth: 18, font: { size: 11 } } } },
+        scales: {
+          x: { grid: { color: gridColor }, ticks: { color: tickColor, maxTicksLimit: 10 } },
+          y: { grid: { color: gridColor }, ticks: { color: tickColor, callback: v => '$' + v } },
+        },
+      },
+    });
+
+    const e = d.explain;
+    const why = document.getElementById('whyGrid');
+    if (e){
+      why.innerHTML = [
+        `<span class="why-chip">7d momentum: <b>${e.momentum_7d_pct == null ? 'n/a' : (e.momentum_7d_pct > 0 ? '+' : '') + e.momentum_7d_pct + '%'}</b> → ${e.momentum_7d_norm}</span>`,
+        `<span class="why-chip">30d momentum: <b>${e.momentum_30d_pct == null ? 'n/a' : (e.momentum_30d_pct > 0 ? '+' : '') + e.momentum_30d_pct + '%'}</b> → ${e.momentum_30d_norm}</span>`,
+        `<span class="why-chip">Age: <b>${e.age_days == null ? 'unknown' : e.age_days + 'd'}</b> → bonus ${e.age_bonus}</span>`,
+        `<span class="why-chip">Liquidity: <b>${(e.liquidity_score * 100).toFixed(0)}%</b> → ×${e.liquidity_multiplier}</span>`,
+        `<span class="why-chip">Potential: <b>${e.potential_score}</b> / 100</span>`,
+      ].join('');
+    } else {
+      why.innerHTML = '<span class="why-chip">No snapshots yet — no score to explain.</span>';
+    }
+    document.getElementById('detailCard').classList.add('visible');
+    document.getElementById('detailCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch (err) {
+    document.getElementById('detailCard').classList.remove('visible');
+  }
+}
+
+async function refreshData(){
+  const btn = document.getElementById('refreshBtn');
+  const note = document.getElementById('refreshNote');
+  if (!btn) return;
+  btn.disabled = true;
+  note.textContent = 'Fetching prices… (can take ~30s)';
+  try {
+    const resp = await fetch('/api/card-tracker/refresh', { method: 'POST' });
+    const d = await resp.json();
+    if (!resp.ok || !d.ok) throw new Error(d.error || ('HTTP ' + resp.status));
+    note.textContent = `Done — ${d.snapshots} snapshot(s), ${d.scored} scored` +
+      (d.failures && d.failures.length ? `, ${d.failures.length} failure(s) (see logs)` : '');
+    await load();
+  } catch (err) {
+    note.textContent = 'Refresh failed: ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function load(){
+  try {
+    const resp = await fetch('/api/card-tracker/list');
+    if (!resp.ok) throw new Error(resp.status);
+    allRows = await resp.json();
+    buildStats();
+    renderTable();
+  } catch (err) {
+    document.getElementById('trackerBody').innerHTML =
+      '<tr><td colspan="9" class="empty">Failed to load data.</td></tr>';
+  }
+}
+
+load();
+(function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();if(selectedId)showDetail(selectedId);};upd();})();
+</script>
+</body>
+</html>

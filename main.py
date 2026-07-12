@@ -25,7 +25,8 @@ from anthropic import AsyncAnthropic
 from PIL import Image
 from dotenv import load_dotenv
 
-from card_tracker import ensure_card_tracker_schema
+from card_tracker import ensure_card_tracker_schema, sync_watchlist, run_ingest, run_scoring
+import card_scoring
 
 load_dotenv()
 
@@ -1289,6 +1290,139 @@ async def api_raffle_spin(request: Request, user=Depends(get_current_user)):
         "user_id": info["user_id"],
         "username": info["username"],
         "remaining_after": len(remaining) - 1,
+    }, headers={"Cache-Control": "no-store"})
+
+# ---- Card Tracker (staff: admins + server/regional mods via MOD_ROLE_IDS) ----
+
+def require_staff(request: Request) -> dict:
+    """Session gate for the card tracker: admins or mods (MOD_ROLE_IDS flag).
+    Deliberately does NOT require the premium member role — a regional mod
+    without premium still gets tracker access, but demo users do not."""
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if int(user["id"]) not in ADMIN_USER_IDS and not request.session.get("mod", False):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return user
+
+@app.get("/card-tracker", response_class=HTMLResponse)
+async def card_tracker_page(request: Request):
+    user = request.session.get("user")
+    if not user:
+        return RedirectResponse("/login")
+    is_admin = int(user["id"]) in ADMIN_USER_IDS
+    if not is_admin and not request.session.get("mod", False):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return templates.TemplateResponse("card_tracker.html", {
+        "request": request,
+        "username": user["username"],
+        "avatar": user.get("avatar"),
+        "user_id": user["id"],
+        "is_admin": is_admin,
+        "is_mod": request.session.get("mod", False),
+    })
+
+@app.get("/api/card-tracker/list")
+async def api_card_tracker_list(request: Request, user=Depends(require_staff)):
+    def _f(x):
+        return float(x) if x is not None else None
+    async with request.app.state.db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT tc.id, tc.name, tc.game, tc.set_name, tc.card_number, tc.variant,
+                   tc.release_date,
+                   ps.price_low, ps.price_mid, ps.price_high, ps.captured_at,
+                   cs.momentum_7d, cs.momentum_30d, cs.liquidity_score,
+                   cs.age_days, cs.potential_score, cs.computed_at
+            FROM tracked_cards tc
+            LEFT JOIN LATERAL (
+                SELECT * FROM price_snapshots WHERE card_id = tc.id
+                ORDER BY captured_at DESC LIMIT 1
+            ) ps ON true
+            LEFT JOIN LATERAL (
+                SELECT * FROM card_scores WHERE card_id = tc.id
+                ORDER BY computed_at DESC LIMIT 1
+            ) cs ON true
+            ORDER BY cs.potential_score DESC NULLS LAST, tc.name ASC
+            """
+        )
+    return JSONResponse([
+        {
+            "id": r["id"],
+            "name": r["name"],
+            "game": r["game"],
+            "set_name": r["set_name"],
+            "card_number": r["card_number"],
+            "variant": r["variant"],
+            "release_date": r["release_date"].isoformat() if r["release_date"] else None,
+            "price_low": _f(r["price_low"]),
+            "price_mid": _f(r["price_mid"]),
+            "price_high": _f(r["price_high"]),
+            "captured_at": r["captured_at"].isoformat() if r["captured_at"] else None,
+            "momentum_7d": _f(r["momentum_7d"]),
+            "momentum_30d": _f(r["momentum_30d"]),
+            "liquidity_score": _f(r["liquidity_score"]),
+            "age_days": r["age_days"],
+            "potential_score": _f(r["potential_score"]),
+            "computed_at": r["computed_at"].isoformat() if r["computed_at"] else None,
+        }
+        for r in rows
+    ], headers={"Cache-Control": "no-store"})
+
+@app.get("/api/card-tracker/history")
+async def api_card_tracker_history(request: Request, card_id: int, user=Depends(require_staff)):
+    def _f(x):
+        return float(x) if x is not None else None
+    async with request.app.state.db.acquire() as conn:
+        card = await conn.fetchrow(
+            "SELECT id, name, game, set_name, card_number, variant, release_date "
+            "FROM tracked_cards WHERE id = $1", card_id)
+        if card is None:
+            raise HTTPException(status_code=404, detail="Card not found")
+        snaps = await conn.fetch(
+            "SELECT captured_at, price_low, price_mid, price_high FROM price_snapshots "
+            "WHERE card_id = $1 ORDER BY captured_at ASC", card_id)
+    # Recompute the full component breakdown live so the UI can show WHY the
+    # card scores what it does (card_scores stores only the headline numbers).
+    explain = card_scoring.score_card([dict(s) for s in snaps], card["release_date"]) if snaps else None
+    return JSONResponse({
+        "card": {
+            "id": card["id"], "name": card["name"], "game": card["game"],
+            "set_name": card["set_name"], "card_number": card["card_number"],
+            "variant": card["variant"],
+            "release_date": card["release_date"].isoformat() if card["release_date"] else None,
+        },
+        "snapshots": [
+            {"captured_at": s["captured_at"].isoformat(),
+             "price_low": _f(s["price_low"]), "price_mid": _f(s["price_mid"]),
+             "price_high": _f(s["price_high"])}
+            for s in snaps
+        ],
+        "explain": explain,
+    }, headers={"Cache-Control": "no-store"})
+
+@app.post("/api/card-tracker/refresh")
+@limiter.limit("3/hour")
+async def api_card_tracker_refresh(request: Request, user=Depends(require_staff)):
+    # Spending the JustTCG call budget stays admin-only; mods can view.
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Refresh is admin-only")
+    pool = request.app.state.db
+    await ensure_card_tracker_schema(pool)
+    added = await sync_watchlist(pool)
+    try:
+        ingest = await run_ingest(pool)
+    except Exception as e:
+        logger.exception("Card tracker refresh: ingest failed")
+        return JSONResponse({"ok": False, "error": f"Ingest failed: {e}"}, status_code=502)
+    scoring = await run_scoring(pool)
+    return JSONResponse({
+        "ok": True,
+        "watchlist_added": added,
+        "snapshots": ingest["snapshots"],
+        "resolved": ingest["resolved"],
+        "failures": ingest["failed"][:20],
+        "scored": scoring["scored"],
     }, headers={"Cache-Control": "no-store"})
 
 # ---- Analytics ----

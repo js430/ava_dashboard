@@ -213,6 +213,7 @@
   {% if is_admin %}<a href="/contributors" class="logout">Contributors</a>{% endif %}
   {% if is_admin %}<a href="/invite-network" class="logout">Network</a>{% endif %}
   {% if is_admin %}<a href="/raffle-wheel" class="logout">Raffle</a>{% endif %}
+  {% if is_admin or is_mod %}<a href="/card-tracker" class="logout">Tracker</a>{% endif %}
   {% if is_admin or is_mod %}<a href="/sample" class="logout">Sample</a>{% endif %}
   {% if is_admin or is_mod %}<a href="/sample-map" class="logout">Sample Map</a>{% endif %}
   {% if is_admin or is_mod %}<a href="/sample-status" class="logout">Sample Status</a>{% endif %}

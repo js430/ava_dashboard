@@ -157,6 +157,7 @@
     {% if is_admin %}<a href="/contributors">Contributors</a>{% endif %}
     {% if is_admin %}<a href="/invite-network">Network</a>{% endif %}
     {% if is_admin %}<a href="/raffle-wheel">Raffle</a>{% endif %}
+    {% if is_admin or is_mod %}<a href="/card-tracker">Tracker</a>{% endif %}
     {% if is_admin or is_mod %}<a href="/sample">Sample</a>{% endif %}
     {% if is_admin or is_mod %}<a href="/sample-map">Sample Map</a>{% endif %}
     {% if is_admin or is_mod %}<a href="/sample-status">Sample Status</a>{% endif %}
