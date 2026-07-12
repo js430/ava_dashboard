@@ -25,6 +25,8 @@ from anthropic import AsyncAnthropic
 from PIL import Image
 from dotenv import load_dotenv
 
+from card_tracker import ensure_card_tracker_schema
+
 load_dotenv()
 
 logger = logging.getLogger("dashboard")
@@ -58,6 +60,10 @@ async def lifespan(app: FastAPI):
     if not secret or len(secret) < 32:
         raise RuntimeError("SESSION_SECRET env var must be set and at least 32 characters long")
     app.state.db = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+    try:
+        await ensure_card_tracker_schema(app.state.db)
+    except Exception:
+        logger.exception("Card tracker schema ensure failed — /card-tracker may be unavailable")
     try:
         yield
     finally:
