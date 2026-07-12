@@ -147,6 +147,10 @@ async def run_ingest(pool) -> dict:
     pricing_budget = justtcg.CallBudget(PRICING_CALL_CAP)
 
     async with httpx.AsyncClient(timeout=20) as client:
+        # ── Pass 0: resolve JustTCG's real game slugs (1 call, cached
+        #    process-wide; falls back to built-in guesses on failure) ──
+        await justtcg.resolve_game_slugs(client, budget=resolution_budget)
+
         # ── Pass 1: resolve missing JustTCG ids (one+ search calls per card,
         #    paced for the 10/min limit, capped for the 100/day limit) ──
         searched = False

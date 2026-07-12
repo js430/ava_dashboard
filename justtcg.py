@@ -71,12 +71,53 @@ async def _request_with_backoff(client: httpx.AsyncClient, method: str, url: str
 JUSTTCG_API_BASE = os.getenv("JUSTTCG_API_BASE", "https://api.justtcg.com/v1")
 POKEMONTCG_API = "https://api.pokemontcg.io/v2/cards"
 
-# JustTCG game slugs for our two tracked games. If a search 404s or returns
-# nothing for every card of one game, this slug is the first thing to check.
-GAME_SLUGS = {
+# Fallback game slugs, used until resolve_game_slugs() fetches the real ids
+# from GET /games (docs show full-name slugs like "magic-the-gathering", so
+# these guesses may be wrong — the dynamic lookup is authoritative).
+_FALLBACK_GAME_SLUGS = {
     "pokemon": "pokemon",
     "one_piece": "one-piece-card-game",
 }
+_game_slug_cache: dict | None = None
+
+
+def _slug_for(game: str) -> str | None:
+    if _game_slug_cache and game in _game_slug_cache:
+        return _game_slug_cache[game]
+    return _FALLBACK_GAME_SLUGS.get(game)
+
+
+async def resolve_game_slugs(client: httpx.AsyncClient, budget=None) -> dict:
+    """Fetch GET /games once (1 API call, cached for the process) and map our
+    game keys to JustTCG's actual slugs by name matching."""
+    global _game_slug_cache
+    if _game_slug_cache is not None:
+        return _game_slug_cache
+    _charge(budget)
+    try:
+        resp = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/games",
+                                           headers=_headers())
+        if resp.status_code != 200:
+            logger.warning("GET /games -> HTTP %s; using fallback game slugs", resp.status_code)
+            return _FALLBACK_GAME_SLUGS
+        payload = resp.json()
+        games = payload.get("data") if isinstance(payload, dict) else payload
+        slugs = dict(_FALLBACK_GAME_SLUGS)
+        for g in games or []:
+            gid = str(g.get("id") or "")
+            gname = str(g.get("name") or "").lower()
+            if not gid:
+                continue
+            if "pok" in gname:
+                slugs["pokemon"] = gid
+            elif "one piece" in gname:
+                slugs["one_piece"] = gid
+        _game_slug_cache = slugs
+        logger.info("JustTCG game slugs resolved: %s", slugs)
+        return slugs
+    except Exception:
+        logger.exception("GET /games failed; using fallback game slugs")
+        return _FALLBACK_GAME_SLUGS
 
 BATCH_SIZE = 20  # free tier: 20 cards per request
 
@@ -107,16 +148,27 @@ def _nums(obj: dict, fields: tuple) -> list:
     return out
 
 
+_NM_CONDITIONS = ("NM", "NEAR MINT", "MINT", "M")
+
+
 def extract_prices(card: dict) -> tuple:
     """Return (low, mid, high) floats (any may be None) from a JustTCG card
-    object, scanning the card itself and its variants list."""
+    object. Variants are (condition x printing) pairs each carrying a single
+    `price` — so we restrict to Near Mint variants when any exist, otherwise
+    mixing NM with Damaged prices would skew the level and make day-over-day
+    momentum meaningless. Low/high then reflect the printing spread (e.g.
+    Normal vs Holofoil); mid is the median across NM printings.
+    """
+    variants = [v for v in (card.get("variants") or []) if isinstance(v, dict)]
+    nm = [v for v in variants
+          if str(v.get("condition") or "").strip().upper() in _NM_CONDITIONS]
+    objs = (nm or variants) or [card]
     mids, lows, highs = [], [], []
-    objs = [card] + [v for v in (card.get("variants") or []) if isinstance(v, dict)]
     for o in objs:
         mids += _nums(o, _PRICE_FIELDS)
         lows += _nums(o, _LOW_FIELDS)
         highs += _nums(o, _HIGH_FIELDS)
-    # Fall back to the spread of observed mid prices when explicit low/high absent.
+    # Fall back to the spread of observed prices when explicit low/high absent.
     pool = mids or (lows + highs)
     if not pool and not lows and not highs:
         return None, None, None
@@ -184,7 +236,7 @@ async def search_card(client: httpx.AsyncClient, name: str, game: str,
     card's prices. No acceptable candidate -> None (retried next ingest).
     Raises BudgetExhausted when the run's call budget is used up.
     """
-    slug = GAME_SLUGS.get(game)
+    slug = _slug_for(game)
     if not slug:
         return None
 
@@ -204,6 +256,14 @@ async def search_card(client: httpx.AsyncClient, name: str, game: str,
         resp = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/cards",
                                            params={"q": query, "game": slug, "limit": 20},
                                            headers=_headers())
+        if resp.status_code == 400:
+            # 'q' is the one search param the docs didn't confirm — retry once
+            # with 'name' in case that's the real parameter.
+            _charge(budget)
+            await asyncio.sleep(SEARCH_INTERVAL)
+            resp = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/cards",
+                                               params={"name": query, "game": slug, "limit": 20},
+                                               headers=_headers())
         if resp.status_code == 401:
             raise JustTCGError("JustTCG rejected the API key (401)")
         if resp.status_code != 200:
