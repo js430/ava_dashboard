@@ -214,3 +214,33 @@ async def run_ingest(pool) -> dict:
     logger.info("Ingest done: %d snapshot(s) across %d card(s), %d newly resolved, %d failure(s)",
                 summary["snapshots"], summary["cards"], summary["resolved"], len(summary["failed"]))
     return summary
+
+
+async def run_scoring(pool) -> dict:
+    """Compute and store a card_scores row for every tracked card, from the
+    last 60 days of snapshots (enough history for a true 30d baseline).
+    Pure math lives in card_scoring.py; this is just the DB glue."""
+    import card_scoring
+
+    summary = {"scored": 0, "skipped": 0}
+    async with pool.acquire() as conn:
+        cards = await conn.fetch("SELECT id, name, release_date FROM tracked_cards ORDER BY id")
+        for c in cards:
+            snaps = await conn.fetch(
+                "SELECT captured_at, price_low, price_mid, price_high FROM price_snapshots "
+                "WHERE card_id = $1 AND captured_at >= NOW() - INTERVAL '60 days' "
+                "ORDER BY captured_at",
+                c["id"])
+            if not snaps:
+                summary["skipped"] += 1
+                continue
+            s = card_scoring.score_card([dict(r) for r in snaps], c["release_date"])
+            await conn.execute(
+                "INSERT INTO card_scores (card_id, momentum_7d, momentum_30d, "
+                "liquidity_score, age_days, potential_score) VALUES ($1, $2, $3, $4, $5, $6)",
+                c["id"], s["momentum_7d_pct"], s["momentum_30d_pct"],
+                s["liquidity_score"], s["age_days"], s["potential_score"])
+            summary["scored"] += 1
+    logger.info("Scoring done: %d scored, %d skipped (no snapshots)",
+                summary["scored"], summary["skipped"])
+    return summary
