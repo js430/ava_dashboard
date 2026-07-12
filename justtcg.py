@@ -53,10 +53,29 @@ def _charge(budget) -> None:
 
 
 async def _request_with_backoff(client: httpx.AsyncClient, method: str, url: str, **kwargs):
-    """Issue a request, sleeping and retrying (up to _MAX_TRIES) on HTTP 429."""
-    for attempt in range(_MAX_TRIES):
+    """Issue a request with the active API key. Sleeps and retries (up to
+    _MAX_TRIES) on HTTP 429; fails over to the backup key on quota/auth
+    rejections (401/402/403) or a 429 that survives every retry. Sets the
+    auth header itself — callers must not pass one."""
+    switched = False
+    attempt = 0
+    while True:
+        kwargs["headers"] = _headers()
         resp = await client.request(method, url, **kwargs)
+        if resp.status_code in (401, 402, 403):
+            if not switched and _switch_key(f"HTTP {resp.status_code}", exhaust_current=True):
+                switched = True
+                continue
+            return resp
         if resp.status_code != 429:
+            if resp.status_code == 200:
+                _note_quota(resp)
+            return resp
+        if attempt >= _MAX_TRIES - 1:
+            if not switched and _switch_key("429s persisted through backoff", exhaust_current=False):
+                switched = True
+                attempt = 0
+                continue
             return resp
         retry_after = resp.headers.get("Retry-After", "")
         try:
@@ -66,7 +85,7 @@ async def _request_with_backoff(client: httpx.AsyncClient, method: str, url: str
         logger.warning("JustTCG rate-limited (429) — waiting %.0fs (attempt %d/%d)",
                        wait, attempt + 1, _MAX_TRIES)
         await asyncio.sleep(wait)
-    return resp
+        attempt += 1
 
 JUSTTCG_API_BASE = os.getenv("JUSTTCG_API_BASE", "https://api.justtcg.com/v1")
 POKEMONTCG_API = "https://api.pokemontcg.io/v2/cards"
@@ -95,8 +114,7 @@ async def resolve_game_slugs(client: httpx.AsyncClient, budget=None) -> dict:
         return _game_slug_cache
     _charge(budget)
     try:
-        resp = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/games",
-                                           headers=_headers())
+        resp = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/games")
         if resp.status_code != 200:
             logger.warning("GET /games -> HTTP %s; using fallback game slugs", resp.status_code)
             return _FALLBACK_GAME_SLUGS
@@ -132,11 +150,67 @@ class JustTCGError(Exception):
     pass
 
 
+# ── API keys: JUSTTCG_API_KEY (primary) + optional JUSTTCG_API_KEY_2 (backup).
+# The client fails over automatically when the active key is out of quota:
+# _metadata.apiRequestsRemaining hits 0, a hard 401/402/403, or 429s that
+# survive every backoff retry. Key state is process-lifetime (resets on
+# deploy), which is fine — an exhausted key just gets re-discovered fast.
+_key_state = {"active": 0, "exhausted": set()}
+
+
+def _api_keys() -> list:
+    keys = []
+    for env in ("JUSTTCG_API_KEY", "JUSTTCG_API_KEY_2"):
+        k = os.getenv(env, "").strip()
+        if k:
+            keys.append(k)
+    return keys
+
+
+def _key_label(idx: int) -> str:
+    return "backup" if idx else "primary"
+
+
 def _headers() -> dict:
-    key = os.getenv("JUSTTCG_API_KEY", "")
-    if not key:
+    keys = _api_keys()
+    if not keys:
         raise JustTCGError("JUSTTCG_API_KEY is not set")
-    return {"X-API-Key": key}
+    avail = [i for i in range(len(keys)) if i not in _key_state["exhausted"]]
+    if not avail:
+        raise JustTCGError("All JustTCG API keys are out of quota")
+    if _key_state["active"] not in avail:
+        _key_state["active"] = avail[0]
+    return {"X-API-Key": keys[_key_state["active"]]}
+
+
+def _switch_key(reason: str, exhaust_current: bool) -> bool:
+    """Move to another usable key if one exists. Returns True on switch."""
+    keys = _api_keys()
+    cur = _key_state["active"]
+    if exhaust_current:
+        _key_state["exhausted"].add(cur)
+    for i in range(len(keys)):
+        if i != cur and i not in _key_state["exhausted"]:
+            _key_state["active"] = i
+            logger.warning("JustTCG: switching %s key -> %s key (%s)",
+                           _key_label(cur), _key_label(i), reason)
+            return True
+    return False
+
+
+def _note_quota(resp) -> None:
+    """Watch _metadata.apiRequestsRemaining and fail over at zero."""
+    try:
+        meta = (resp.json() or {}).get("_metadata") or {}
+        rem = meta.get("apiRequestsRemaining")
+        if isinstance(rem, (int, float)):
+            if rem <= 0:
+                _switch_key("quota used up per _metadata", exhaust_current=True)
+            elif rem <= 25:
+                logger.warning("JustTCG %s key: only %d request(s) remaining",
+                               _key_label(_key_state["active"]), int(rem))
+    except Exception:
+        pass
 
 
 def _nums(obj: dict, fields: tuple) -> list:
@@ -288,18 +362,16 @@ async def search_card(client: httpx.AsyncClient, name: str, game: str,
             await asyncio.sleep(SEARCH_INTERVAL)
         _charge(budget)
         resp = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/cards",
-                                           params={"q": query, "game": slug, "limit": 20},
-                                           headers=_headers())
+                                           params={"q": query, "game": slug, "limit": 20})
         if resp.status_code == 400:
             # 'q' is the one search param the docs didn't confirm — retry once
             # with 'name' in case that's the real parameter.
             _charge(budget)
             await asyncio.sleep(SEARCH_INTERVAL)
             resp = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/cards",
-                                               params={"name": query, "game": slug, "limit": 20},
-                                               headers=_headers())
+                                               params={"name": query, "game": slug, "limit": 20})
         if resp.status_code == 401:
-            raise JustTCGError("JustTCG rejected the API key (401)")
+            raise JustTCGError("JustTCG rejected the API key(s) (401)")
         if resp.status_code != 200:
             logger.warning("JustTCG search %r (%s) -> HTTP %s: %s",
                            query, slug, resp.status_code, resp.text[:200])
@@ -344,8 +416,7 @@ async def fetch_cards_by_ids(client: httpx.AsyncClient, ids: list,
         try:
             resp = await _request_with_backoff(client, "POST", f"{JUSTTCG_API_BASE}/cards",
                                                json=[{"cardId": cid} for cid in chunk],
-                                               params=history_params,
-                                               headers=_headers())
+                                               params=history_params)
             if resp.status_code == 200:
                 payload = resp.json()
                 cards = payload.get("data") if isinstance(payload, dict) else payload
@@ -373,7 +444,7 @@ async def fetch_cards_by_ids(client: httpx.AsyncClient, ids: list,
                 if history_params:
                     per_id_params.update(history_params)
                 r = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/cards",
-                                                params=per_id_params, headers=_headers())
+                                                params=per_id_params)
                 if r.status_code != 200:
                     logger.warning("JustTCG per-id %s -> HTTP %s", cid, r.status_code)
                     continue
