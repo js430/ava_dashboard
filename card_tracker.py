@@ -6,6 +6,7 @@ script — matching ava_bot's CREATE TABLE IF NOT EXISTS convention, since
 neither repo has a migration system.
 """
 
+import asyncio
 import logging
 
 import httpx
@@ -135,7 +136,9 @@ async def run_ingest(pool) -> dict:
         return summary
 
     async with httpx.AsyncClient(timeout=20) as client:
-        # ── Pass 1: resolve missing JustTCG ids (one search call per card) ──
+        # ── Pass 1: resolve missing JustTCG ids (one search call per card,
+        #    paced to stay under JustTCG's per-minute rate limit) ──
+        searched = False
         for c in cards:
             if c["justtcg_card_id"]:
                 continue
@@ -144,6 +147,9 @@ async def run_ingest(pool) -> dict:
                 logger.error("Ingest aborted during id resolution — %d consecutive failures",
                              consecutive_failures)
                 return summary
+            if searched:
+                await asyncio.sleep(justtcg.SEARCH_INTERVAL)
+            searched = True
             try:
                 match = await justtcg.search_card(
                     client, c["name"], c["game"], c["set_name"], c["card_number"])

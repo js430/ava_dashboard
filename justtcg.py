@@ -8,6 +8,7 @@ logs enough to tune the endpoints after the first real run. Free tier is
 """
 
 import os
+import asyncio
 import logging
 import statistics
 from datetime import datetime, date
@@ -15,6 +16,29 @@ from datetime import datetime, date
 import httpx
 
 logger = logging.getLogger("dashboard.justtcg")
+
+# Pacing between JustTCG calls during bulk operations (id resolution), plus
+# 429 handling: wait-and-retry up to _MAX_TRIES honoring Retry-After.
+SEARCH_INTERVAL = 1.5          # seconds between consecutive search calls
+_429_WAITS = (10.0, 30.0)      # fallback backoff when no Retry-After header
+_MAX_TRIES = 3
+
+
+async def _request_with_backoff(client: httpx.AsyncClient, method: str, url: str, **kwargs):
+    """Issue a request, sleeping and retrying (up to _MAX_TRIES) on HTTP 429."""
+    for attempt in range(_MAX_TRIES):
+        resp = await client.request(method, url, **kwargs)
+        if resp.status_code != 429:
+            return resp
+        retry_after = resp.headers.get("Retry-After", "")
+        try:
+            wait = max(1.0, float(retry_after))
+        except ValueError:
+            wait = _429_WAITS[min(attempt, len(_429_WAITS) - 1)]
+        logger.warning("JustTCG rate-limited (429) — waiting %.0fs (attempt %d/%d)",
+                       wait, attempt + 1, _MAX_TRIES)
+        await asyncio.sleep(wait)
+    return resp
 
 JUSTTCG_API_BASE = os.getenv("JUSTTCG_API_BASE", "https://api.justtcg.com/v1")
 POKEMONTCG_API = "https://api.pokemontcg.io/v2/cards"
@@ -103,7 +127,8 @@ async def search_card(client: httpx.AsyncClient, name: str, game: str,
     if not slug:
         return None
     params = {"q": name, "game": slug, "limit": 20}
-    resp = await client.get(f"{JUSTTCG_API_BASE}/cards", params=params, headers=_headers())
+    resp = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/cards",
+                                       params=params, headers=_headers())
     if resp.status_code == 401:
         raise JustTCGError("JustTCG rejected the API key (401)")
     if resp.status_code != 200:
@@ -136,10 +161,12 @@ async def fetch_cards_by_ids(client: httpx.AsyncClient, ids: list) -> dict:
     out: dict = {}
     for i in range(0, len(ids), BATCH_SIZE):
         chunk = ids[i:i + BATCH_SIZE]
+        if i:
+            await asyncio.sleep(SEARCH_INTERVAL)
         try:
-            resp = await client.post(f"{JUSTTCG_API_BASE}/cards",
-                                     json=[{"cardId": cid} for cid in chunk],
-                                     headers=_headers())
+            resp = await _request_with_backoff(client, "POST", f"{JUSTTCG_API_BASE}/cards",
+                                               json=[{"cardId": cid} for cid in chunk],
+                                               headers=_headers())
             if resp.status_code == 200:
                 payload = resp.json()
                 cards = payload.get("data") if isinstance(payload, dict) else payload
@@ -155,9 +182,10 @@ async def fetch_cards_by_ids(client: httpx.AsyncClient, ids: list) -> dict:
             logger.exception("JustTCG batch lookup failed (falling back to per-id)")
         # Per-id fallback
         for cid in chunk:
+            await asyncio.sleep(SEARCH_INTERVAL)
             try:
-                r = await client.get(f"{JUSTTCG_API_BASE}/cards",
-                                     params={"cardId": cid}, headers=_headers())
+                r = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/cards",
+                                                params={"cardId": cid}, headers=_headers())
                 if r.status_code != 200:
                     logger.warning("JustTCG per-id %s -> HTTP %s", cid, r.status_code)
                     continue

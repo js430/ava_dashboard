@@ -369,7 +369,7 @@ async function refreshData(){
   const note = document.getElementById('refreshNote');
   if (!btn) return;
   btn.disabled = true;
-  note.textContent = 'Fetching prices… (can take ~30s)';
+  note.textContent = 'Fetching prices… (paced to respect rate limits — a big watchlist can take a few minutes)';
   try {
     const resp = await fetch('/api/card-tracker/refresh', { method: 'POST' });
     const d = await resp.json();
