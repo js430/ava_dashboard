@@ -2,6 +2,7 @@ import os
 import io
 import math
 import hmac
+import asyncio
 import hashlib
 import secrets
 import logging
@@ -1403,29 +1404,56 @@ async def api_card_tracker_history(request: Request, card_id: int, user=Depends(
         "explain": explain,
     }, headers={"Cache-Control": "no-store"})
 
+# Refresh runs as a background task: properly paced for JustTCG's 10/min
+# limit, a full run can take several minutes — far too long for one request.
+def _tracker_refresh_state(app) -> dict:
+    st = getattr(app.state, "tracker_refresh", None)
+    if st is None:
+        st = {"running": False, "started_at": None, "finished_at": None,
+              "result": None, "error": None}
+        app.state.tracker_refresh = st
+    return st
+
+async def _run_tracker_refresh(app) -> None:
+    st = app.state.tracker_refresh
+    pool = app.state.db
+    try:
+        await ensure_card_tracker_schema(pool)
+        added = await sync_watchlist(pool)
+        ingest = await run_ingest(pool)
+        scoring = await run_scoring(pool)
+        st["result"] = {
+            "watchlist_added": added,
+            "snapshots": ingest["snapshots"],
+            "resolved": ingest["resolved"],
+            "failures": ingest["failed"][:20],
+            "justtcg_calls": ingest.get("justtcg_calls", 0),
+            "scored": scoring["scored"],
+        }
+    except Exception as e:
+        logger.exception("Card tracker refresh failed")
+        st["error"] = str(e)
+    finally:
+        st["running"] = False
+        st["finished_at"] = datetime.utcnow().isoformat() + "Z"
+
 @app.post("/api/card-tracker/refresh")
 @limiter.limit("3/hour")
 async def api_card_tracker_refresh(request: Request, user=Depends(require_staff)):
     # Spending the JustTCG call budget stays admin-only; mods can view.
     if int(user["id"]) not in ADMIN_USER_IDS:
         raise HTTPException(status_code=403, detail="Refresh is admin-only")
-    pool = request.app.state.db
-    await ensure_card_tracker_schema(pool)
-    added = await sync_watchlist(pool)
-    try:
-        ingest = await run_ingest(pool)
-    except Exception as e:
-        logger.exception("Card tracker refresh: ingest failed")
-        return JSONResponse({"ok": False, "error": f"Ingest failed: {e}"}, status_code=502)
-    scoring = await run_scoring(pool)
-    return JSONResponse({
-        "ok": True,
-        "watchlist_added": added,
-        "snapshots": ingest["snapshots"],
-        "resolved": ingest["resolved"],
-        "failures": ingest["failed"][:20],
-        "scored": scoring["scored"],
-    }, headers={"Cache-Control": "no-store"})
+    st = _tracker_refresh_state(request.app)
+    if st["running"]:
+        raise HTTPException(status_code=409, detail="A refresh is already running")
+    st.update(running=True, started_at=datetime.utcnow().isoformat() + "Z",
+              finished_at=None, result=None, error=None)
+    asyncio.create_task(_run_tracker_refresh(request.app))
+    return JSONResponse({"ok": True, "started": True}, headers={"Cache-Control": "no-store"})
+
+@app.get("/api/card-tracker/refresh/status")
+async def api_card_tracker_refresh_status(request: Request, user=Depends(require_staff)):
+    return JSONResponse(_tracker_refresh_state(request.app), headers={"Cache-Control": "no-store"})
 
 # ── Set import (admin-only): enumerate a set from the free catalog APIs,
 #    preview, then import into tracked_cards. The import re-fetches from the

@@ -18,11 +18,38 @@ import httpx
 
 logger = logging.getLogger("dashboard.justtcg")
 
-# Pacing between JustTCG calls during bulk operations (id resolution), plus
-# 429 handling: wait-and-retry up to _MAX_TRIES honoring Retry-After.
-SEARCH_INTERVAL = 1.5          # seconds between consecutive search calls
+# ── JustTCG FREE-TIER LIMITS (per their pricing page, 2026-07):
+#    1,000 requests/month · 100 requests/day · 10 requests/minute ·
+#    20 cards per request. The constants below enforce them.
+SEARCH_INTERVAL = 6.5          # 10 req/min -> >=6s between calls
 _429_WAITS = (10.0, 30.0)      # fallback backoff when no Retry-After header
 _MAX_TRIES = 3
+
+
+class BudgetExhausted(Exception):
+    """Raised when a per-run JustTCG call budget is used up."""
+
+
+class CallBudget:
+    """Counts JustTCG API calls in a run so one run can't blow the 100/day cap."""
+
+    def __init__(self, limit: int):
+        self.limit = int(limit)
+        self.used = 0
+
+    def charge(self) -> None:
+        if self.used >= self.limit:
+            raise BudgetExhausted(f"JustTCG call budget ({self.limit}) exhausted for this run")
+        self.used += 1
+
+    @property
+    def remaining(self) -> int:
+        return max(0, self.limit - self.used)
+
+
+def _charge(budget) -> None:
+    if budget is not None:
+        budget.charge()
 
 
 async def _request_with_backoff(client: httpx.AsyncClient, method: str, url: str, **kwargs):
@@ -51,7 +78,7 @@ GAME_SLUGS = {
     "one_piece": "one-piece-card-game",
 }
 
-BATCH_SIZE = 100  # JustTCG batch lookup cap per request
+BATCH_SIZE = 20  # free tier: 20 cards per request
 
 # Field names scanned when extracting prices from a card/variant object.
 _PRICE_FIELDS = ("price", "marketPrice", "market_price", "midPrice", "mid_price")
@@ -147,13 +174,15 @@ def _search_variants(name: str) -> list:
 
 
 async def search_card(client: httpx.AsyncClient, name: str, game: str,
-                      set_name: str = "", card_number: str = "") -> dict | None:
+                      set_name: str = "", card_number: str = "",
+                      budget: CallBudget | None = None) -> dict | None:
     """Search JustTCG for a card; returns the best-matching card object or None.
 
     Tries several query variants for punctuation-heavy names. A candidate is
     accepted ONLY if it matches on card number, set, or canonical name —
     never "first result and hope", which could silently track the wrong
     card's prices. No acceptable candidate -> None (retried next ingest).
+    Raises BudgetExhausted when the run's call budget is used up.
     """
     slug = GAME_SLUGS.get(game)
     if not slug:
@@ -171,6 +200,7 @@ async def search_card(client: httpx.AsyncClient, name: str, game: str,
     for i, query in enumerate(_search_variants(name)):
         if i:
             await asyncio.sleep(SEARCH_INTERVAL)
+        _charge(budget)
         resp = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/cards",
                                            params={"q": query, "game": slug, "limit": 20},
                                            headers=_headers())
@@ -196,17 +226,24 @@ async def search_card(client: httpx.AsyncClient, name: str, game: str,
     return None
 
 
-async def fetch_cards_by_ids(client: httpx.AsyncClient, ids: list) -> dict:
-    """Fetch current pricing for known JustTCG ids, batched where possible.
-
-    Tries the batch POST endpoint first (100 ids/request); falls back to
-    per-id GETs if the batch shape is rejected. Returns {id: card_obj}.
+async def fetch_cards_by_ids(client: httpx.AsyncClient, ids: list,
+                             budget: CallBudget | None = None) -> dict:
+    """Fetch current pricing for known JustTCG ids, batched 20/request (free
+    tier cap). Falls back to per-id GETs if the batch shape is rejected.
+    Stops (returning partial results) if the run's call budget runs out.
+    Returns {id: card_obj}.
     """
     out: dict = {}
     for i in range(0, len(ids), BATCH_SIZE):
         chunk = ids[i:i + BATCH_SIZE]
         if i:
             await asyncio.sleep(SEARCH_INTERVAL)
+        try:
+            _charge(budget)
+        except BudgetExhausted:
+            logger.warning("JustTCG pricing budget exhausted — fetched %d/%d cards this run",
+                           len(out), len(ids))
+            return out
         try:
             resp = await _request_with_backoff(client, "POST", f"{JUSTTCG_API_BASE}/cards",
                                                json=[{"cardId": cid} for cid in chunk],
@@ -227,6 +264,12 @@ async def fetch_cards_by_ids(client: httpx.AsyncClient, ids: list) -> dict:
         # Per-id fallback
         for cid in chunk:
             await asyncio.sleep(SEARCH_INTERVAL)
+            try:
+                _charge(budget)
+            except BudgetExhausted:
+                logger.warning("JustTCG pricing budget exhausted mid-fallback — "
+                               "fetched %d/%d cards this run", len(out), len(ids))
+                return out
             try:
                 r = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/cards",
                                                 params={"cardId": cid}, headers=_headers())

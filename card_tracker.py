@@ -20,6 +20,14 @@ logger = logging.getLogger("dashboard.card_tracker")
 # free-tier call budget from burning on an outage or a wrong endpoint shape.
 MAX_CONSECUTIVE_FAILURES = 8
 
+# Per-run JustTCG call caps, sized against the free tier's 100 requests/DAY:
+# resolution (searches, incl. name-variant fallbacks) + pricing (batches of
+# 20) <= 80, leaving ~20/day headroom for retries and manual testing. A big
+# fresh import therefore resolves incrementally across daily runs instead of
+# torching the whole day's budget at once.
+RESOLUTION_CALL_CAP = 55
+PRICING_CALL_CAP = 25
+
 # Global ceiling on tracked cards. Guards the JustTCG free tier (1,000
 # calls/month): if the batch endpoint works, 400 cards ≈ 4 pricing calls/day
 # plus one-time id resolution; if batch falls back to per-card, 400/day would
@@ -135,9 +143,12 @@ async def run_ingest(pool) -> dict:
         logger.warning("Ingest: no tracked cards — run sync_watchlist first")
         return summary
 
+    resolution_budget = justtcg.CallBudget(RESOLUTION_CALL_CAP)
+    pricing_budget = justtcg.CallBudget(PRICING_CALL_CAP)
+
     async with httpx.AsyncClient(timeout=20) as client:
-        # ── Pass 1: resolve missing JustTCG ids (one search call per card,
-        #    paced to stay under JustTCG's per-minute rate limit) ──
+        # ── Pass 1: resolve missing JustTCG ids (one+ search calls per card,
+        #    paced for the 10/min limit, capped for the 100/day limit) ──
         searched = False
         for c in cards:
             if c["justtcg_card_id"]:
@@ -152,7 +163,8 @@ async def run_ingest(pool) -> dict:
             searched = True
             try:
                 match = await justtcg.search_card(
-                    client, c["name"], c["game"], c["set_name"], c["card_number"])
+                    client, c["name"], c["game"], c["set_name"], c["card_number"],
+                    budget=resolution_budget)
                 if match is None:
                     consecutive_failures += 1
                     summary["failed"].append(f"{c['name']}: no JustTCG match")
@@ -174,6 +186,13 @@ async def run_ingest(pool) -> dict:
                             c["name"], jid or "?", (match.get("name") or "?"))
             except justtcg.JustTCGError:
                 raise  # bad/missing key — pointless to continue
+            except justtcg.BudgetExhausted:
+                summary["failed"].append(
+                    "resolution paused: daily-safe JustTCG call budget reached — "
+                    "remaining cards resolve on the next run")
+                logger.warning("Ingest: resolution call budget (%d) reached — deferring "
+                               "remaining unresolved cards to the next run", RESOLUTION_CALL_CAP)
+                break
             except Exception as e:
                 consecutive_failures += 1
                 summary["failed"].append(f"{c['name']}: {e}")
@@ -200,7 +219,8 @@ async def run_ingest(pool) -> dict:
                 "WHERE justtcg_card_id IS NOT NULL ORDER BY id")
         by_jid = {c["justtcg_card_id"]: c for c in cards}
         try:
-            fetched = await justtcg.fetch_cards_by_ids(client, list(by_jid.keys()))
+            fetched = await justtcg.fetch_cards_by_ids(client, list(by_jid.keys()),
+                                                       budget=pricing_budget)
         except justtcg.JustTCGError:
             raise
         except Exception as e:
@@ -226,8 +246,11 @@ async def run_ingest(pool) -> dict:
                     card_row["id"], low, mid, high)
                 summary["snapshots"] += 1
 
-    logger.info("Ingest done: %d snapshot(s) across %d card(s), %d newly resolved, %d failure(s)",
-                summary["snapshots"], summary["cards"], summary["resolved"], len(summary["failed"]))
+    summary["justtcg_calls"] = resolution_budget.used + pricing_budget.used
+    logger.info("Ingest done: %d snapshot(s) across %d card(s), %d newly resolved, "
+                "%d failure(s), %d JustTCG call(s) used",
+                summary["snapshots"], summary["cards"], summary["resolved"],
+                len(summary["failed"]), summary["justtcg_calls"])
     return summary
 
 

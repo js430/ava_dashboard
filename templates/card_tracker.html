@@ -364,24 +364,57 @@ async function showDetail(id){
   }
 }
 
+let refreshTimer = null;
+
 async function refreshData(){
   const btn = document.getElementById('refreshBtn');
   const note = document.getElementById('refreshNote');
   if (!btn) return;
   btn.disabled = true;
-  note.textContent = 'Fetching prices… (paced to respect rate limits — a big watchlist can take a few minutes)';
   try {
     const resp = await fetch('/api/card-tracker/refresh', { method: 'POST' });
     const d = await resp.json();
-    if (!resp.ok || !d.ok) throw new Error(d.error || ('HTTP ' + resp.status));
-    note.textContent = `Done — ${d.snapshots} snapshot(s), ${d.scored} scored` +
-      (d.failures && d.failures.length ? `, ${d.failures.length} failure(s) (see logs)` : '');
-    await load();
+    if (resp.status === 409){ note.textContent = 'A refresh is already running…'; pollRefresh(Date.now()); return; }
+    if (!resp.ok || !d.ok) throw new Error(d.detail || d.error || ('HTTP ' + resp.status));
+    note.textContent = 'Refresh started… (paced for JustTCG rate limits — can take a few minutes)';
+    pollRefresh(Date.now());
   } catch (err) {
     note.textContent = 'Refresh failed: ' + err.message;
-  } finally {
     btn.disabled = false;
   }
+}
+
+function pollRefresh(t0){
+  const btn = document.getElementById('refreshBtn');
+  const note = document.getElementById('refreshNote');
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(async () => {
+    try {
+      const resp = await fetch('/api/card-tracker/refresh/status');
+      if (!resp.ok) throw new Error(resp.status);
+      const st = await resp.json();
+      if (st.running){
+        note.textContent = `Refreshing… ${Math.round((Date.now() - t0) / 1000)}s (paced for rate limits)`;
+        return;
+      }
+      clearInterval(refreshTimer); refreshTimer = null;
+      btn.disabled = false;
+      if (st.error){
+        note.textContent = 'Refresh failed: ' + st.error;
+      } else if (st.result){
+        const r = st.result;
+        note.textContent = `Done — ${r.snapshots} snapshot(s), ${r.scored} scored, ${r.justtcg_calls} API call(s)` +
+          (r.failures && r.failures.length ? `, ${r.failures.length} issue(s) (see logs)` : '');
+      } else {
+        note.textContent = 'Refresh finished.';
+      }
+      await load();
+    } catch (e) {
+      clearInterval(refreshTimer); refreshTimer = null;
+      btn.disabled = false;
+      note.textContent = 'Lost track of the refresh — reload the page.';
+    }
+  }, 4000);
 }
 
 async function load(){
