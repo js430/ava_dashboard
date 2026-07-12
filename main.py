@@ -1333,7 +1333,7 @@ async def api_card_tracker_list(request: Request, user=Depends(require_staff)):
         rows = await conn.fetch(
             """
             SELECT tc.id, tc.name, tc.game, tc.set_name, tc.card_number, tc.variant,
-                   tc.release_date,
+                   tc.release_date, tc.justtcg_name, tc.justtcg_set, tc.justtcg_number,
                    ps.price_low, ps.price_mid, ps.price_high, ps.captured_at,
                    cs.momentum_7d, cs.momentum_30d, cs.liquidity_score,
                    cs.age_days, cs.potential_score, cs.computed_at
@@ -1349,6 +1349,8 @@ async def api_card_tracker_list(request: Request, user=Depends(require_staff)):
             ORDER BY cs.potential_score DESC NULLS LAST, tc.name ASC
             """
         )
+    def _canon_ident(s):
+        return re.sub(r"[^a-z0-9]", "", (s or "").lower())
     return JSONResponse([
         {
             "id": r["id"],
@@ -1357,6 +1359,12 @@ async def api_card_tracker_list(request: Request, user=Depends(require_staff)):
             "set_name": r["set_name"],
             "card_number": r["card_number"],
             "variant": r["variant"],
+            "justtcg_name": r["justtcg_name"],
+            "justtcg_set": r["justtcg_set"],
+            "justtcg_number": r["justtcg_number"],
+            # Flag likely wrong matches: JustTCG's name differs from ours.
+            "match_suspect": bool(r["justtcg_name"]) and
+                             _canon_ident(r["justtcg_name"]) != _canon_ident(r["name"]),
             "release_date": r["release_date"].isoformat() if r["release_date"] else None,
             "price_low": _f(r["price_low"]),
             "price_mid": _f(r["price_mid"]),
@@ -1378,7 +1386,8 @@ async def api_card_tracker_history(request: Request, card_id: int, user=Depends(
         return float(x) if x is not None else None
     async with request.app.state.db.acquire() as conn:
         card = await conn.fetchrow(
-            "SELECT id, name, game, set_name, card_number, variant, release_date "
+            "SELECT id, name, game, set_name, card_number, variant, release_date, "
+            "justtcg_name, justtcg_set, justtcg_number "
             "FROM tracked_cards WHERE id = $1", card_id)
         if card is None:
             raise HTTPException(status_code=404, detail="Card not found")
@@ -1393,6 +1402,8 @@ async def api_card_tracker_history(request: Request, card_id: int, user=Depends(
             "id": card["id"], "name": card["name"], "game": card["game"],
             "set_name": card["set_name"], "card_number": card["card_number"],
             "variant": card["variant"],
+            "justtcg_name": card["justtcg_name"], "justtcg_set": card["justtcg_set"],
+            "justtcg_number": card["justtcg_number"],
             "release_date": card["release_date"].isoformat() if card["release_date"] else None,
         },
         "snapshots": [
@@ -1455,6 +1466,32 @@ async def api_card_tracker_refresh(request: Request, user=Depends(require_staff)
 @app.get("/api/card-tracker/refresh/status")
 async def api_card_tracker_refresh_status(request: Request, user=Depends(require_staff)):
     return JSONResponse(_tracker_refresh_state(request.app), headers={"Cache-Control": "no-store"})
+
+@app.post("/api/card-tracker/rematch")
+@limiter.limit("30/hour")
+async def api_card_tracker_rematch(request: Request, user=Depends(require_staff)):
+    """Clear a card's JustTCG match AND its price/score history (which belong
+    to the wrongly-matched card). The next ingest re-resolves it with the
+    current matching logic. Admin-only because it deletes data."""
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Re-matching is admin-only")
+    body = await request.json()
+    card_id = body.get("card_id")
+    if not isinstance(card_id, int):
+        raise HTTPException(status_code=400, detail="card_id (int) required")
+    async with request.app.state.db.acquire() as conn:
+        card = await conn.fetchrow("SELECT id, name FROM tracked_cards WHERE id = $1", card_id)
+        if card is None:
+            raise HTTPException(status_code=404, detail="Card not found")
+        async with conn.transaction():
+            await conn.execute("DELETE FROM card_scores WHERE card_id = $1", card_id)
+            deleted = await conn.execute("DELETE FROM price_snapshots WHERE card_id = $1", card_id)
+            await conn.execute(
+                "UPDATE tracked_cards SET justtcg_card_id = NULL, justtcg_name = NULL, "
+                "justtcg_set = NULL, justtcg_number = NULL WHERE id = $1", card_id)
+    logger.info("Card tracker: match cleared for %r (id %d) by admin %s; %s",
+                card["name"], card_id, user["id"], deleted)
+    return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
 
 # ── Set import (admin-only): enumerate a set from the free catalog APIs,
 #    preview, then import into tracked_cards. The import re-fetches from the

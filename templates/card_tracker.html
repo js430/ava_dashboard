@@ -217,6 +217,13 @@
     <div class="detail-header">
       <div class="detail-title" id="detailTitle">—</div>
       <div class="detail-sub" id="detailSub"></div>
+      <div class="detail-sub" id="detailMatched"></div>
+      {% if is_admin %}
+      <div style="margin-top:8px;">
+        <button class="refresh-btn" id="rematchBtn" style="background:#dc2626;height:26px;font-size:12px;padding:0 10px;" onclick="rematchCard()">Re-match card (clears its price history)</button>
+        <span class="detail-sub" id="rematchNote" style="margin-left:8px;"></span>
+      </div>
+      {% endif %}
     </div>
     <div class="detail-body">
       <div class="chart-wrap"><canvas id="priceChart"></canvas></div>
@@ -276,7 +283,7 @@ function renderTable(){
     <tr data-id="${r.id}" class="${r.id === selectedId ? 'selected' : ''}" onclick="showDetail(${r.id})">
       <td class="left rank">${i + 1}</td>
       <td class="left">
-        <div class="card-name">${esc(r.name)}</div>
+        <div class="card-name">${esc(r.name)}${r.match_suspect ? ' <span title="JustTCG matched a different card name — open the detail panel and re-match if wrong">⚠️</span>' : ''}</div>
         <div class="card-sub">${esc(r.set_name || '')}${r.variant ? ' · ' + esc(r.variant) : ''}${r.card_number ? ' · #' + esc(r.card_number) : ''}</div>
       </td>
       <td class="left">${esc(GAME_LABELS[r.game] || r.game)}</td>
@@ -316,6 +323,15 @@ async function showDetail(id){
     document.getElementById('detailSub').textContent =
       [GAME_LABELS[c.game] || c.game, c.set_name, c.variant, c.card_number ? '#' + c.card_number : null,
        c.release_date ? 'released ' + c.release_date : 'release date unknown'].filter(Boolean).join(' · ');
+    const matchedEl = document.getElementById('detailMatched');
+    if (c.justtcg_name){
+      matchedEl.textContent = 'JustTCG matched: ' +
+        [c.justtcg_name, c.justtcg_set, c.justtcg_number ? '#' + c.justtcg_number : null].filter(Boolean).join(' · ');
+    } else {
+      matchedEl.textContent = 'Not matched on JustTCG yet — prices pending next refresh.';
+    }
+    const rn = document.getElementById('rematchNote');
+    if (rn) rn.textContent = '';
 
     const labels = d.snapshots.map(s => new Date(s.captured_at).toLocaleDateString('en-US', { month:'short', day:'numeric' }));
     const mids = d.snapshots.map(s => s.price_mid);
@@ -361,6 +377,27 @@ async function showDetail(id){
     document.getElementById('detailCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (err) {
     document.getElementById('detailCard').classList.remove('visible');
+  }
+}
+
+async function rematchCard(){
+  if (!selectedId) return;
+  const row = allRows.find(r => r.id === selectedId);
+  const label = row ? row.name : 'this card';
+  if (!confirm(`Re-match "${label}"?\n\nThis clears its JustTCG match AND deletes its price history/scores (they belong to whatever card was matched). The next Refresh re-matches it with the improved logic.`)) return;
+  const note = document.getElementById('rematchNote');
+  try {
+    const resp = await fetch('/api/card-tracker/rematch', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ card_id: selectedId })
+    });
+    const d = await resp.json();
+    if (!resp.ok || !d.ok) throw new Error(d.detail || ('HTTP ' + resp.status));
+    if (note) note.textContent = 'Cleared — run "Refresh prices" to re-match.';
+    await load();
+    await showDetail(selectedId);
+  } catch (e) {
+    if (note) note.textContent = 'Failed: ' + e.message;
   }
 }
 

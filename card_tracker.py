@@ -85,6 +85,10 @@ CARD_TRACKER_SCHEMA = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_card_scores_card_time ON card_scores (card_id, computed_at)",
+    # What JustTCG actually matched (visibility for wrong-match debugging).
+    "ALTER TABLE tracked_cards ADD COLUMN IF NOT EXISTS justtcg_name TEXT",
+    "ALTER TABLE tracked_cards ADD COLUMN IF NOT EXISTS justtcg_set TEXT",
+    "ALTER TABLE tracked_cards ADD COLUMN IF NOT EXISTS justtcg_number TEXT",
 ]
 
 
@@ -140,8 +144,8 @@ async def run_ingest(pool) -> dict:
 
     async with pool.acquire() as conn:
         cards = await conn.fetch(
-            "SELECT id, name, game, set_name, card_number, release_date, justtcg_card_id "
-            "FROM tracked_cards ORDER BY id"
+            "SELECT id, name, game, set_name, card_number, variant, release_date, "
+            "justtcg_card_id FROM tracked_cards ORDER BY id"
         )
     summary["cards"] = len(cards)
     if not cards:
@@ -174,7 +178,7 @@ async def run_ingest(pool) -> dict:
             try:
                 match = await justtcg.search_card(
                     client, c["name"], c["game"], c["set_name"], c["card_number"],
-                    budget=resolution_budget)
+                    budget=resolution_budget, variant=c["variant"] or "")
                 if match is None:
                     consecutive_failures += 1
                     summary["failed"].append(f"{c['name']}: no JustTCG match")
@@ -185,15 +189,18 @@ async def run_ingest(pool) -> dict:
                     continue
                 consecutive_failures = 0
                 jid = justtcg.card_identity(match)
+                mname, mset, mnum = justtcg.match_display(match)
                 release = c["release_date"] or justtcg.extract_release_date(match)
                 async with pool.acquire() as conn:
                     await conn.execute(
                         "UPDATE tracked_cards SET justtcg_card_id = $1, "
-                        "release_date = COALESCE(release_date, $2) WHERE id = $3",
-                        jid or None, release, c["id"])
+                        "justtcg_name = $2, justtcg_set = $3, justtcg_number = $4, "
+                        "release_date = COALESCE(release_date, $5) WHERE id = $6",
+                        jid or None, mname or None, mset or None, mnum or None,
+                        release, c["id"])
                 summary["resolved"] += 1
-                logger.info("Ingest: matched %r -> JustTCG id %s (%s)",
-                            c["name"], jid or "?", (match.get("name") or "?"))
+                logger.info("Ingest: matched %r -> JustTCG id %s (%r, %s #%s)",
+                            c["name"], jid or "?", mname or "?", mset or "?", mnum or "?")
             except justtcg.JustTCGError:
                 raise  # bad/missing key — pointless to continue
             except justtcg.BudgetExhausted:
@@ -226,7 +233,7 @@ async def run_ingest(pool) -> dict:
         # ── Pass 3: batch price fetch by resolved id ──
         async with pool.acquire() as conn:
             cards = await conn.fetch(
-                "SELECT id, name, justtcg_card_id FROM tracked_cards "
+                "SELECT id, name, variant, justtcg_card_id FROM tracked_cards "
                 "WHERE justtcg_card_id IS NOT NULL ORDER BY id")
             have_rows = await conn.fetch(
                 "SELECT DISTINCT card_id FROM price_snapshots WHERE card_id = ANY($1::int[])",
@@ -255,7 +262,7 @@ async def run_ingest(pool) -> dict:
                 if obj is None:
                     summary["failed"].append(f"{card_row['name']}: no price data returned")
                     continue
-                low, mid, high = justtcg.extract_prices(obj)
+                low, mid, high = justtcg.extract_prices(obj, card_row["variant"] or "")
                 if low is None and mid is None and high is None:
                     summary["failed"].append(f"{card_row['name']}: no numeric prices in response")
                     logger.warning("Ingest: no prices found for %r — raw keys: %s",
@@ -265,7 +272,7 @@ async def run_ingest(pool) -> dict:
                 # momentum/liquidity are meaningful immediately. Only days
                 # BEFORE today — today's live snapshot is inserted below.
                 if card_row["id"] not in have_snapshots:
-                    history = justtcg.extract_price_history(obj)
+                    history = justtcg.extract_price_history(obj, card_row["variant"] or "")
                     for h in history:
                         if h["captured_at"].date() >= today_utc:
                             continue

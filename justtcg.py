@@ -266,18 +266,32 @@ def _nums(obj: dict, fields: tuple) -> list:
 _NM_CONDITIONS = ("NM", "NEAR MINT", "MINT", "M")
 
 
-def extract_prices(card: dict) -> tuple:
-    """Return (low, mid, high) floats (any may be None) from a JustTCG card
-    object. Variants are (condition x printing) pairs each carrying a single
-    `price` — so we restrict to Near Mint variants when any exist, otherwise
-    mixing NM with Damaged prices would skew the level and make day-over-day
-    momentum meaningless. Low/high then reflect the printing spread (e.g.
-    Normal vs Holofoil); mid is the median across NM printings.
+def _select_variants(card: dict, variant_hint: str = "") -> list:
+    """Pick the variant objects that represent 'the card's price':
+    1. Near Mint condition only (mixing NM with Damaged skews levels), and
+    2. when a variant hint is known (e.g. 'Holofoil', 'Reverse Holofoil',
+       '1st Edition') and matches SOME printings, only those printings —
+       so a base-vs-holo spread doesn't blur the number we track.
     """
     variants = [v for v in (card.get("variants") or []) if isinstance(v, dict)]
     nm = [v for v in variants
           if str(v.get("condition") or "").strip().upper() in _NM_CONDITIONS]
-    objs = (nm or variants) or [card]
+    pool = nm or variants
+    hint = {t for t in _variant_tokens(variant_hint) if len(t) >= 3}
+    if hint and len(pool) > 1:
+        hinted = [v for v in pool
+                  if any(t in str(v.get("printing") or "").lower() for t in hint)]
+        if hinted:
+            pool = hinted
+    return pool
+
+
+def extract_prices(card: dict, variant_hint: str = "") -> tuple:
+    """Return (low, mid, high) floats (any may be None) from a JustTCG card
+    object, using NM-preferred, hint-filtered variants (see _select_variants).
+    Low/high reflect the remaining printing spread; mid is their median.
+    """
+    objs = _select_variants(card, variant_hint) or [card]
     mids, lows, highs = [], [], []
     for o in objs:
         mids += _nums(o, _PRICE_FIELDS)
@@ -293,17 +307,14 @@ def extract_prices(card: dict) -> tuple:
     return low, mid, high
 
 
-def extract_price_history(card: dict) -> list:
-    """Daily history points from NM-preferred variants' priceHistory arrays
-    ([{"p": price, "t": epoch}] per the docs; seconds or ms auto-detected).
-    Multiple NM printings on the same day collapse to low/median/high.
+def extract_price_history(card: dict, variant_hint: str = "") -> list:
+    """Daily history points from the same NM-preferred, hint-filtered variants
+    extract_prices uses ([{"p": price, "t": epoch}] per the docs; seconds or
+    ms auto-detected). Same-day points collapse to low/median/high.
     Returns [{"captured_at", "price_low", "price_mid", "price_high"}, ...]
     sorted by day."""
-    variants = [v for v in (card.get("variants") or []) if isinstance(v, dict)]
-    nm = [v for v in variants
-          if str(v.get("condition") or "").strip().upper() in _NM_CONDITIONS]
     by_day: dict = {}
-    for v in (nm or variants):
+    for v in _select_variants(card, variant_hint):
         for pt in (v.get("priceHistory") or v.get("price_history") or []):
             if not isinstance(pt, dict):
                 continue
@@ -355,6 +366,51 @@ def _canon(s: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", "", (s or "").lower())).strip()
 
 
+def _number_forms(num: str) -> set:
+    """Comparable forms of a card number: '223/197' -> {'223/197', '223'},
+    '045' -> {'045', '45'} — so our stored format matches however JustTCG
+    stores theirs."""
+    n = (num or "").strip().lower()
+    if not n:
+        return set()
+    forms = {n}
+    if "/" in n:
+        head = n.split("/", 1)[0].strip()
+        if head:
+            forms.add(head)
+            forms.add(head.lstrip("0") or head)
+    stripped = n.lstrip("0")
+    if stripped:
+        forms.add(stripped)
+    return forms
+
+
+def _numbers_match(a: str, b: str) -> bool:
+    return bool(_number_forms(a) & _number_forms(b))
+
+
+_VARIANT_STOPWORDS = {"rare", "the", "of", "and", "card"}
+
+
+def _variant_tokens(s: str) -> set:
+    return {w for w in re.findall(r"[a-z]+", (s or "").lower())
+            if len(w) >= 3 and w not in _VARIANT_STOPWORDS}
+
+
+def _card_set_text(c: dict) -> str:
+    raw = c.get("set")
+    if isinstance(raw, str):
+        return raw
+    return str((raw or {}).get("name") or c.get("set_name") or "")
+
+
+def match_display(card: dict) -> tuple:
+    """(name, set, number) of a JustTCG card object, for storage/display."""
+    return (str(card.get("name") or ""),
+            _card_set_text(card),
+            str(card.get("number") or card.get("card_number") or ""))
+
+
 def _search_variants(name: str) -> list:
     """Query strings to try, in order. Apostrophe-heavy trainer names
     ("Lillie's Clefairy ex") are classic search-breakers; the last variant
@@ -376,27 +432,34 @@ def _search_variants(name: str) -> list:
 
 async def search_card(client: httpx.AsyncClient, name: str, game: str,
                       set_name: str = "", card_number: str = "",
-                      budget: CallBudget | None = None) -> dict | None:
+                      budget: CallBudget | None = None,
+                      variant: str = "") -> dict | None:
     """Search JustTCG for a card; returns the best-matching card object or None.
 
-    Tries several query variants for punctuation-heavy names. A candidate is
-    accepted ONLY if it matches on card number, set, or canonical name —
-    never "first result and hope", which could silently track the wrong
-    card's prices. No acceptable candidate -> None (retried next ingest).
+    Tries several query variants for punctuation-heavy names. Ranking:
+    card-number match (format-tolerant: '223/197' == '223') beats set match
+    beats variant/rarity keyword overlap (the tie-breaker between same-name
+    twins like base vs Special Illustration Rare) beats exact name. A
+    candidate is accepted ONLY with a number, set, or name signal — never
+    "first result and hope", which would silently track the wrong card's
+    prices. No acceptable candidate -> None (retried next ingest).
     Raises BudgetExhausted when the run's call budget is used up.
     """
     slug = _slug_for(game)
     if not slug:
         return None
+    hint_tokens = _variant_tokens(variant)
 
     def match_rank(c: dict) -> tuple:
         cname = str(c.get("name") or "")
-        cset = str(c.get("set") if isinstance(c.get("set"), str) else (c.get("set") or {}).get("name") or c.get("set_name") or "").lower()
-        cnum = str(c.get("number") or c.get("card_number") or "").lower()
+        cset = _card_set_text(c).lower()
+        cnum = str(c.get("number") or c.get("card_number") or "")
+        crarity = str(c.get("rarity") or "")
         name_close = _canon(cname) == _canon(name)
         set_hit = bool(set_name) and set_name.lower() in cset
-        num_hit = bool(card_number) and card_number.lower() in cnum
-        return (num_hit, set_hit, name_close)
+        num_hit = bool(card_number) and _numbers_match(card_number, cnum)
+        variant_hit = bool(hint_tokens) and bool(hint_tokens & _variant_tokens(crarity))
+        return (num_hit, set_hit, variant_hit, name_close)
 
     for i, query in enumerate(_search_variants(name)):
         if i:
@@ -422,8 +485,9 @@ async def search_card(client: httpx.AsyncClient, name: str, game: str,
         if not isinstance(cards, list) or not cards:
             continue
         best = sorted(cards, key=match_rank, reverse=True)[0]
-        rank = match_rank(best)
-        if any(rank):
+        num_hit, set_hit, _variant_hit, name_close = match_rank(best)
+        # variant overlap is only a tie-breaker, never grounds for acceptance
+        if num_hit or set_hit or name_close:
             if i:
                 logger.info("JustTCG matched %r via fallback query %r", name, query)
             return best
