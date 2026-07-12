@@ -1437,13 +1437,26 @@ def _require_tracker_admin(request: Request) -> dict:
         raise HTTPException(status_code=403, detail="Importing is admin-only")
     return user
 
+# pokemontcg.io can be slow even with trimmed payloads — generous read timeout
+# plus a single retry on timeout.
+_CATALOG_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
+
 async def _fetch_set_candidates(game: str, set_id: str, rarity: str) -> tuple:
     """(set_name, cards) from the free catalog APIs, rarity-filtered."""
-    async with httpx.AsyncClient(timeout=25) as client:
-        if game == "pokemon":
-            set_name, cards = await set_import.fetch_pokemon_set_cards(client, set_id)
-        else:
-            set_name, cards = await set_import.fetch_onepiece_set_cards(client, set_id)
+    last_exc = None
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=_CATALOG_TIMEOUT) as client:
+                if game == "pokemon":
+                    set_name, cards = await set_import.fetch_pokemon_set_cards(client, set_id)
+                else:
+                    set_name, cards = await set_import.fetch_onepiece_set_cards(client, set_id)
+            break
+        except httpx.TimeoutException as e:
+            last_exc = e
+            logger.warning("Catalog fetch timed out (attempt %d/2) for %s/%s", attempt + 1, game, set_id)
+    else:
+        raise RuntimeError("The card catalog API timed out twice — try again in a minute.") from last_exc
     if rarity:
         cards = [c for c in cards if rarity.lower() in (c["variant"] or "").lower()]
     return set_name, cards[: set_import.MAX_CARDS_PER_IMPORT]
@@ -1473,7 +1486,7 @@ async def api_import_sets(request: Request, game: str = "pokemon"):
         # field (OP09, EB01, ...) instead of a dropdown.
         return JSONResponse([])
     try:
-        async with httpx.AsyncClient(timeout=25) as client:
+        async with httpx.AsyncClient(timeout=_CATALOG_TIMEOUT) as client:
             sets = await set_import.fetch_pokemon_sets(client)
     except Exception as e:
         logger.exception("Set list fetch failed")

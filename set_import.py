@@ -46,7 +46,8 @@ def _parse_date(raw):
 async def fetch_pokemon_sets(client: httpx.AsyncClient) -> list:
     """All Pokémon sets, newest first: [{id, name, release_date, total}]."""
     resp = await client.get(f"{POKEMONTCG_BASE}/sets",
-                            params={"pageSize": 250, "orderBy": "-releaseDate"},
+                            params={"pageSize": 250, "orderBy": "-releaseDate",
+                                    "select": "id,name,releaseDate,total"},
                             headers=_pokemon_headers())
     resp.raise_for_status()
     out = []
@@ -65,8 +66,11 @@ async def fetch_pokemon_set_cards(client: httpx.AsyncClient, set_id: str) -> tup
     form (e.g. '223/197') to help JustTCG matching; variant is the rarity."""
     cards, page, set_name, release = [], 1, None, None
     while page <= 3:  # sets are <= ~600 cards; safety bound
+        # select= keeps the payload tiny (full card objects are ~50x larger and
+        # routinely push pokemontcg.io past read timeouts).
         resp = await client.get(f"{POKEMONTCG_BASE}/cards",
-                                params={"q": f"set.id:{set_id}", "pageSize": 250, "page": page},
+                                params={"q": f"set.id:{set_id}", "pageSize": 250, "page": page,
+                                        "select": "name,number,rarity,set"},
                                 headers=_pokemon_headers())
         resp.raise_for_status()
         batch = resp.json().get("data", [])
