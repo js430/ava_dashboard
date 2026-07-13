@@ -58,6 +58,40 @@ def get_real_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+# ---- Card tracker: daily scheduled ingest (11pm America/New_York) ----
+# In-process asyncio loop rather than a separate Railway cron service or a
+# new scheduler dependency — this app is a single long-lived web dyno, so a
+# sleep-until-next-run loop started at startup is the lowest-friction option
+# and needs nothing new in requirements.txt.
+CARD_TRACKER_SCHEDULE_HOUR = 23    # 11pm, America/New_York
+CARD_TRACKER_SCHEDULE_MINUTE = 0
+
+def _seconds_until_next_tracker_run() -> float:
+    eastern = ZoneInfo("America/New_York")
+    now = datetime.now(eastern)
+    target = now.replace(hour=CARD_TRACKER_SCHEDULE_HOUR, minute=CARD_TRACKER_SCHEDULE_MINUTE,
+                         second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
+
+async def _card_tracker_daily_scheduler(app: FastAPI) -> None:
+    while True:
+        wait_s = _seconds_until_next_tracker_run()
+        logger.info("Card tracker: next scheduled ingest in %.0f min (11pm America/New_York)",
+                    wait_s / 60)
+        await asyncio.sleep(wait_s)
+        st = _tracker_refresh_state(app)
+        if st["running"]:
+            logger.warning("Card tracker: skipping scheduled ingest — a refresh "
+                           "(manual or scheduled) is already running")
+            continue
+        st.update(running=True, started_at=datetime.utcnow().isoformat() + "Z",
+                  finished_at=None, result=None, error=None)
+        logger.info("Card tracker: starting scheduled daily ingest")
+        await _run_tracker_refresh(app)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     secret = os.getenv("SESSION_SECRET", "")
@@ -68,9 +102,11 @@ async def lifespan(app: FastAPI):
         await ensure_card_tracker_schema(app.state.db)
     except Exception:
         logger.exception("Card tracker schema ensure failed — /card-tracker may be unavailable")
+    scheduler_task = asyncio.create_task(_card_tracker_daily_scheduler(app))
     try:
         yield
     finally:
+        scheduler_task.cancel()
         await app.state.db.close()
 
 
@@ -1465,7 +1501,16 @@ async def api_card_tracker_refresh(request: Request, user=Depends(require_staff)
 
 @app.get("/api/card-tracker/refresh/status")
 async def api_card_tracker_refresh_status(request: Request, user=Depends(require_staff)):
-    return JSONResponse(_tracker_refresh_state(request.app), headers={"Cache-Control": "no-store"})
+    state = dict(_tracker_refresh_state(request.app))
+    if not state["running"]:
+        eastern = ZoneInfo("America/New_York")
+        now = datetime.now(eastern)
+        target = now.replace(hour=CARD_TRACKER_SCHEDULE_HOUR, minute=CARD_TRACKER_SCHEDULE_MINUTE,
+                             second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        state["next_scheduled"] = target.isoformat()
+    return JSONResponse(state, headers={"Cache-Control": "no-store"})
 
 @app.post("/api/card-tracker/rematch")
 @limiter.limit("30/hour")

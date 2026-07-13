@@ -524,6 +524,8 @@ async def _search_by_number(client, slug: str, name: str, set_name: str, card_nu
     set_target = (set_name or "").strip().lower()
     candidates: dict[str, dict] = {}   # keyed by identity/(name,set,number) to de-dupe
     seen_sample: list = []  # (name, set_name, number, rarity) diagnostic sample, any card seen
+    total_scanned = 0       # EVERY card returned is number-checked; this counts them all
+    hit_page_cap = False
     pages_used = 0
     for i, query in enumerate(_search_variants(name)):
         if i:
@@ -537,12 +539,15 @@ async def _search_by_number(client, slug: str, name: str, set_name: str, card_nu
             if not cards:
                 break
             for c in cards:
+                total_scanned += 1
                 cnum = str(c.get("number") or c.get("card_number") or "")
                 if len(seen_sample) < 8:
                     seen_sample.append((c.get("name"), _card_set_text(c), cnum, c.get("rarity")))
                 if _numbers_match(card_number, cnum):
                     key = card_identity(c) or (str(c.get("name")), _card_set_text(c), cnum)
                     candidates[key] = c
+            if pages_used >= _MAX_SEARCH_PAGES and has_more:
+                hit_page_cap = True  # more results existed but we stopped at the cap
             if not has_more or pages_used >= _MAX_SEARCH_PAGES:
                 break
             offset += len(cards)
@@ -553,11 +558,18 @@ async def _search_by_number(client, slug: str, name: str, set_name: str, card_nu
         # Diagnostic: show what numbers/sets search actually returned, so a
         # persistent zero-match can be told apart from "set not indexed yet"
         # vs. a real number-format mismatch, without more blind guessing.
+        # total_scanned covers EVERY card checked (not just the 8 sampled for
+        # display) — hit_page_cap flags whether more results existed beyond
+        # what we scanned, vs. having genuinely exhausted the search.
         same_set = [s for s in seen_sample if set_target and set_target in (s[1] or "").lower()]
-        logger.info("JustTCG: no number match for %r #%s after %d page(s) — "
-                    "not guessing; will retry next ingest. Sample of what search "
-                    "returned (name, set, number, rarity): %s%s",
-                    name, card_number, pages_used, seen_sample,
+        cap_note = (" | WARNING: stopped at the page cap with more results still "
+                    "available — raise _MAX_SEARCH_PAGES" if hit_page_cap else
+                    " | search was exhausted (last page was partial, not cut off by the cap)")
+        logger.info("JustTCG: no number match for %r #%s — scanned %d total card(s) "
+                    "across %d page(s) (plan=%s, page_size=%d)%s. First 8 seen "
+                    "(name, set, number, rarity): %s%s",
+                    name, card_number, total_scanned, pages_used, current_plan(),
+                    current_batch_size(), cap_note, seen_sample,
                     f" | same-set cards seen: {same_set}" if same_set else " | NO cards from our set were seen at all — set may not be indexed by JustTCG yet")
         return None
 

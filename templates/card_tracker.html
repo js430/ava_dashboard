@@ -752,7 +752,23 @@ async function importRun(){
 
 if (impEl('impSet')) loadImportSets(impEl('impGame').value);
 
+async function showNextScheduled(){
+  const note = document.getElementById('refreshNote');
+  if (!note || note.textContent) return;  // don't clobber an active refresh message
+  try {
+    const resp = await fetch('/api/card-tracker/refresh/status');
+    if (!resp.ok) return;
+    const st = await resp.json();
+    if (st.running || !st.next_scheduled) return;
+    const when = new Date(st.next_scheduled).toLocaleString('en-US', {
+      weekday: 'short', hour: 'numeric', minute: '2-digit'
+    });
+    note.textContent = `Next scheduled ingest: ${when} (daily, 11pm ET)`;
+  } catch(e) {}
+}
+
 load();
+showNextScheduled();
 (function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();if(selectedId)showDetail(selectedId);};upd();})();
 </script>
 </body>
