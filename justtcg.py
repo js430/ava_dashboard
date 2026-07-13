@@ -430,69 +430,138 @@ def _search_variants(name: str) -> list:
     return out
 
 
+def _canon_tight(s: str) -> str:
+    """Space- and punctuation-insensitive name form: 'Monkey.D.Luffy' ==
+    'Monkey D Luffy' == 'monkeydluffy'."""
+    return _canon(s).replace(" ", "")
+
+
+# Max search pages scanned per card (across all query variants) when hunting
+# for a number+name match. Page size follows the plan's limit cap.
+_MAX_SEARCH_PAGES = 6
+
+
+async def _search_page(client, slug: str, query: str, offset: int,
+                       budget: CallBudget | None) -> tuple:
+    """One search page. Returns (cards list or None-on-error, has_more)."""
+    _charge(budget)
+    page_limit = current_batch_size()  # plan's limit cap == its batch cap
+    resp = await _request_with_backoff(
+        client, "GET", f"{JUSTTCG_API_BASE}/cards",
+        params={"q": query, "game": slug, "limit": page_limit, "offset": offset})
+    if resp.status_code == 400:
+        # 'q' is the one search param the docs didn't confirm — retry once
+        # with 'name' in case that's the real parameter.
+        _charge(budget)
+        await asyncio.sleep(current_interval())
+        resp = await _request_with_backoff(
+            client, "GET", f"{JUSTTCG_API_BASE}/cards",
+            params={"name": query, "game": slug, "limit": page_limit, "offset": offset})
+    if resp.status_code == 401:
+        raise JustTCGError("JustTCG rejected the API key(s) (401)")
+    if resp.status_code != 200:
+        logger.warning("JustTCG search %r (%s, offset %d) -> HTTP %s: %s",
+                       query, slug, offset, resp.status_code, resp.text[:200])
+        return None, False
+    payload = resp.json()
+    cards = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(cards, list):
+        return None, False
+    meta = payload.get("meta") if isinstance(payload, dict) else {}
+    has_more = bool((meta or {}).get("hasMore")) or len(cards) >= current_batch_size()
+    return cards, has_more
+
+
 async def search_card(client: httpx.AsyncClient, name: str, game: str,
                       set_name: str = "", card_number: str = "",
                       budget: CallBudget | None = None,
                       variant: str = "") -> dict | None:
-    """Search JustTCG for a card; returns the best-matching card object or None.
+    """Search JustTCG for a card; returns the matched card object or None.
 
-    Tries several query variants for punctuation-heavy names. Ranking:
-    card-number match (format-tolerant: '223/197' == '223') beats set match
-    beats variant/rarity keyword overlap (the tie-breaker between same-name
-    twins like base vs Special Illustration Rare) beats exact name. A
-    candidate is accepted ONLY with a number, set, or name signal — never
-    "first result and hope", which would silently track the wrong card's
-    prices. No acceptable candidate -> None (retried next ingest).
-    Raises BudgetExhausted when the run's call budget is used up.
+    With a card number (the normal case — imports always have one), matching
+    is STRICT: paginate through search results hunting for the unique
+    number+name pair (format-tolerant numbers, space/punct-insensitive
+    names). Nothing less is ever accepted — a popular name can have far more
+    hits than one page, and "best effort" ranking is how wrong twins got
+    tracked. Rarity is then double-checked and logged if it disagrees.
+
+    Without a number, the older heuristic (set/name ranking with variant
+    tie-break) applies. Raises BudgetExhausted when the run budget is gone.
     """
     slug = _slug_for(game)
     if not slug:
         return None
+    if card_number:
+        return await _search_by_number(client, slug, name, card_number, variant, budget)
+    return await _search_by_rank(client, slug, name, set_name, variant, budget)
+
+
+async def _search_by_number(client, slug: str, name: str, card_number: str,
+                            variant: str, budget: CallBudget | None) -> dict | None:
+    tight_target = _canon_tight(name)
+    hint = _variant_tokens(variant)
+    pages_used = 0
+    for i, query in enumerate(_search_variants(name)):
+        if i:
+            await asyncio.sleep(current_interval())
+        offset = 0
+        while pages_used < _MAX_SEARCH_PAGES:
+            if pages_used:
+                await asyncio.sleep(current_interval())
+            cards, has_more = await _search_page(client, slug, query, offset, budget)
+            pages_used += 1
+            if not cards:
+                break
+            for c in cards:
+                cnum = str(c.get("number") or c.get("card_number") or "")
+                cname = str(c.get("name") or "")
+                if _numbers_match(card_number, cnum) and _canon_tight(cname) == tight_target:
+                    crarity = str(c.get("rarity") or "")
+                    if hint and not (hint & _variant_tokens(crarity)):
+                        logger.warning("JustTCG rarity check: %r #%s — ours %r vs theirs %r "
+                                       "(accepted on number+name; verify if price looks off)",
+                                       name, card_number, variant, crarity)
+                    return c
+            if not has_more:
+                break
+            offset += len(cards)
+        if pages_used >= _MAX_SEARCH_PAGES:
+            break
+    logger.info("JustTCG: no number+name match for %r #%s after %d page(s) — "
+                "not guessing; will retry next ingest", name, card_number, pages_used)
+    return None
+
+
+async def _search_by_rank(client, slug: str, name: str, set_name: str,
+                          variant: str, budget: CallBudget | None) -> dict | None:
+    """Heuristic path for cards WITHOUT a number (hand-added watchlist seeds).
+    Fill in card numbers to get the strict number+name path instead."""
     hint_tokens = _variant_tokens(variant)
 
     def match_rank(c: dict) -> tuple:
         cname = str(c.get("name") or "")
         cset = _card_set_text(c).lower()
-        cnum = str(c.get("number") or c.get("card_number") or "")
         crarity = str(c.get("rarity") or "")
         name_close = _canon(cname) == _canon(name)
         set_hit = bool(set_name) and set_name.lower() in cset
-        num_hit = bool(card_number) and _numbers_match(card_number, cnum)
         variant_hit = bool(hint_tokens) and bool(hint_tokens & _variant_tokens(crarity))
-        return (num_hit, set_hit, variant_hit, name_close)
+        return (set_hit, variant_hit, name_close)
 
     for i, query in enumerate(_search_variants(name)):
         if i:
             await asyncio.sleep(current_interval())
-        _charge(budget)
-        resp = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/cards",
-                                           params={"q": query, "game": slug, "limit": 20})
-        if resp.status_code == 400:
-            # 'q' is the one search param the docs didn't confirm — retry once
-            # with 'name' in case that's the real parameter.
-            _charge(budget)
-            await asyncio.sleep(current_interval())
-            resp = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/cards",
-                                               params={"name": query, "game": slug, "limit": 20})
-        if resp.status_code == 401:
-            raise JustTCGError("JustTCG rejected the API key(s) (401)")
-        if resp.status_code != 200:
-            logger.warning("JustTCG search %r (%s) -> HTTP %s: %s",
-                           query, slug, resp.status_code, resp.text[:200])
-            continue
-        payload = resp.json()
-        cards = payload.get("data") if isinstance(payload, dict) else payload
-        if not isinstance(cards, list) or not cards:
+        cards, _ = await _search_page(client, slug, query, 0, budget)
+        if not cards:
             continue
         best = sorted(cards, key=match_rank, reverse=True)[0]
-        num_hit, set_hit, _variant_hit, name_close = match_rank(best)
+        set_hit, _variant_hit, name_close = match_rank(best)
         # variant overlap is only a tie-breaker, never grounds for acceptance
-        if num_hit or set_hit or name_close:
+        if set_hit or name_close:
             if i:
                 logger.info("JustTCG matched %r via fallback query %r", name, query)
             return best
         logger.info("JustTCG search %r returned %d result(s) but none matched "
-                    "number/set/name — rejecting to avoid tracking the wrong card",
+                    "set/name — rejecting to avoid tracking the wrong card",
                     query, len(cards))
     return None
 
