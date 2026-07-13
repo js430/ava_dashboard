@@ -273,6 +273,7 @@ async def run_ingest(pool) -> dict:
                 # BEFORE today — today's live snapshot is inserted below.
                 if card_row["id"] not in have_snapshots:
                     history = justtcg.extract_price_history(obj, card_row["variant"] or "")
+                    inserted = 0
                     for h in history:
                         if h["captured_at"].date() >= today_utc:
                             continue
@@ -281,7 +282,12 @@ async def run_ingest(pool) -> dict:
                             "price_mid, price_high, source) VALUES ($1, $2, $3, $4, $5, 'justtcg-history')",
                             card_row["id"], h["captured_at"], h["price_low"],
                             h["price_mid"], h["price_high"])
-                        summary["backfilled"] += 1
+                        inserted += 1
+                    summary["backfilled"] += inserted
+                    logger.info("Ingest: backfill for %r -> %d history day(s) from JustTCG "
+                                "(fewer than ~30 usually means their priceHistory is sparse/"
+                                "event-driven for this card, not a bug)",
+                                card_row["name"], inserted)
                 await conn.execute(
                     "INSERT INTO price_snapshots (card_id, price_low, price_mid, price_high, source) "
                     "VALUES ($1, $2, $3, $4, 'justtcg')",

@@ -181,6 +181,7 @@
       <span class="table-header-title">Ranked by potential</span>
       <button class="clear-filters-btn" onclick="clearFilters()">Clear filters</button>
       <span class="filter-count" id="filterCount"></span>
+      {% if is_admin %}<button class="refresh-btn" id="resetAllHistoryBtn" style="background:#d97706" onclick="resetAllHistory()" title="Keeps all JustTCG matches, just clears every card's price history so the next Refresh re-backfills 30 days for everyone">Re-fetch history (all)</button>{% endif %}
       {% if is_admin %}<button class="refresh-btn" id="refreshBtn" onclick="refreshData()">Refresh prices</button>{% endif %}
       <span class="refresh-note" id="refreshNote"></span>
     </div>
@@ -256,6 +257,7 @@
       {% if is_admin %}
       <div style="margin-top:8px;">
         <button class="refresh-btn" id="rematchBtn" style="background:#dc2626;height:26px;font-size:12px;padding:0 10px;" onclick="rematchCard()">Re-match card (clears its price history)</button>
+        <button class="refresh-btn" id="resetHistoryBtn" style="background:#d97706;height:26px;font-size:12px;padding:0 10px;margin-left:6px;" onclick="resetHistory()" title="Keeps the current JustTCG match, just clears snapshots so the next refresh re-requests the 30-day history backfill">Re-fetch 30d history</button>
         <span class="detail-sub" id="rematchNote" style="margin-left:8px;"></span>
       </div>
       {% endif %}
@@ -263,7 +265,7 @@
     <div class="detail-body">
       <div class="chart-wrap"><canvas id="priceChart"></canvas></div>
       <div class="why-grid" id="whyGrid"></div>
-      <div class="why-note">Score = 100 × (0.35·momentum7 + 0.25·momentum30 + 0.40·age bonus) × liquidity multiplier. Momentum saturates at ±30%; the age bonus peaks ~240 days after release; liquidity scales the total between 0.5× and 1×. Knobs live in <code>card_scoring.py</code>.</div>
+      <div class="why-note">Score = 100 × (0.35·momentum7 + 0.25·momentum30 + 0.40·age bonus) × liquidity multiplier. Momentum saturates at ±30%; the age bonus peaks ~240 days after release; liquidity scales the total between 0.5× and 1×. Knobs live in <code>card_scoring.py</code>.<br><br>If 7D and 30D show the same number, this card likely only has 1-2 price snapshots (e.g. from before the 30-day history backfill existed) — both windows fall back to the same single baseline price. Use "Re-fetch 30d history" above to fix it for this card, or "Re-fetch history (all)" in the table toolbar for every card.</div>
     </div>
   </div>
 
@@ -521,6 +523,27 @@ async function rematchCard(){
   }
 }
 
+async function resetHistory(){
+  if (!selectedId) return;
+  const row = allRows.find(r => r.id === selectedId);
+  const label = row ? row.name : 'this card';
+  if (!confirm(`Re-fetch 30-day history for "${label}"?\n\nKeeps the current JustTCG match, just deletes its price snapshots/scores so the next Refresh treats it as a first-time fetch and re-requests the 30-day priceHistory backfill. Use this when 7D and 30D momentum show the same number (usually means it only has 1-2 snapshots — e.g. from before the backfill feature existed).`)) return;
+  const note = document.getElementById('rematchNote');
+  try {
+    const resp = await fetch('/api/card-tracker/reset-history', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ card_id: selectedId })
+    });
+    const d = await resp.json();
+    if (!resp.ok || !d.ok) throw new Error(d.detail || ('HTTP ' + resp.status));
+    if (note) note.textContent = 'History cleared — run "Refresh prices" to re-backfill.';
+    await load();
+    await showDetail(selectedId);
+  } catch (e) {
+    if (note) note.textContent = 'Failed: ' + e.message;
+  }
+}
+
 let refreshTimer = null;
 
 async function refreshData(){
@@ -537,6 +560,28 @@ async function refreshData(){
     pollRefresh(Date.now());
   } catch (err) {
     note.textContent = 'Refresh failed: ' + err.message;
+    btn.disabled = false;
+  }
+}
+
+async function resetAllHistory(){
+  if (!confirm('Re-fetch 30-day history for EVERY tracked card?\n\nKeeps all current JustTCG matches — just deletes every price snapshot/score so the next Refresh re-backfills 30 days for every card instead of adding one more daily point. Use this once if most cards are showing 7D == 30D momentum (usually means they only have 1-2 snapshots from before the backfill feature existed).\n\nThis cannot be undone.')) return;
+  const btn = document.getElementById('resetAllHistoryBtn');
+  const note = document.getElementById('refreshNote');
+  btn.disabled = true;
+  note.textContent = 'Clearing history for all cards…';
+  try {
+    const resp = await fetch('/api/card-tracker/reset-history', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ all: true })
+    });
+    const d = await resp.json();
+    if (!resp.ok || !d.ok) throw new Error(d.detail || ('HTTP ' + resp.status));
+    note.textContent = `Cleared history for ${d.cards_affected} card(s) — run "Refresh prices" to re-backfill.`;
+    await load();
+  } catch (e) {
+    note.textContent = 'Failed: ' + e.message;
+  } finally {
     btn.disabled = false;
   }
 }

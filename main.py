@@ -1493,6 +1493,47 @@ async def api_card_tracker_rematch(request: Request, user=Depends(require_staff)
                 card["name"], card_id, user["id"], deleted)
     return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
 
+@app.post("/api/card-tracker/reset-history")
+@limiter.limit("30/hour")
+async def api_card_tracker_reset_history(request: Request, user=Depends(require_staff)):
+    """Clear price/score history WITHOUT touching the JustTCG match, so the
+    next ingest treats the card as a first-time fetch and re-requests the
+    30-day priceHistory backfill — no extra search/resolution API call spent.
+
+    Use this when a card's momentum looks flat (7D == 30D): that almost
+    always means it only has 1-2 snapshot rows (e.g. from before the
+    backfill feature existed, or from testing), so both windows fall back
+    to the same single baseline price. body: {"card_id": int} or
+    {"all": true} to reset every tracked card in one go."""
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Resetting history is admin-only")
+    body = await request.json()
+    reset_all = bool(body.get("all"))
+    card_id = body.get("card_id")
+    if not reset_all and not isinstance(card_id, int):
+        raise HTTPException(status_code=400, detail="card_id (int) or all=true required")
+
+    async with request.app.state.db.acquire() as conn:
+        if reset_all:
+            async with conn.transaction():
+                await conn.execute("DELETE FROM card_scores")
+                deleted = await conn.execute("DELETE FROM price_snapshots")
+            count = await conn.fetchval("SELECT COUNT(*) FROM tracked_cards")
+            logger.info("Card tracker: history reset for ALL cards by admin %s; %s",
+                        user["id"], deleted)
+            return JSONResponse({"ok": True, "cards_affected": count},
+                                headers={"Cache-Control": "no-store"})
+
+        card = await conn.fetchrow("SELECT id, name FROM tracked_cards WHERE id = $1", card_id)
+        if card is None:
+            raise HTTPException(status_code=404, detail="Card not found")
+        async with conn.transaction():
+            await conn.execute("DELETE FROM card_scores WHERE card_id = $1", card_id)
+            deleted = await conn.execute("DELETE FROM price_snapshots WHERE card_id = $1", card_id)
+    logger.info("Card tracker: history reset for %r (id %d) by admin %s; %s",
+                card["name"], card_id, user["id"], deleted)
+    return JSONResponse({"ok": True, "cards_affected": 1}, headers={"Cache-Control": "no-store"})
+
 # ── Set import (admin-only): enumerate a set from the free catalog APIs,
 #    preview, then import into tracked_cards. The import re-fetches from the
 #    source API server-side — the client never supplies card data directly. ──
