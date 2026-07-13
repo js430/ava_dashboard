@@ -161,6 +161,14 @@
     <button class="tab-btn" data-tab="regions" onclick="setTab('regions', this)">Region Breakdown</button>
   </div>
 
+  <div class="toolbar" id="regionRow" style="display:none">
+    <span class="toolbar-label">Region</span>
+    <select class="col-filter" id="regionSelect" style="width:200px;height:30px" onchange="onRegionChange(this.value)">
+      <option value="">Loading…</option>
+    </select>
+    <span class="period-note">Top contributors for restocks and callouts of stores located in this region only.</span>
+  </div>
+
   <div class="card">
     <div class="tbl-toolbar">
       <button class="clear-filters-btn" onclick="clearFilters()">Clear filters</button>
@@ -236,26 +244,25 @@ const TABS = {
   },
   regions: {
     url: '/api/contributors/regions',
-    colCount: 8,
+    needsRegion: true,
+    colCount: 7,
     columns: [
       { key: 'rank',           label: '#' },
-      { key: 'region_label',   label: 'Region',      align: 'left', filter: 'text', type: 'text' },
+      { key: 'username',       label: 'Username',    align: 'left', filter: 'text', type: 'text' },
       { key: 'restock_pts',    label: 'Restock pts', filter: 'range' },
       { key: 'restock_count',  label: 'Restocks',    filter: 'range' },
-      { key: 'empty_pts',      label: 'Empty pts',   filter: 'range' },
-      { key: 'empty_count',    label: 'Empties',     filter: 'range' },
-      { key: 'contributors',   label: 'Contributors',filter: 'range' },
+      { key: 'empty_pts',      label: 'Callout pts', filter: 'range' },
+      { key: 'empty_count',    label: 'Callouts',    filter: 'range' },
       { key: 'total_points',   label: 'Total',       filter: 'range' },
     ],
     defaultSort: 'total_points', defaultAsc: false,
     buildRow: (r, rank) => `<tr>
       <td class="left rank">${rank}</td>
-      <td class="left"><span class="username">${esc(r.region_label)}</span></td>
+      <td class="left"><span class="username">${esc(r.username)}</span>${rank <= 10 ? '<span class="badge-top">TOP 10</span>' : ''}</td>
       <td class="pts">${fmt(r.restock_pts)}</td>
       <td class="pts">${r.restock_count}</td>
       <td class="pts">${fmt(r.empty_pts)}</td>
       <td class="pts">${r.empty_count}</td>
-      <td class="pts">${r.contributors}</td>
       <td class="total">${fmt(r.total_points)}</td>
     </tr>`,
   },
@@ -377,10 +384,40 @@ function renderBody(){
   body.innerHTML = sorted.map((r, i) => cfg.buildRow(r, i + 1)).join('');
 }
 
+let selectedRegion = '';
+let regionsLoaded = false;
+
+async function ensureRegionList(){
+  if (regionsLoaded) return;
+  const sel = document.getElementById('regionSelect');
+  try {
+    const resp = await fetch('/api/regions');
+    if (!resp.ok) throw new Error(resp.status);
+    const regions = await resp.json();
+    regionsLoaded = true;
+    if (!regions.length){
+      sel.innerHTML = '<option value="">No regions found</option>';
+      return;
+    }
+    sel.innerHTML = regions.map(r => `<option value="${esc(r.code)}">${esc(r.label)}</option>`).join('');
+    const preferred = regions.find(r => r.code === 'VA') || regions[0];
+    selectedRegion = preferred.code;
+    sel.value = selectedRegion;
+  } catch(e) {
+    sel.innerHTML = '<option value="">Failed to load regions</option>';
+  }
+}
+
+function onRegionChange(val){
+  selectedRegion = val;
+  load();
+}
+
 function setTab(tab, btn){
   activeTab = tab;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
+  document.getElementById('regionRow').style.display = TABS[tab].needsRegion ? 'flex' : 'none';
   load();
 }
 
@@ -395,8 +432,17 @@ async function load(){
   const cfg = TABS[activeTab];
   buildHeader();
   document.getElementById('tblBody').innerHTML = `<tr><td colspan="${cfg.colCount}" class="empty-state">Loading…</td></tr>`;
+  if (cfg.needsRegion){
+    await ensureRegionList();
+    if (!selectedRegion){
+      document.getElementById('tblBody').innerHTML = `<tr><td colspan="${cfg.colCount}" class="empty-state">No regions available.</td></tr>`;
+      return;
+    }
+  }
   try {
-    const resp = await fetch(`${cfg.url}?period=${activePeriod}`);
+    let url = `${cfg.url}?period=${activePeriod}`;
+    if (cfg.needsRegion) url += `&region=${encodeURIComponent(selectedRegion)}`;
+    const resp = await fetch(url);
     if (!resp.ok) throw new Error(resp.status);
     const data = await resp.json();
     allRows = data.rows;

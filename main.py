@@ -2162,10 +2162,15 @@ async def get_contributor_invites(request: Request, period: str = "3months",
     }, headers={"Cache-Control": "no-store"})
 
 @app.get("/api/contributors/regions")
-async def get_contributor_regions(request: Request, period: str = "3months",
+async def get_contributor_regions(request: Request, region: str, period: str = "3months",
                                   user=Depends(get_current_user)):
+    """Top contributors for callouts/restocks of stores located in ONE
+    region — a user asked to pick a region and see who's active there,
+    not a per-region rollup."""
     if int(user["id"]) not in ADMIN_USER_IDS:
         raise HTTPException(status_code=403, detail="Not authorized")
+    if region not in VALID_REGIONS:
+        raise HTTPException(status_code=400, detail="Invalid region")
     if period not in ("month", "3months"):
         period = "3months"
     since = _contributors_period_since(period)
@@ -2173,8 +2178,8 @@ async def get_contributor_regions(request: Request, period: str = "3months",
     async with request.app.state.db.acquire() as conn:
         rows = await conn.fetch(
             """
-            WITH restock_by_region AS (
-                SELECT l.state AS region,
+            WITH restock_pts_cte AS (
+                SELECT rr.user_id,
                     SUM(CASE WHEN rr.store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 1 ELSE 0.5 END) AS restock_pts,
                     COUNT(*) AS restock_count
                 FROM restock_reports rr
@@ -2182,11 +2187,12 @@ async def get_contributor_regions(request: Request, period: str = "3months",
                   ON LOWER(TRIM(l.location)) = LOWER(TRIM(rr.location))
                   AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(rr.store_name))
                 WHERE rr.date >= $1
+                  AND l.state = $2
                   AND rr.channel_name NOT IN ('online-restock-information','other-online-restocks','pokemon-center-drops')
-                GROUP BY l.state
+                GROUP BY rr.user_id
             ),
-            empty_by_region AS (
-                SELECT l.state AS region,
+            empty_pts_cte AS (
+                SELECT cl.user_id,
                     SUM(CASE WHEN EXTRACT(DOW FROM cl.timestamp AT TIME ZONE 'America/New_York') IN (0,6) THEN 0.05 ELSE 0.1 END) AS empty_pts,
                     COUNT(*) AS empty_count
                 FROM command_logs cl
@@ -2195,74 +2201,50 @@ async def get_contributor_regions(request: Request, period: str = "3months",
                   AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(SPLIT_PART(cl.location, '|', 2)))
                 WHERE cl.command_used = 'empty'
                   AND cl.timestamp >= $1
-                GROUP BY l.state
+                  AND l.state = $2
+                GROUP BY cl.user_id
             ),
-            contributors_by_region AS (
-                SELECT region, COUNT(DISTINCT uid) AS contributors
-                FROM (
-                    SELECT l.state AS region, rr.user_id AS uid
-                    FROM restock_reports rr
-                    JOIN locations l
-                      ON LOWER(TRIM(l.location)) = LOWER(TRIM(rr.location))
-                      AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(rr.store_name))
-                    WHERE rr.date >= $1
-                      AND rr.channel_name NOT IN ('online-restock-information','other-online-restocks','pokemon-center-drops')
-                    UNION ALL
-                    SELECT l.state AS region, cl.user_id AS uid
-                    FROM command_logs cl
-                    JOIN locations l
-                      ON LOWER(TRIM(l.location)) = LOWER(TRIM(SPLIT_PART(cl.location, '|', 1)))
-                      AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(SPLIT_PART(cl.location, '|', 2)))
-                    WHERE cl.command_used = 'empty' AND cl.timestamp >= $1
-                ) x
-                GROUP BY region
+            combined AS (
+                SELECT
+                    COALESCE(r.user_id, e.user_id) AS user_id,
+                    COALESCE(r.restock_pts, 0) AS restock_pts,
+                    COALESCE(r.restock_count, 0) AS restock_count,
+                    COALESCE(e.empty_pts, 0) AS empty_pts,
+                    COALESCE(e.empty_count, 0) AS empty_count,
+                    COALESCE(r.restock_pts, 0) + COALESCE(e.empty_pts, 0) AS total_points
+                FROM restock_pts_cte r
+                FULL OUTER JOIN empty_pts_cte e ON r.user_id = e.user_id
             )
-            SELECT COALESCE(r.region, e.region, c.region) AS region,
-                COALESCE(r.restock_pts, 0) AS restock_pts,
-                COALESCE(r.restock_count, 0) AS restock_count,
-                COALESCE(e.empty_pts, 0) AS empty_pts,
-                COALESCE(e.empty_count, 0) AS empty_count,
-                COALESCE(c.contributors, 0) AS contributors,
-                COALESCE(r.restock_pts, 0) + COALESCE(e.empty_pts, 0) AS total_points
-            FROM restock_by_region r
-            FULL OUTER JOIN empty_by_region e ON r.region = e.region
-            FULL OUTER JOIN contributors_by_region c ON COALESCE(r.region, e.region) = c.region
+            SELECT c.*, COALESCE(u.username, ds.username) AS username
+            FROM combined c
+            LEFT JOIN users u ON u.user_id = c.user_id
+            LEFT JOIN LATERAL (
+                SELECT username FROM dashboard_sessions
+                WHERE user_id = c.user_id ORDER BY logged_in_at DESC LIMIT 1
+            ) ds ON true
+            ORDER BY total_points DESC
+            LIMIT 300
             """,
-            since
+            since, region
         )
-
-    by_region = {r["region"]: r for r in rows if r["region"]}
-    out = []
-    for code in STATE_LABELS:
-        r = by_region.pop(code, None)
-        out.append({
-            "region": code,
-            "region_label": STATE_LABELS.get(code, code),
-            "restock_pts": round(float(r["restock_pts"]), 2) if r else 0,
-            "restock_count": int(r["restock_count"]) if r else 0,
-            "empty_pts": round(float(r["empty_pts"]), 2) if r else 0,
-            "empty_count": int(r["empty_count"]) if r else 0,
-            "contributors": int(r["contributors"]) if r else 0,
-            "total_points": round(float(r["total_points"]), 2) if r else 0,
-        })
-    # Any region code not in STATE_LABELS (shouldn't normally happen, but
-    # don't silently drop real data from an unmapped code).
-    for code, r in by_region.items():
-        out.append({
-            "region": code, "region_label": code,
-            "restock_pts": round(float(r["restock_pts"]), 2),
-            "restock_count": int(r["restock_count"]),
-            "empty_pts": round(float(r["empty_pts"]), 2),
-            "empty_count": int(r["empty_count"]),
-            "contributors": int(r["contributors"]),
-            "total_points": round(float(r["total_points"]), 2),
-        })
-    out.sort(key=lambda x: x["total_points"], reverse=True)
 
     return JSONResponse({
         "period": period,
         "since": since.isoformat(),
-        "rows": out,
+        "region": region,
+        "region_label": STATE_LABELS.get(region, region),
+        "rows": [
+            {
+                "user_id": str(r["user_id"]),
+                "username": r["username"] or f"User {r['user_id']}",
+                "restock_pts": round(float(r["restock_pts"]), 2),
+                "restock_count": int(r["restock_count"]),
+                "empty_pts": round(float(r["empty_pts"]), 2),
+                "empty_count": int(r["empty_count"]),
+                "total_points": round(float(r["total_points"]), 2),
+            }
+            for r in rows
+        ],
     }, headers={"Cache-Control": "no-store"})
 
 # ---- Map ----
