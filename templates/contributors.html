@@ -63,6 +63,7 @@
   tbody td.left { text-align: left; }
   .rank { color: #aaa; font-size: 12px; width: 36px; }
   .username { font-weight: 600; color: #111; font-size: 12px; }
+  .user-id { font-size: 12px; color: #aaa; margin-top: 1px; }
   .pts { font-variant-numeric: tabular-nums; }
   .total { font-weight: 700; color: #5865F2; }
   .badge-top { display: inline-block; font-size: 12px; font-weight: 700; background: #fef9c3; color: #854d0e; border-radius: 3px; padding: 1px 5px; margin-left: 5px; vertical-align: middle; }
@@ -108,6 +109,7 @@
   html[data-theme="dark"] tbody tr:hover { background: #222226; }
   html[data-theme="dark"] tbody td { color: #ccc; }
   html[data-theme="dark"] .username { color: #f0f0f0; }
+  html[data-theme="dark"] .user-id { color: #777; }
   html[data-theme="dark"] .total { color: #818cf8; }
   html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
   html[data-theme="dark"] .theme-toggle:hover { background: #2e2e32; }
@@ -212,7 +214,7 @@ const TABS = {
     defaultSort: 'total_points', defaultAsc: false,
     buildRow: (r, rank) => `<tr>
       <td class="left rank">${rank}</td>
-      <td class="left"><span class="username">${esc(r.username)}</span>${rank <= 10 ? '<span class="badge-top">TOP 10</span>' : ''}</td>
+      <td class="left"><span class="username">${esc(r.username)}</span>${rank <= 10 ? '<span class="badge-top">TOP 10</span>' : ''}<div class="user-id">${esc(r.user_id)}</div></td>
       <td class="pts">${fmt(r.restock_pts)}</td>
       <td class="pts">${r.restock_count}</td>
       <td class="pts">${fmt(r.empty_pts)}</td>
@@ -236,7 +238,7 @@ const TABS = {
     defaultSort: 'invites_period', defaultAsc: false,
     buildRow: (r, rank) => `<tr>
       <td class="left rank">${rank}</td>
-      <td class="left"><span class="username">${esc(r.username)}</span>${rank <= 10 ? '<span class="badge-top">TOP 10</span>' : ''}</td>
+      <td class="left"><span class="username">${esc(r.username)}</span>${rank <= 10 ? '<span class="badge-top">TOP 10</span>' : ''}<div class="user-id">${esc(r.user_id)}</div></td>
       <td class="pts">${r.invites_period}</td>
       <td class="pts">${r.invites_alltime}</td>
       <td class="pts">${dateStr(r.last_invite_at)}</td>
@@ -258,7 +260,7 @@ const TABS = {
     defaultSort: 'total_points', defaultAsc: false,
     buildRow: (r, rank) => `<tr>
       <td class="left rank">${rank}</td>
-      <td class="left"><span class="username">${esc(r.username)}</span>${rank <= 10 ? '<span class="badge-top">TOP 10</span>' : ''}</td>
+      <td class="left"><span class="username">${esc(r.username)}</span>${rank <= 10 ? '<span class="badge-top">TOP 10</span>' : ''}<div class="user-id">${esc(r.user_id)}</div></td>
       <td class="pts">${fmt(r.restock_pts)}</td>
       <td class="pts">${r.restock_count}</td>
       <td class="pts">${fmt(r.empty_pts)}</td>
