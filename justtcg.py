@@ -492,14 +492,25 @@ async def search_card(client: httpx.AsyncClient, name: str, game: str,
     if not slug:
         return None
     if card_number:
-        return await _search_by_number(client, slug, name, card_number, variant, budget)
+        return await _search_by_number(client, slug, name, set_name, card_number, variant, budget)
     return await _search_by_rank(client, slug, name, set_name, variant, budget)
 
 
-async def _search_by_number(client, slug: str, name: str, card_number: str,
+async def _search_by_number(client, slug: str, name: str, set_name: str, card_number: str,
                             variant: str, budget: CallBudget | None) -> dict | None:
-    tight_target = _canon_tight(name)
+    """Number-first matching, RANKED — never accept the first number hit.
+
+    Card numbers repeat across the whole catalog (every set restarts at ~001),
+    and a generic name like "Pikachu ex" recurs across many expansions — so a
+    same-numbered, similarly-named card from an unrelated set/print can appear
+    before the real target in search results. Every number-matching candidate
+    across all pages/query variants is collected first, THEN ranked by:
+    rarity match > set match > exact name match (per request: number+rarity
+    lead, name is the tie-breaker) — never accepted on number alone.
+    """
     hint = _variant_tokens(variant)
+    set_target = (set_name or "").strip().lower()
+    candidates: dict[str, dict] = {}   # keyed by identity/(name,set,number) to de-dupe
     pages_used = 0
     for i, query in enumerate(_search_variants(name)):
         if i:
@@ -514,22 +525,48 @@ async def _search_by_number(client, slug: str, name: str, card_number: str,
                 break
             for c in cards:
                 cnum = str(c.get("number") or c.get("card_number") or "")
-                cname = str(c.get("name") or "")
-                if _numbers_match(card_number, cnum) and _canon_tight(cname) == tight_target:
-                    crarity = str(c.get("rarity") or "")
-                    if hint and not (hint & _variant_tokens(crarity)):
-                        logger.warning("JustTCG rarity check: %r #%s — ours %r vs theirs %r "
-                                       "(accepted on number+name; verify if price looks off)",
-                                       name, card_number, variant, crarity)
-                    return c
-            if not has_more:
+                if _numbers_match(card_number, cnum):
+                    key = card_identity(c) or (str(c.get("name")), _card_set_text(c), cnum)
+                    candidates[key] = c
+            if not has_more or pages_used >= _MAX_SEARCH_PAGES:
                 break
             offset += len(cards)
         if pages_used >= _MAX_SEARCH_PAGES:
             break
-    logger.info("JustTCG: no number+name match for %r #%s after %d page(s) — "
-                "not guessing; will retry next ingest", name, card_number, pages_used)
-    return None
+
+    if not candidates:
+        logger.info("JustTCG: no number match for %r #%s after %d page(s) — "
+                    "not guessing; will retry next ingest", name, card_number, pages_used)
+        return None
+
+    def rank(c: dict) -> tuple:
+        cname = str(c.get("name") or "")
+        cset = _card_set_text(c).lower()
+        crarity = str(c.get("rarity") or "")
+        rarity_hit = bool(hint) and bool(hint & _variant_tokens(crarity))
+        set_hit = bool(set_target) and set_target in cset
+        name_close = _canon_tight(cname) == _canon_tight(name)
+        return (rarity_hit, set_hit, name_close)
+
+    pool = list(candidates.values())
+    pool.sort(key=rank, reverse=True)
+    best = pool[0]
+    rarity_hit, set_hit, name_close = rank(best)
+
+    # Number alone is not enough — require rarity, set, or exact name to
+    # confirm it's actually the card we mean, not a same-numbered stranger.
+    if not (rarity_hit or set_hit or name_close):
+        logger.info("JustTCG: %d number-matching candidate(s) for %r #%s but none "
+                    "confirmed by rarity/set/name — rejecting to avoid a wrong-set "
+                    "collision; will retry next ingest", len(pool), name, card_number)
+        return None
+
+    if len(pool) > 1 and not (rarity_hit and set_hit):
+        logger.info("JustTCG: %d number-matching candidates for %r #%s; picked %r/%s/#%s "
+                    "(rarity_hit=%s set_hit=%s name_close=%s) — spot-check the price if unsure",
+                    len(pool), name, card_number, best.get("name"), _card_set_text(best),
+                    best.get("number") or best.get("card_number"), rarity_hit, set_hit, name_close)
+    return best
 
 
 async def _search_by_rank(client, slug: str, name: str, set_name: str,
