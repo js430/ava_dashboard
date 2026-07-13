@@ -191,6 +191,8 @@
           <tr>
             <th class="left">#</th>
             <th class="left sortable" onclick="sortBy('name')">Card<span class="sort-arrow" id="arrow-name"></span></th>
+            <th class="left sortable" onclick="sortBy('set_name')">Set<span class="sort-arrow" id="arrow-set_name"></span></th>
+            <th class="left sortable" onclick="sortBy('variant')">Rarity<span class="sort-arrow" id="arrow-variant"></span></th>
             <th class="left sortable" onclick="sortBy('game')">Game<span class="sort-arrow" id="arrow-game"></span></th>
             <th class="sortable" onclick="sortBy('price_mid')">Price<span class="sort-arrow" id="arrow-price_mid"></span></th>
             <th class="sortable" onclick="sortBy('momentum_7d')">7d<span class="sort-arrow" id="arrow-momentum_7d"></span></th>
@@ -202,6 +204,8 @@
           <tr class="filter-row">
             <th></th>
             <th class="left"><input class="col-filter" type="text" id="fCard" placeholder="Filter card…" oninput="onFilterChange()"></th>
+            <th class="left"><input class="col-filter" type="text" id="fSet" placeholder="Filter set…" oninput="onFilterChange()"></th>
+            <th class="left"><input class="col-filter" type="text" id="fRarity" placeholder="Filter rarity…" oninput="onFilterChange()"></th>
             <th class="left">
               <select class="col-filter" id="fGame" onchange="onFilterChange()">
                 <option value="all">All</option>
@@ -218,7 +222,7 @@
           </tr>
         </thead>
         <tbody id="trackerBody">
-          <tr><td colspan="9" class="empty">Loading…</td></tr>
+          <tr><td colspan="11" class="empty">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -280,8 +284,8 @@ let selectedId = null;
 let chart = null;
 let sortKey = 'potential_score';
 let sortAsc = false;
-const SORTABLE = ['name','game','price_mid','momentum_7d','momentum_30d','age_days','liquidity_score','potential_score'];
-const FILTER_IDS = ['fCard','fGame','fPriceMin','fPriceMax','fM7Min','fM7Max','fM30Min','fM30Max',
+const SORTABLE = ['name','set_name','variant','game','price_mid','momentum_7d','momentum_30d','age_days','liquidity_score','potential_score'];
+const FILTER_IDS = ['fCard','fSet','fRarity','fGame','fPriceMin','fPriceMax','fM7Min','fM7Max','fM30Min','fM30Max',
                     'fAgeMin','fAgeMax','fLiqMin','fLiqMax','fScoreMin','fScoreMax'];
 
 function money(v){ return v == null ? '—' : '$' + Number(v).toFixed(2); }
@@ -305,6 +309,8 @@ function getFilters(){
   const num = id => { const v = document.getElementById(id).value.trim(); return v === '' ? null : parseFloat(v); };
   return {
     card: document.getElementById('fCard').value.trim().toLowerCase(),
+    set: document.getElementById('fSet').value.trim().toLowerCase(),
+    rarity: document.getElementById('fRarity').value.trim().toLowerCase(),
     game: document.getElementById('fGame').value,
     priceMin: num('fPriceMin'), priceMax: num('fPriceMax'),
     m7Min: num('fM7Min'), m7Max: num('fM7Max'),
@@ -326,6 +332,8 @@ function filterRows(rows, f){
   return rows.filter(r => {
     if (f.card && !r.name.toLowerCase().includes(f.card) && !(r.set_name||'').toLowerCase().includes(f.card)
         && !(r.card_number||'').toLowerCase().includes(f.card) && !(r.variant||'').toLowerCase().includes(f.card)) return false;
+    if (f.set && !(r.set_name||'').toLowerCase().includes(f.set)) return false;
+    if (f.rarity && !(r.variant||'').toLowerCase().includes(f.rarity)) return false;
     if (f.game !== 'all' && r.game !== f.game) return false;
     if (!inRange(r.price_mid, f.priceMin, f.priceMax)) return false;
     if (!inRange(r.momentum_7d, f.m7Min, f.m7Max)) return false;
@@ -339,6 +347,8 @@ function filterRows(rows, f){
 
 function sortValue(r, key){
   if (key === 'name') return r.name.toLowerCase();
+  if (key === 'set_name') return (r.set_name || '').toLowerCase() || null;
+  if (key === 'variant') return (r.variant || '').toLowerCase() || null;
   if (key === 'game') return (GAME_LABELS[r.game] || r.game).toLowerCase();
   return r[key];
 }
@@ -361,7 +371,7 @@ function sortRows(rows){
 function sortBy(key){
   if (!SORTABLE.includes(key)) return;
   if (sortKey === key){ sortAsc = !sortAsc; }
-  else { sortKey = key; sortAsc = (key === 'name' || key === 'game'); }
+  else { sortKey = key; sortAsc = (key === 'name' || key === 'set_name' || key === 'variant' || key === 'game'); }
   renderTable();
 }
 
@@ -398,7 +408,7 @@ function renderTable(){
 
   const body = document.getElementById('trackerBody');
   if (!rows.length){
-    body.innerHTML = `<tr><td colspan="9" class="empty">${allRows.length ? 'No cards match the current filters.' : 'No cards yet — run the ingest (scripts/ingest_prices) or hit Refresh prices.'}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="11" class="empty">${allRows.length ? 'No cards match the current filters.' : 'No cards yet — run the ingest (scripts/ingest_prices) or hit Refresh prices.'}</td></tr>`;
     return;
   }
   body.innerHTML = rows.map((r, i) => `
@@ -406,8 +416,10 @@ function renderTable(){
       <td class="left rank">${i + 1}</td>
       <td class="left">
         <div class="card-name">${esc(r.name)}${r.match_suspect ? ' <span title="JustTCG matched a different card name — open the detail panel and re-match if wrong">⚠️</span>' : ''}</div>
-        <div class="card-sub">${esc(r.set_name || '')}${r.variant ? ' · ' + esc(r.variant) : ''}${r.card_number ? ' · #' + esc(r.card_number) : ''}</div>
+        ${r.card_number ? `<div class="card-sub">#${esc(r.card_number)}</div>` : ''}
       </td>
+      <td class="left">${esc(r.set_name || '—')}</td>
+      <td class="left">${esc(r.variant || '—')}</td>
       <td class="left">${esc(GAME_LABELS[r.game] || r.game)}</td>
       <td>${money(r.price_mid)}</td>
       <td>${pct(r.momentum_7d)}</td>
@@ -629,7 +641,7 @@ async function load(){
     renderTable();
   } catch (err) {
     document.getElementById('trackerBody').innerHTML =
-      '<tr><td colspan="9" class="empty">Failed to load data.</td></tr>';
+      '<tr><td colspan="11" class="empty">Failed to load data.</td></tr>';
   }
 }
 
