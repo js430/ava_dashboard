@@ -37,11 +37,22 @@
   .refresh-btn { font-size: 12px; height: 30px; padding: 0 12px; border: none; border-radius: 6px; background: #5865F2; color: #fff; cursor: pointer; font-weight: 600; }
   .refresh-btn:disabled { opacity: .6; cursor: not-allowed; }
   .refresh-note { font-size: 12px; color: #999; margin-left: auto; }
+  .clear-filters-btn { font-size: 12px; color: #5865F2; background: none; border: none; cursor: pointer; padding: 0; white-space: nowrap; }
+  .clear-filters-btn:hover { text-decoration: underline; }
+  .filter-count { font-size: 12px; color: #999; white-space: nowrap; }
 
   .table-scroll { overflow-x: auto; }
   table { border-collapse: collapse; width: 100%; font-size: 12px; }
   thead th { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; padding: 9px 12px; text-align: right; border-bottom: 1px solid #e4e4e7; background: #fafafa; white-space: nowrap; }
   thead th.left { text-align: left; }
+  thead th.sortable { cursor: pointer; user-select: none; }
+  thead th.sortable:hover { color: #333; }
+  thead th.sort-active { color: #5865F2; }
+  .sort-arrow { display: inline-block; margin-left: 3px; font-size: 10px; color: #5865F2; width: 8px; }
+  tr.filter-row th { padding: 5px 8px; background: #fff; border-bottom: 1px solid #e4e4e7; font-weight: 400; text-transform: none; letter-spacing: normal; cursor: default; }
+  .col-filter { width: 100%; box-sizing: border-box; font-size: 12px; height: 24px; padding: 0 6px; border: 1px solid #ddd; border-radius: 5px; background: #fff; color: #111; }
+  .range-pair { display: flex; gap: 3px; justify-content: flex-end; }
+  .range-input { width: 52px; box-sizing: border-box; font-size: 12px; height: 24px; padding: 0 4px; border: 1px solid #ddd; border-radius: 5px; background: #fff; color: #111; }
   tbody tr { border-bottom: 1px solid #f0f0f0; cursor: pointer; }
   tbody tr:last-child { border-bottom: none; }
   tbody tr:hover { background: #fafafa; }
@@ -102,7 +113,6 @@
     .nav { gap: 5px; }
     .main { padding: 12px; }
     .stat-grid { grid-template-columns: repeat(2,1fr); gap: 8px; }
-    .search-input { width: 130px; }
     thead th, tbody td { padding: 7px 8px; }
     .chart-wrap { height: 220px; }
   }
@@ -121,6 +131,11 @@
   html[data-theme="dark"] .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
   html[data-theme="dark"] .search-input { background: #252528; border-color: #383838; color: #f0f0f0; }
   html[data-theme="dark"] thead th { background: #161618; border-bottom-color: #303033; }
+  html[data-theme="dark"] thead th.sortable:hover { color: #ccc; }
+  html[data-theme="dark"] thead th.sort-active { color: #818cf8; }
+  html[data-theme="dark"] .sort-arrow { color: #818cf8; }
+  html[data-theme="dark"] tr.filter-row th { background: #1c1c1f; border-bottom-color: #303033; }
+  html[data-theme="dark"] .col-filter, html[data-theme="dark"] .range-input { background: #252528; border-color: #383838; color: #f0f0f0; }
   html[data-theme="dark"] tbody tr { border-bottom-color: #2a2a2d; }
   html[data-theme="dark"] tbody tr:hover { background: #222226; }
   html[data-theme="dark"] tbody tr.selected { background: #1e2040; }
@@ -164,12 +179,8 @@
   <div class="table-card">
     <div class="table-header">
       <span class="table-header-title">Ranked by potential</span>
-      <div class="btn-group" id="gameFilter">
-        <button class="active" data-g="all" onclick="setGame('all',this)">All</button>
-        <button data-g="pokemon" onclick="setGame('pokemon',this)">Pokémon</button>
-        <button data-g="one_piece" onclick="setGame('one_piece',this)">One Piece</button>
-      </div>
-      <input class="search-input" id="searchInput" type="text" placeholder="Search card…" oninput="renderTable()">
+      <button class="clear-filters-btn" onclick="clearFilters()">Clear filters</button>
+      <span class="filter-count" id="filterCount"></span>
       {% if is_admin %}<button class="refresh-btn" id="refreshBtn" onclick="refreshData()">Refresh prices</button>{% endif %}
       <span class="refresh-note" id="refreshNote"></span>
     </div>
@@ -177,8 +188,32 @@
       <table>
         <thead>
           <tr>
-            <th class="left">#</th><th class="left">Card</th><th class="left">Game</th>
-            <th>Price</th><th>7d</th><th>30d</th><th>Age</th><th>Liquidity</th><th>Score</th>
+            <th class="left">#</th>
+            <th class="left sortable" onclick="sortBy('name')">Card<span class="sort-arrow" id="arrow-name"></span></th>
+            <th class="left sortable" onclick="sortBy('game')">Game<span class="sort-arrow" id="arrow-game"></span></th>
+            <th class="sortable" onclick="sortBy('price_mid')">Price<span class="sort-arrow" id="arrow-price_mid"></span></th>
+            <th class="sortable" onclick="sortBy('momentum_7d')">7d<span class="sort-arrow" id="arrow-momentum_7d"></span></th>
+            <th class="sortable" onclick="sortBy('momentum_30d')">30d<span class="sort-arrow" id="arrow-momentum_30d"></span></th>
+            <th class="sortable" onclick="sortBy('age_days')">Age<span class="sort-arrow" id="arrow-age_days"></span></th>
+            <th class="sortable" onclick="sortBy('liquidity_score')">Liquidity<span class="sort-arrow" id="arrow-liquidity_score"></span></th>
+            <th class="sortable" onclick="sortBy('potential_score')">Score<span class="sort-arrow" id="arrow-potential_score"></span></th>
+          </tr>
+          <tr class="filter-row">
+            <th></th>
+            <th class="left"><input class="col-filter" type="text" id="fCard" placeholder="Filter card…" oninput="onFilterChange()"></th>
+            <th class="left">
+              <select class="col-filter" id="fGame" onchange="onFilterChange()">
+                <option value="all">All</option>
+                <option value="pokemon">Pokémon</option>
+                <option value="one_piece">One Piece</option>
+              </select>
+            </th>
+            <th><div class="range-pair"><input class="range-input" type="number" id="fPriceMin" placeholder="min" oninput="onFilterChange()"><input class="range-input" type="number" id="fPriceMax" placeholder="max" oninput="onFilterChange()"></div></th>
+            <th><div class="range-pair"><input class="range-input" type="number" id="fM7Min" placeholder="min%" oninput="onFilterChange()"><input class="range-input" type="number" id="fM7Max" placeholder="max%" oninput="onFilterChange()"></div></th>
+            <th><div class="range-pair"><input class="range-input" type="number" id="fM30Min" placeholder="min%" oninput="onFilterChange()"><input class="range-input" type="number" id="fM30Max" placeholder="max%" oninput="onFilterChange()"></div></th>
+            <th><div class="range-pair"><input class="range-input" type="number" id="fAgeMin" placeholder="min d" oninput="onFilterChange()"><input class="range-input" type="number" id="fAgeMax" placeholder="max d" oninput="onFilterChange()"></div></th>
+            <th><div class="range-pair"><input class="range-input" type="number" id="fLiqMin" placeholder="min%" oninput="onFilterChange()"><input class="range-input" type="number" id="fLiqMax" placeholder="max%" oninput="onFilterChange()"></div></th>
+            <th><div class="range-pair"><input class="range-input" type="number" id="fScoreMin" placeholder="min" oninput="onFilterChange()"><input class="range-input" type="number" id="fScoreMax" placeholder="max" oninput="onFilterChange()"></div></th>
           </tr>
         </thead>
         <tbody id="trackerBody">
@@ -239,9 +274,13 @@ function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
 
 const GAME_LABELS = { pokemon: 'Pokémon', one_piece: 'One Piece' };
 let allRows = [];
-let activeGame = 'all';
 let selectedId = null;
 let chart = null;
+let sortKey = 'potential_score';
+let sortAsc = false;
+const SORTABLE = ['name','game','price_mid','momentum_7d','momentum_30d','age_days','liquidity_score','potential_score'];
+const FILTER_IDS = ['fCard','fGame','fPriceMin','fPriceMax','fM7Min','fM7Max','fM30Min','fM30Max',
+                    'fAgeMin','fAgeMax','fLiqMin','fLiqMax','fScoreMin','fScoreMax'];
 
 function money(v){ return v == null ? '—' : '$' + Number(v).toFixed(2); }
 function pct(v){
@@ -260,23 +299,104 @@ function ageStr(d){
   return d >= 365 ? (d/365).toFixed(1) + 'y' : d + 'd';
 }
 
-function setGame(g, btn){
-  activeGame = g;
-  document.querySelectorAll('#gameFilter button').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
+function getFilters(){
+  const num = id => { const v = document.getElementById(id).value.trim(); return v === '' ? null : parseFloat(v); };
+  return {
+    card: document.getElementById('fCard').value.trim().toLowerCase(),
+    game: document.getElementById('fGame').value,
+    priceMin: num('fPriceMin'), priceMax: num('fPriceMax'),
+    m7Min: num('fM7Min'), m7Max: num('fM7Max'),
+    m30Min: num('fM30Min'), m30Max: num('fM30Max'),
+    ageMin: num('fAgeMin'), ageMax: num('fAgeMax'),
+    liqMin: num('fLiqMin'), liqMax: num('fLiqMax'),
+    scoreMin: num('fScoreMin'), scoreMax: num('fScoreMax'),
+  };
+}
+
+function inRange(v, min, max){
+  if (v == null) return min == null && max == null;
+  if (min != null && v < min) return false;
+  if (max != null && v > max) return false;
+  return true;
+}
+
+function filterRows(rows, f){
+  return rows.filter(r => {
+    if (f.card && !r.name.toLowerCase().includes(f.card) && !(r.set_name||'').toLowerCase().includes(f.card)
+        && !(r.card_number||'').toLowerCase().includes(f.card) && !(r.variant||'').toLowerCase().includes(f.card)) return false;
+    if (f.game !== 'all' && r.game !== f.game) return false;
+    if (!inRange(r.price_mid, f.priceMin, f.priceMax)) return false;
+    if (!inRange(r.momentum_7d, f.m7Min, f.m7Max)) return false;
+    if (!inRange(r.momentum_30d, f.m30Min, f.m30Max)) return false;
+    if (!inRange(r.age_days, f.ageMin, f.ageMax)) return false;
+    if (!inRange(r.liquidity_score == null ? null : r.liquidity_score * 100, f.liqMin, f.liqMax)) return false;
+    if (!inRange(r.potential_score, f.scoreMin, f.scoreMax)) return false;
+    return true;
+  });
+}
+
+function sortValue(r, key){
+  if (key === 'name') return r.name.toLowerCase();
+  if (key === 'game') return (GAME_LABELS[r.game] || r.game).toLowerCase();
+  return r[key];
+}
+
+function sortRows(rows){
+  const rowsCopy = rows.slice();
+  rowsCopy.sort((a, b) => {
+    const va = sortValue(a, sortKey), vb = sortValue(b, sortKey);
+    const aNull = va == null, bNull = vb == null;
+    if (aNull && bNull) return 0;
+    if (aNull) return 1;   // nulls always sort last, regardless of direction
+    if (bNull) return -1;
+    if (va < vb) return sortAsc ? -1 : 1;
+    if (va > vb) return sortAsc ? 1 : -1;
+    return 0;
+  });
+  return rowsCopy;
+}
+
+function sortBy(key){
+  if (!SORTABLE.includes(key)) return;
+  if (sortKey === key){ sortAsc = !sortAsc; }
+  else { sortKey = key; sortAsc = (key === 'name' || key === 'game'); }
+  renderTable();
+}
+
+function updateSortArrows(){
+  SORTABLE.forEach(key => {
+    const th = document.querySelector(`[onclick="sortBy('${key}')"]`);
+    const arrow = document.getElementById('arrow-' + key);
+    if (!th || !arrow) return;
+    if (key === sortKey){ th.classList.add('sort-active'); arrow.textContent = sortAsc ? '▲' : '▼'; }
+    else { th.classList.remove('sort-active'); arrow.textContent = ''; }
+  });
+}
+
+function onFilterChange(){ renderTable(); }
+
+function clearFilters(){
+  FILTER_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    el.value = el.tagName === 'SELECT' ? 'all' : '';
+  });
   renderTable();
 }
 
 function renderTable(){
-  const q = document.getElementById('searchInput').value.trim().toLowerCase();
-  const rows = allRows.filter(r => {
-    if (activeGame !== 'all' && r.game !== activeGame) return false;
-    if (q && !r.name.toLowerCase().includes(q) && !(r.set_name||'').toLowerCase().includes(q)) return false;
-    return true;
-  });
+  const f = getFilters();
+  const filtered = filterRows(allRows, f);
+  const rows = sortRows(filtered);
+  updateSortArrows();
+
+  const countEl = document.getElementById('filterCount');
+  if (countEl) countEl.textContent = rows.length === allRows.length
+    ? `${allRows.length} card${allRows.length !== 1 ? 's' : ''}`
+    : `${rows.length} of ${allRows.length} shown`;
+
   const body = document.getElementById('trackerBody');
   if (!rows.length){
-    body.innerHTML = '<tr><td colspan="9" class="empty">No cards yet — run the ingest (scripts/ingest_prices) or hit Refresh prices.</td></tr>';
+    body.innerHTML = `<tr><td colspan="9" class="empty">${allRows.length ? 'No cards match the current filters.' : 'No cards yet — run the ingest (scripts/ingest_prices) or hit Refresh prices.'}</td></tr>`;
     return;
   }
   body.innerHTML = rows.map((r, i) => `
