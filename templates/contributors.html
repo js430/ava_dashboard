@@ -15,7 +15,7 @@
   .avatar img { width: 100%; height: 100%; object-fit: cover; }
   .header-title { font-size: 15px; font-weight: 600; color: #111; }
   .header-user { font-size: 12px; color: #888; }
-  .nav { display: flex; gap: 8px; align-items: center; }
+  .nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; }
   .nav a:hover { background: #f4f4f5; }
   .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
@@ -24,15 +24,38 @@
 
   .toolbar { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 10px 14px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
   .toolbar-label { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
-  .search-input { font-size: 12px; height: 30px; padding: 0 10px; border: 1px solid #ddd; border-radius: 6px; color: #111; width: 200px; }
-  .row-count { font-size: 12px; color: #aaa; margin-left: auto; }
+  .btn-group { display: flex; }
+  .btn-group button { font-size: 12px; height: 30px; padding: 0 12px; border: 1px solid #ddd; background: #fff; color: #333; cursor: pointer; white-space: nowrap; }
+  .btn-group button:first-child { border-radius: 6px 0 0 6px; }
+  .btn-group button:last-child { border-radius: 0 6px 6px 0; }
+  .btn-group button:not(:first-child) { border-left: none; }
+  .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .period-note { font-size: 12px; color: #aaa; margin-left: auto; }
+
+  .tab-bar { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+  .tab-btn { font-size: 13px; font-weight: 600; height: 34px; padding: 0 16px; border: 1px solid #e4e4e7; background: #fff; color: #555; cursor: pointer; border-radius: 8px; }
+  .tab-btn:hover { background: #f4f4f5; }
+  .tab-btn.active { background: #5865F2; color: #fff; border-color: #5865F2; }
 
   .card { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; overflow: hidden; }
+  .tbl-toolbar { padding: 10px 14px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #e4e4e7; }
+  .clear-filters-btn { font-size: 12px; color: #5865F2; background: none; border: none; cursor: pointer; padding: 0; }
+  .clear-filters-btn:hover { text-decoration: underline; }
+  .filter-count { font-size: 12px; color: #aaa; margin-left: auto; }
 
   .tbl-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
   thead th { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.04em; padding: 8px 10px; border-bottom: 1px solid #e4e4e7; text-align: right; white-space: nowrap; background: #fafafa; }
   thead th.left { text-align: left; }
+  thead th.sortable { cursor: pointer; user-select: none; }
+  thead th.sortable:hover { color: #333; }
+  thead th.sort-active { color: #5865F2; }
+  .sort-arrow { display: inline-block; margin-left: 3px; font-size: 10px; color: #5865F2; width: 8px; }
+  tr.filter-row th { padding: 5px 8px; background: #fff; border-bottom: 1px solid #e4e4e7; font-weight: 400; text-transform: none; letter-spacing: normal; cursor: default; }
+  .col-filter { width: 100%; box-sizing: border-box; font-size: 12px; height: 24px; padding: 0 6px; border: 1px solid #ddd; border-radius: 5px; background: #fff; color: #111; }
+  .range-pair { display: flex; gap: 3px; justify-content: flex-end; }
+  .range-input { width: 56px; box-sizing: border-box; font-size: 12px; height: 24px; padding: 0 4px; border: 1px solid #ddd; border-radius: 5px; background: #fff; color: #111; }
+
   tbody tr { border-bottom: 1px solid #f5f5f5; transition: background 0.1s; }
   tbody tr:last-child { border-bottom: none; }
   tbody tr:hover { background: #fafafa; }
@@ -42,7 +65,6 @@
   .username { font-weight: 600; color: #111; font-size: 12px; }
   .pts { font-variant-numeric: tabular-nums; }
   .total { font-weight: 700; color: #5865F2; }
-  .breakdown { font-size: 12px; color: #aaa; display: block; margin-top: 1px; }
   .badge-top { display: inline-block; font-size: 12px; font-weight: 700; background: #fef9c3; color: #854d0e; border-radius: 3px; padding: 1px 5px; margin-left: 5px; vertical-align: middle; }
   .empty-state { text-align: center; padding: 40px; color: #aaa; font-size: 12px; }
 
@@ -52,12 +74,10 @@
     .nav a { font-size: 12px; padding: 3px 7px; }
     .main { padding: 12px; }
     .toolbar { padding: 10px 12px; gap: 8px; }
-    .search-input { width: 100%; }
-    .row-count { margin-left: 0; }
+    .period-note { margin-left: 0; }
     thead th { padding: 6px 6px; font-size: 12px; }
     tbody td { padding: 5px 6px; font-size: 12px; }
     .rank { width: 24px; }
-    .breakdown { font-size: 12px; }
   }
   /* ── Theme toggle ── */
   .theme-toggle { display: none; font-size: 16px; background: #f4f4f5; border: 1px solid #ddd; border-radius: 6px; padding: 4px 8px; cursor: pointer; line-height: 1; transition: background 0.15s; flex-shrink: 0; }
@@ -71,9 +91,19 @@
   html[data-theme="dark"] .nav a:hover { background: #2e2e32; }
   html[data-theme="dark"] .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
   html[data-theme="dark"] .toolbar { background: #1c1c1f; border-color: #303033; }
-  html[data-theme="dark"] .search-input { background: #252528; border-color: #383838; color: #f0f0f0; }
+  html[data-theme="dark"] .btn-group button { background: #252528; border-color: #383838; color: #ccc; }
+  html[data-theme="dark"] .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .tab-btn { background: #1c1c1f; border-color: #303033; color: #bbbbc5; }
+  html[data-theme="dark"] .tab-btn:hover { background: #2e2e32; }
+  html[data-theme="dark"] .tab-btn.active { background: #5865F2; color: #fff; border-color: #5865F2; }
   html[data-theme="dark"] .card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .tbl-toolbar { border-bottom-color: #303033; }
   html[data-theme="dark"] thead th { background: #161618; border-bottom-color: #303033; color: #888; }
+  html[data-theme="dark"] thead th.sortable:hover { color: #ccc; }
+  html[data-theme="dark"] thead th.sort-active { color: #818cf8; }
+  html[data-theme="dark"] .sort-arrow { color: #818cf8; }
+  html[data-theme="dark"] tr.filter-row th { background: #1c1c1f; border-bottom-color: #303033; }
+  html[data-theme="dark"] .col-filter, html[data-theme="dark"] .range-input { background: #252528; border-color: #383838; color: #f0f0f0; }
   html[data-theme="dark"] tbody tr { border-bottom-color: #2a2a2d; }
   html[data-theme="dark"] tbody tr:hover { background: #222226; }
   html[data-theme="dark"] tbody td { color: #ccc; }
@@ -117,29 +147,29 @@
 <div class="main">
 
   <div class="toolbar">
-    <span class="toolbar-label">Top Contributors</span>
-    <input class="search-input" type="text" placeholder="Search username…" oninput="filterTable(this.value)">
-    <span class="row-count" id="rowCount">Loading…</span>
+    <span class="toolbar-label">Period</span>
+    <div class="btn-group" id="periodGroup">
+      <button class="active" data-period="3months" onclick="setPeriod('3months', this)">Last 3 Months</button>
+      <button data-period="month" onclick="setPeriod('month', this)">This Month</button>
+    </div>
+    <span class="period-note" id="periodNote"></span>
+  </div>
+
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="points" onclick="setTab('points', this)">Contributor Points</button>
+    <button class="tab-btn" data-tab="invites" onclick="setTab('invites', this)">Invites</button>
+    <button class="tab-btn" data-tab="regions" onclick="setTab('regions', this)">Region Breakdown</button>
   </div>
 
   <div class="card">
+    <div class="tbl-toolbar">
+      <button class="clear-filters-btn" onclick="clearFilters()">Clear filters</button>
+      <span class="filter-count" id="filterCount"></span>
+    </div>
     <div class="tbl-wrap">
-      <table id="contribTable">
-        <thead>
-          <tr>
-            <th class="left" style="width:36px">#</th>
-            <th class="left">Username</th>
-            <th>Restocks<br><span style="font-weight:400;text-transform:none;letter-spacing:0">pts</span></th>
-            <th>Empties<br><span style="font-weight:400;text-transform:none;letter-spacing:0">pts</span></th>
-            <th>+1s<br><span style="font-weight:400;text-transform:none;letter-spacing:0">pts</span></th>
-            <th>Manual<br><span style="font-weight:400;text-transform:none;letter-spacing:0">pts</span></th>
-            <th>Hope<br><span style="font-weight:400;text-transform:none;letter-spacing:0">pts</span></th>
-            <th>Total</th>
-          </tr>
-        </thead>
-        <tbody id="contribBody">
-          <tr><td colspan="8" class="empty-state">Loading…</td></tr>
-        </tbody>
+      <table>
+        <thead id="tblHead"></thead>
+        <tbody id="tblBody"><tr><td class="empty-state">Loading…</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -147,50 +177,236 @@
 </div>
 
 <script>
-let allRows = [];
-
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
-function fmt(n){ return n === 0 ? '—' : n % 1 === 0 ? n.toString() : n.toFixed(2); }
-
-function buildRow(r, rank){
-  const top = rank <= 25 ? '<span class="badge-top">TOP 25</span>' : '';
-  return `<tr>
-    <td class="left rank">${rank}</td>
-    <td class="left"><span class="username">${esc(r.username)}</span>${top}</td>
-    <td class="pts">${fmt(r.restock_pts)}<span class="breakdown">${r.r_30} / ${r.r_60} / ${r.r_90}</span></td>
-    <td class="pts">${fmt(r.empty_pts)}<span class="breakdown">${r.e_30} / ${r.e_60} / ${r.e_90}</span></td>
-    <td class="pts">${fmt(r.plusone_pts)}<span class="breakdown">${fmt(r.p_30)} / ${fmt(r.p_60)} / ${fmt(r.p_90)}</span></td>
-    <td class="pts">${fmt(r.manual_pts)}<span class="breakdown">${fmt(r.m_30)} / ${fmt(r.m_60)} / ${fmt(r.m_90)}</span></td>
-    <td class="pts">${fmt(r.hope_pts)}<span class="breakdown">${fmt(r.h_30)} / ${fmt(r.h_60)} / ${fmt(r.h_90)}</span></td>
-    <td class="total">${fmt(r.total_points)}</td>
-  </tr>`;
+function fmt(n){ if (n == null) return '—'; return (n % 1 === 0) ? String(n) : Number(n).toFixed(2); }
+function dateStr(v){
+  if (!v) return '—';
+  return new Date(v).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' });
 }
 
-function filterTable(q){
-  const term = q.trim().toLowerCase();
-  const filtered = term ? allRows.filter(r => r.username.toLowerCase().includes(term)) : allRows;
-  render(filtered);
+// ── Tab definitions: columns drive the header, filter row, and sort logic. ──
+const TABS = {
+  points: {
+    url: '/api/contributors/points',
+    colCount: 10,
+    columns: [
+      { key: 'rank',           label: '#' },
+      { key: 'username',       label: 'Username',    align: 'left', filter: 'text', type: 'text' },
+      { key: 'restock_pts',    label: 'Restock pts', filter: 'range' },
+      { key: 'restock_count',  label: 'Restocks',    filter: 'range' },
+      { key: 'empty_pts',      label: 'Empty pts',   filter: 'range' },
+      { key: 'empty_count',    label: 'Empties',     filter: 'range' },
+      { key: 'plusone_pts',    label: '+1 pts',      filter: 'range' },
+      { key: 'manual_pts',     label: 'Manual pts',  filter: 'range' },
+      { key: 'hope_pts',       label: 'Hope pts',    filter: 'range' },
+      { key: 'total_points',   label: 'Total',       filter: 'range' },
+    ],
+    defaultSort: 'total_points', defaultAsc: false,
+    buildRow: (r, rank) => `<tr>
+      <td class="left rank">${rank}</td>
+      <td class="left"><span class="username">${esc(r.username)}</span>${rank <= 10 ? '<span class="badge-top">TOP 10</span>' : ''}</td>
+      <td class="pts">${fmt(r.restock_pts)}</td>
+      <td class="pts">${r.restock_count}</td>
+      <td class="pts">${fmt(r.empty_pts)}</td>
+      <td class="pts">${r.empty_count}</td>
+      <td class="pts">${fmt(r.plusone_pts)}</td>
+      <td class="pts">${fmt(r.manual_pts)}</td>
+      <td class="pts">${fmt(r.hope_pts)}</td>
+      <td class="total">${fmt(r.total_points)}</td>
+    </tr>`,
+  },
+  invites: {
+    url: '/api/contributors/invites',
+    colCount: 5,
+    columns: [
+      { key: 'rank',            label: '#' },
+      { key: 'username',        label: 'Inviter',              align: 'left', filter: 'text', type: 'text' },
+      { key: 'invites_period',  label: 'Invites (period)',     filter: 'range' },
+      { key: 'invites_alltime', label: 'Invites (all-time)',   filter: 'range' },
+      { key: 'last_invite_at',  label: 'Last invite', sortable: true, type: 'date' },
+    ],
+    defaultSort: 'invites_period', defaultAsc: false,
+    buildRow: (r, rank) => `<tr>
+      <td class="left rank">${rank}</td>
+      <td class="left"><span class="username">${esc(r.username)}</span>${rank <= 10 ? '<span class="badge-top">TOP 10</span>' : ''}</td>
+      <td class="pts">${r.invites_period}</td>
+      <td class="pts">${r.invites_alltime}</td>
+      <td class="pts">${dateStr(r.last_invite_at)}</td>
+    </tr>`,
+  },
+  regions: {
+    url: '/api/contributors/regions',
+    colCount: 8,
+    columns: [
+      { key: 'rank',           label: '#' },
+      { key: 'region_label',   label: 'Region',      align: 'left', filter: 'text', type: 'text' },
+      { key: 'restock_pts',    label: 'Restock pts', filter: 'range' },
+      { key: 'restock_count',  label: 'Restocks',    filter: 'range' },
+      { key: 'empty_pts',      label: 'Empty pts',   filter: 'range' },
+      { key: 'empty_count',    label: 'Empties',     filter: 'range' },
+      { key: 'contributors',   label: 'Contributors',filter: 'range' },
+      { key: 'total_points',   label: 'Total',       filter: 'range' },
+    ],
+    defaultSort: 'total_points', defaultAsc: false,
+    buildRow: (r, rank) => `<tr>
+      <td class="left rank">${rank}</td>
+      <td class="left"><span class="username">${esc(r.region_label)}</span></td>
+      <td class="pts">${fmt(r.restock_pts)}</td>
+      <td class="pts">${r.restock_count}</td>
+      <td class="pts">${fmt(r.empty_pts)}</td>
+      <td class="pts">${r.empty_count}</td>
+      <td class="pts">${r.contributors}</td>
+      <td class="total">${fmt(r.total_points)}</td>
+    </tr>`,
+  },
+};
+
+let activeTab = 'points';
+let activePeriod = '3months';
+let allRows = [];
+const tabState = {};
+Object.keys(TABS).forEach(t => {
+  const cfg = TABS[t];
+  tabState[t] = { sortKey: cfg.defaultSort, sortAsc: cfg.defaultAsc, filters: {} };
+});
+
+function buildHeader(){
+  const cfg = TABS[activeTab];
+  const st = tabState[activeTab];
+  let head = '<tr>';
+  cfg.columns.forEach(col => {
+    if (col.key === 'rank'){ head += '<th class="left">#</th>'; return; }
+    const leftCls = col.align === 'left' ? 'left' : '';
+    const sortable = col.sortable === false ? false : true;
+    const activeCls = st.sortKey === col.key ? 'sort-active' : '';
+    const arrow = st.sortKey === col.key ? (st.sortAsc ? '▲' : '▼') : '';
+    head += `<th class="${leftCls} ${sortable ? 'sortable' : ''} ${activeCls}" ${sortable ? `onclick="sortBy('${col.key}')"` : ''}>${col.label}${sortable ? `<span class="sort-arrow">${arrow}</span>` : ''}</th>`;
+  });
+  head += '</tr><tr class="filter-row">';
+  cfg.columns.forEach(col => {
+    if (col.key === 'rank' || !col.filter){ head += '<th></th>'; return; }
+    if (col.filter === 'text'){
+      head += `<th class="left"><input class="col-filter" type="text" data-fkey="${col.key}" placeholder="Filter…" oninput="onTextFilterChange('${col.key}', this.value)"></th>`;
+    } else if (col.filter === 'range'){
+      head += `<th><div class="range-pair">
+        <input class="range-input" type="number" data-fkey="${col.key}Min" placeholder="min" oninput="onRangeFilterChange('${col.key}','Min',this.value)">
+        <input class="range-input" type="number" data-fkey="${col.key}Max" placeholder="max" oninput="onRangeFilterChange('${col.key}','Max',this.value)">
+      </div></th>`;
+    }
+  });
+  head += '</tr>';
+  document.getElementById('tblHead').innerHTML = head;
+  // Restore filter values after rebuilding the header (e.g. on tab switch)
+  document.querySelectorAll('#tblHead [data-fkey]').forEach(el => {
+    const v = st.filters[el.dataset.fkey];
+    if (v != null) el.value = v;
+  });
 }
 
-function render(rows){
-  const body = document.getElementById('contribBody');
-  document.getElementById('rowCount').textContent = `${rows.length} users`;
-  if(!rows.length){
-    body.innerHTML = '<tr><td colspan="8" class="empty-state">No results.</td></tr>';
+function onTextFilterChange(key, val){
+  tabState[activeTab].filters[key] = val.trim().toLowerCase();
+  renderBody();
+}
+function onRangeFilterChange(key, which, val){
+  const v = val.trim();
+  tabState[activeTab].filters[key + which] = v === '' ? null : parseFloat(v);
+  renderBody();
+}
+
+function passesFilters(row, cfg, filters){
+  for (const col of cfg.columns){
+    if (col.filter === 'text'){
+      const q = filters[col.key];
+      if (q && !String(row[col.key] ?? '').toLowerCase().includes(q)) return false;
+    } else if (col.filter === 'range'){
+      const min = filters[col.key + 'Min'], max = filters[col.key + 'Max'];
+      const v = row[col.key];
+      if (min != null && (v == null || v < min)) return false;
+      if (max != null && (v == null || v > max)) return false;
+    }
+  }
+  return true;
+}
+
+function sortRows(rows, st){
+  const copy = rows.slice();
+  copy.sort((a, b) => {
+    const va = a[st.sortKey], vb = b[st.sortKey];
+    const aNull = va == null, bNull = vb == null;
+    if (aNull && bNull) return 0;
+    if (aNull) return 1;
+    if (bNull) return -1;
+    let cmp;
+    if (typeof va === 'string') cmp = va.localeCompare(vb);
+    else cmp = va < vb ? -1 : va > vb ? 1 : 0;
+    return st.sortAsc ? cmp : -cmp;
+  });
+  return copy;
+}
+
+function sortBy(key){
+  const cfg = TABS[activeTab];
+  const col = cfg.columns.find(c => c.key === key);
+  if (!col) return;
+  const st = tabState[activeTab];
+  if (st.sortKey === key){ st.sortAsc = !st.sortAsc; }
+  else { st.sortKey = key; st.sortAsc = (col.type === 'text'); }
+  buildHeader();
+  renderBody();
+}
+
+function clearFilters(){
+  tabState[activeTab].filters = {};
+  buildHeader();
+  renderBody();
+}
+
+function renderBody(){
+  const cfg = TABS[activeTab];
+  const st = tabState[activeTab];
+  const filtered = allRows.filter(r => passesFilters(r, cfg, st.filters));
+  const sorted = sortRows(filtered, st);
+  const body = document.getElementById('tblBody');
+  document.getElementById('filterCount').textContent = sorted.length === allRows.length
+    ? `${allRows.length} row${allRows.length !== 1 ? 's' : ''}`
+    : `${sorted.length} of ${allRows.length} shown`;
+  if (!sorted.length){
+    body.innerHTML = `<tr><td colspan="${cfg.colCount}" class="empty-state">${allRows.length ? 'No rows match the current filters.' : 'No data yet.'}</td></tr>`;
     return;
   }
-  body.innerHTML = rows.map((r, i) => buildRow(r, i + 1)).join('');
+  body.innerHTML = sorted.map((r, i) => cfg.buildRow(r, i + 1)).join('');
+}
+
+function setTab(tab, btn){
+  activeTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  load();
+}
+
+function setPeriod(period, btn){
+  activePeriod = period;
+  document.querySelectorAll('#periodGroup button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  load();
 }
 
 async function load(){
+  const cfg = TABS[activeTab];
+  buildHeader();
+  document.getElementById('tblBody').innerHTML = `<tr><td colspan="${cfg.colCount}" class="empty-state">Loading…</td></tr>`;
   try {
-    const resp = await fetch('/api/contributors');
-    if(!resp.ok) throw new Error(resp.status);
-    allRows = await resp.json();
-    render(allRows);
+    const resp = await fetch(`${cfg.url}?period=${activePeriod}`);
+    if (!resp.ok) throw new Error(resp.status);
+    const data = await resp.json();
+    allRows = data.rows;
+    if (data.since){
+      document.getElementById('periodNote').textContent = 'Since ' + dateStr(data.since);
+    }
+    renderBody();
   } catch(e) {
-    document.getElementById('contribBody').innerHTML = '<tr><td colspan="8" class="empty-state">Failed to load data.</td></tr>';
-    document.getElementById('rowCount').textContent = '';
+    document.getElementById('tblBody').innerHTML = `<tr><td colspan="${cfg.colCount}" class="empty-state">Failed to load data.</td></tr>`;
+    document.getElementById('filterCount').textContent = '';
   }
 }
 

@@ -2001,51 +2001,45 @@ async def contributors_page(request: Request):
         "is_admin": True,
     })
 
-@app.get("/api/contributors")
-async def get_contributors(request: Request, user=Depends(get_current_user)):
+def _contributors_period_since(period: str):
+    """'month' = calendar month-to-date (America/New_York); '3months' (default)
+    = trailing 90 days from now. Replaces the old recency-decayed scoring,
+    which silently EXCLUDED the current in-progress month (it anchored its
+    30/60/90-day tiers to the start of the current month, not to now)."""
+    eastern = ZoneInfo("America/New_York")
+    now = datetime.now(eastern)
+    if period == "month":
+        return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return now - timedelta(days=90)
+
+@app.get("/api/contributors/points")
+async def get_contributor_points(request: Request, period: str = "3months",
+                                 user=Depends(get_current_user)):
     if int(user["id"]) not in ADMIN_USER_IDS:
         raise HTTPException(status_code=403, detail="Not authorized")
+    if period not in ("month", "3months"):
+        period = "3months"
+    since = _contributors_period_since(period)
 
     async with request.app.state.db.acquire() as conn:
         rows = await conn.fetch(
             """
-            WITH
-            cutoff_cte AS (
-                SELECT DATE_TRUNC('month', NOW() AT TIME ZONE 'America/New_York') AS cutoff
-            ),
-            restock_points AS (
+            WITH restock_points AS (
                 SELECT user_id,
-                    SUM(CASE WHEN date >= ((SELECT cutoff FROM cutoff_cte) - INTERVAL '30 days')::date AND date < (SELECT cutoff FROM cutoff_cte)::date
-                        THEN CASE WHEN store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 1 ELSE 0.5 END ELSE 0 END) +
-                    SUM(CASE WHEN date >= ((SELECT cutoff FROM cutoff_cte) - INTERVAL '60 days')::date AND date < ((SELECT cutoff FROM cutoff_cte) - INTERVAL '30 days')::date
-                        THEN CASE WHEN store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 0.8 ELSE 0.4 END ELSE 0 END) +
-                    SUM(CASE WHEN date >= ((SELECT cutoff FROM cutoff_cte) - INTERVAL '90 days')::date AND date < ((SELECT cutoff FROM cutoff_cte) - INTERVAL '60 days')::date
-                        THEN CASE WHEN store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 0.6 ELSE 0.3 END ELSE 0 END)
-                    AS restock_pts,
-                    SUM(CASE WHEN date >= ((SELECT cutoff FROM cutoff_cte) - INTERVAL '30 days')::date AND date < (SELECT cutoff FROM cutoff_cte)::date
-                        THEN CASE WHEN store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 1 ELSE 0.5 END ELSE 0 END) AS r_30,
-                    SUM(CASE WHEN date >= ((SELECT cutoff FROM cutoff_cte) - INTERVAL '60 days')::date AND date < ((SELECT cutoff FROM cutoff_cte) - INTERVAL '30 days')::date
-                        THEN CASE WHEN store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 1 ELSE 0.5 END ELSE 0 END) AS r_60,
-                    SUM(CASE WHEN date >= ((SELECT cutoff FROM cutoff_cte) - INTERVAL '90 days')::date AND date < ((SELECT cutoff FROM cutoff_cte) - INTERVAL '60 days')::date
-                        THEN CASE WHEN store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 1 ELSE 0.5 END ELSE 0 END) AS r_90
+                    SUM(CASE WHEN store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 1 ELSE 0.5 END) AS restock_pts,
+                    COUNT(*) AS restock_count
                 FROM restock_reports
-                WHERE channel_name NOT IN ('online-restock-information','other-online-restocks','pokemon-center-drops')
+                WHERE date >= $1
+                  AND channel_name NOT IN ('online-restock-information','other-online-restocks','pokemon-center-drops')
                 GROUP BY user_id
             ),
             empty_points AS (
                 SELECT user_id,
-                    SUM(CASE WHEN timestamp >= (SELECT cutoff FROM cutoff_cte) - INTERVAL '30 days' AND timestamp < (SELECT cutoff FROM cutoff_cte)
-                        THEN CASE WHEN EXTRACT(DOW FROM timestamp AT TIME ZONE 'America/New_York') IN (0,6) THEN 0.05 ELSE 0.1 END ELSE 0 END) +
-                    SUM(CASE WHEN timestamp >= (SELECT cutoff FROM cutoff_cte) - INTERVAL '60 days' AND timestamp < (SELECT cutoff FROM cutoff_cte) - INTERVAL '30 days'
-                        THEN CASE WHEN EXTRACT(DOW FROM timestamp AT TIME ZONE 'America/New_York') IN (0,6) THEN 0.05 ELSE 0.1 END ELSE 0 END) +
-                    SUM(CASE WHEN timestamp >= (SELECT cutoff FROM cutoff_cte) - INTERVAL '90 days' AND timestamp < (SELECT cutoff FROM cutoff_cte) - INTERVAL '60 days'
-                        THEN CASE WHEN EXTRACT(DOW FROM timestamp AT TIME ZONE 'America/New_York') IN (0,6) THEN 0.05 ELSE 0.1 END ELSE 0 END)
-                    AS empty_pts,
-                    SUM(CASE WHEN timestamp >= (SELECT cutoff FROM cutoff_cte) - INTERVAL '30 days' AND timestamp < (SELECT cutoff FROM cutoff_cte) THEN 1 ELSE 0 END) AS e_30,
-                    SUM(CASE WHEN timestamp >= (SELECT cutoff FROM cutoff_cte) - INTERVAL '60 days' AND timestamp < (SELECT cutoff FROM cutoff_cte) - INTERVAL '30 days' THEN 1 ELSE 0 END) AS e_60,
-                    SUM(CASE WHEN timestamp >= (SELECT cutoff FROM cutoff_cte) - INTERVAL '90 days' AND timestamp < (SELECT cutoff FROM cutoff_cte) - INTERVAL '60 days' THEN 1 ELSE 0 END) AS e_90
+                    SUM(CASE WHEN EXTRACT(DOW FROM timestamp AT TIME ZONE 'America/New_York') IN (0,6) THEN 0.05 ELSE 0.1 END) AS empty_pts,
+                    COUNT(*) AS empty_count
                 FROM command_logs
                 WHERE command_used = 'empty'
+                  AND timestamp >= $1
                   AND location NOT LIKE '%|Costco'
                   AND location NOT LIKE '%|Sam''s Club'
                   AND location NOT LIKE '%|CVS'
@@ -2053,85 +2047,223 @@ async def get_contributors(request: Request, user=Depends(get_current_user)):
                 GROUP BY user_id
             ),
             plusone_points AS (
-                SELECT receiver_id AS user_id,
-                    COALESCE(SUM(CASE WHEN timestamp >= (SELECT cutoff FROM cutoff_cte) - INTERVAL '30 days' AND timestamp < (SELECT cutoff FROM cutoff_cte) THEN value ELSE 0 END), 0) AS p_30,
-                    COALESCE(SUM(CASE WHEN timestamp >= (SELECT cutoff FROM cutoff_cte) - INTERVAL '60 days' AND timestamp < (SELECT cutoff FROM cutoff_cte) - INTERVAL '30 days' THEN value ELSE 0 END), 0) AS p_60,
-                    COALESCE(SUM(CASE WHEN timestamp >= (SELECT cutoff FROM cutoff_cte) - INTERVAL '90 days' AND timestamp < (SELECT cutoff FROM cutoff_cte) - INTERVAL '60 days' THEN value ELSE 0 END), 0) AS p_90
-                FROM plusones
-                GROUP BY receiver_id
+                SELECT receiver_id AS user_id, COALESCE(SUM(value), 0) AS plusone_pts
+                FROM plusones WHERE timestamp >= $1 GROUP BY receiver_id
             ),
             manual_points_cte AS (
-                SELECT receiver_id AS user_id,
-                    COALESCE(SUM(CASE WHEN timestamp >= (SELECT cutoff FROM cutoff_cte) - INTERVAL '30 days' AND timestamp < (SELECT cutoff FROM cutoff_cte) THEN value ELSE 0 END), 0) AS m_30,
-                    COALESCE(SUM(CASE WHEN timestamp >= (SELECT cutoff FROM cutoff_cte) - INTERVAL '60 days' AND timestamp < (SELECT cutoff FROM cutoff_cte) - INTERVAL '30 days' THEN value ELSE 0 END), 0) AS m_60,
-                    COALESCE(SUM(CASE WHEN timestamp >= (SELECT cutoff FROM cutoff_cte) - INTERVAL '90 days' AND timestamp < (SELECT cutoff FROM cutoff_cte) - INTERVAL '60 days' THEN value ELSE 0 END), 0) AS m_90
-                FROM manual_points
-                GROUP BY receiver_id
+                SELECT receiver_id AS user_id, COALESCE(SUM(value), 0) AS manual_pts
+                FROM manual_points WHERE timestamp >= $1 GROUP BY receiver_id
             ),
             hope_points AS (
-                SELECT user_id,
-                    COALESCE(SUM(CASE WHEN timestamp >= (SELECT cutoff FROM cutoff_cte) - INTERVAL '30 days' AND timestamp < (SELECT cutoff FROM cutoff_cte) THEN value ELSE 0 END), 0) AS h_30,
-                    COALESCE(SUM(CASE WHEN timestamp >= (SELECT cutoff FROM cutoff_cte) - INTERVAL '60 days' AND timestamp < (SELECT cutoff FROM cutoff_cte) - INTERVAL '30 days' THEN value ELSE 0 END), 0) AS h_60,
-                    COALESCE(SUM(CASE WHEN timestamp >= (SELECT cutoff FROM cutoff_cte) - INTERVAL '90 days' AND timestamp < (SELECT cutoff FROM cutoff_cte) - INTERVAL '60 days' THEN value ELSE 0 END), 0) AS h_90
-                FROM hope_contributions
-                GROUP BY user_id
+                SELECT user_id, COALESCE(SUM(value), 0) AS hope_pts
+                FROM hope_contributions WHERE timestamp >= $1 GROUP BY user_id
             ),
             combined AS (
                 SELECT
                     COALESCE(r.user_id, e.user_id, p.user_id, m.user_id, h.user_id) AS user_id,
                     COALESCE(r.restock_pts, 0) AS restock_pts,
+                    COALESCE(r.restock_count, 0) AS restock_count,
                     COALESCE(e.empty_pts, 0) AS empty_pts,
-                    COALESCE(p.p_30, 0) + COALESCE(p.p_60, 0) + COALESCE(p.p_90, 0) AS plusone_pts,
-                    COALESCE(m.m_30, 0) + COALESCE(m.m_60, 0) + COALESCE(m.m_90, 0) AS manual_pts,
-                    COALESCE(h.h_30, 0) + COALESCE(h.h_60, 0) + COALESCE(h.h_90, 0) AS hope_pts,
-                    COALESCE(r.restock_pts, 0) + COALESCE(e.empty_pts, 0) +
-                    COALESCE(p.p_30, 0) + COALESCE(p.p_60, 0) + COALESCE(p.p_90, 0) +
-                    COALESCE(m.m_30, 0) + COALESCE(m.m_60, 0) + COALESCE(m.m_90, 0) +
-                    COALESCE(h.h_30, 0) + COALESCE(h.h_60, 0) + COALESCE(h.h_90, 0) AS total_points,
-                    COALESCE(r.r_30, 0) AS r_30, COALESCE(r.r_60, 0) AS r_60, COALESCE(r.r_90, 0) AS r_90,
-                    COALESCE(e.e_30, 0) AS e_30, COALESCE(e.e_60, 0) AS e_60, COALESCE(e.e_90, 0) AS e_90,
-                    COALESCE(p.p_30, 0) AS p_30, COALESCE(p.p_60, 0) AS p_60, COALESCE(p.p_90, 0) AS p_90,
-                    COALESCE(m.m_30, 0) AS m_30, COALESCE(m.m_60, 0) AS m_60, COALESCE(m.m_90, 0) AS m_90,
-                    COALESCE(h.h_30, 0) AS h_30, COALESCE(h.h_60, 0) AS h_60, COALESCE(h.h_90, 0) AS h_90
+                    COALESCE(e.empty_count, 0) AS empty_count,
+                    COALESCE(p.plusone_pts, 0) AS plusone_pts,
+                    COALESCE(m.manual_pts, 0) AS manual_pts,
+                    COALESCE(h.hope_pts, 0) AS hope_pts,
+                    COALESCE(r.restock_pts, 0) + COALESCE(e.empty_pts, 0) + COALESCE(p.plusone_pts, 0)
+                        + COALESCE(m.manual_pts, 0) + COALESCE(h.hope_pts, 0) AS total_points
                 FROM restock_points r
                 FULL OUTER JOIN empty_points e ON r.user_id = e.user_id
                 FULL OUTER JOIN plusone_points p ON COALESCE(r.user_id, e.user_id) = p.user_id
                 FULL OUTER JOIN manual_points_cte m ON COALESCE(r.user_id, e.user_id, p.user_id) = m.user_id
                 FULL OUTER JOIN hope_points h ON COALESCE(r.user_id, e.user_id, p.user_id, m.user_id) = h.user_id
             )
-            SELECT c.*,
-                COALESCE(u.username, ds.username) AS username
+            SELECT c.*, COALESCE(u.username, ds.username) AS username
             FROM combined c
             LEFT JOIN users u ON u.user_id = c.user_id
             LEFT JOIN LATERAL (
                 SELECT username FROM dashboard_sessions
-                WHERE user_id = c.user_id
-                ORDER BY logged_in_at DESC
-                LIMIT 1
+                WHERE user_id = c.user_id ORDER BY logged_in_at DESC LIMIT 1
             ) ds ON true
             ORDER BY total_points DESC
-            LIMIT 100
-            """
+            LIMIT 300
+            """,
+            since
         )
 
-    return JSONResponse([
-        {
-            "user_id": str(r["user_id"]),
-            "username": r["username"] or f"User {r['user_id']}",
+    return JSONResponse({
+        "period": period,
+        "since": since.isoformat(),
+        "rows": [
+            {
+                "user_id": str(r["user_id"]),
+                "username": r["username"] or f"User {r['user_id']}",
+                "restock_pts": round(float(r["restock_pts"]), 2),
+                "restock_count": int(r["restock_count"]),
+                "empty_pts": round(float(r["empty_pts"]), 2),
+                "empty_count": int(r["empty_count"]),
+                "plusone_pts": round(float(r["plusone_pts"]), 2),
+                "manual_pts": round(float(r["manual_pts"]), 2),
+                "hope_pts": round(float(r["hope_pts"]), 2),
+                "total_points": round(float(r["total_points"]), 2),
+            }
+            for r in rows
+        ],
+    }, headers={"Cache-Control": "no-store"})
+
+@app.get("/api/contributors/invites")
+async def get_contributor_invites(request: Request, period: str = "3months",
+                                  user=Depends(get_current_user)):
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    if period not in ("month", "3months"):
+        period = "3months"
+    since = _contributors_period_since(period)
+
+    async with request.app.state.db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            WITH agg AS (
+                SELECT inviter_id,
+                    COUNT(*) FILTER (WHERE joined_at >= $1) AS invites_period,
+                    COUNT(*) AS invites_alltime,
+                    MAX(joined_at) AS last_invite_at
+                FROM member_joins
+                WHERE inviter_id IS NOT NULL AND inviter_id != 0
+                GROUP BY inviter_id
+            ),
+            names AS (
+                SELECT DISTINCT ON (inviter_id) inviter_id, inviter_name
+                FROM member_joins
+                WHERE inviter_id IS NOT NULL AND inviter_id != 0
+                ORDER BY inviter_id, joined_at DESC
+            )
+            SELECT a.inviter_id, COALESCE(n.inviter_name, 'User ' || a.inviter_id) AS inviter_name,
+                   a.invites_period, a.invites_alltime, a.last_invite_at
+            FROM agg a
+            LEFT JOIN names n ON n.inviter_id = a.inviter_id
+            ORDER BY a.invites_period DESC, a.invites_alltime DESC
+            LIMIT 300
+            """,
+            since
+        )
+
+    return JSONResponse({
+        "period": period,
+        "since": since.isoformat(),
+        "rows": [
+            {
+                "user_id": str(r["inviter_id"]),
+                "username": r["inviter_name"] or f"User {r['inviter_id']}",
+                "invites_period": int(r["invites_period"]),
+                "invites_alltime": int(r["invites_alltime"]),
+                "last_invite_at": r["last_invite_at"].isoformat() if r["last_invite_at"] else None,
+            }
+            for r in rows
+        ],
+    }, headers={"Cache-Control": "no-store"})
+
+@app.get("/api/contributors/regions")
+async def get_contributor_regions(request: Request, period: str = "3months",
+                                  user=Depends(get_current_user)):
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    if period not in ("month", "3months"):
+        period = "3months"
+    since = _contributors_period_since(period)
+
+    async with request.app.state.db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            WITH restock_by_region AS (
+                SELECT l.state AS region,
+                    SUM(CASE WHEN rr.store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 1 ELSE 0.5 END) AS restock_pts,
+                    COUNT(*) AS restock_count
+                FROM restock_reports rr
+                JOIN locations l
+                  ON LOWER(TRIM(l.location)) = LOWER(TRIM(rr.location))
+                  AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(rr.store_name))
+                WHERE rr.date >= $1
+                  AND rr.channel_name NOT IN ('online-restock-information','other-online-restocks','pokemon-center-drops')
+                GROUP BY l.state
+            ),
+            empty_by_region AS (
+                SELECT l.state AS region,
+                    SUM(CASE WHEN EXTRACT(DOW FROM cl.timestamp AT TIME ZONE 'America/New_York') IN (0,6) THEN 0.05 ELSE 0.1 END) AS empty_pts,
+                    COUNT(*) AS empty_count
+                FROM command_logs cl
+                JOIN locations l
+                  ON LOWER(TRIM(l.location)) = LOWER(TRIM(SPLIT_PART(cl.location, '|', 1)))
+                  AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(SPLIT_PART(cl.location, '|', 2)))
+                WHERE cl.command_used = 'empty'
+                  AND cl.timestamp >= $1
+                GROUP BY l.state
+            ),
+            contributors_by_region AS (
+                SELECT region, COUNT(DISTINCT uid) AS contributors
+                FROM (
+                    SELECT l.state AS region, rr.user_id AS uid
+                    FROM restock_reports rr
+                    JOIN locations l
+                      ON LOWER(TRIM(l.location)) = LOWER(TRIM(rr.location))
+                      AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(rr.store_name))
+                    WHERE rr.date >= $1
+                      AND rr.channel_name NOT IN ('online-restock-information','other-online-restocks','pokemon-center-drops')
+                    UNION ALL
+                    SELECT l.state AS region, cl.user_id AS uid
+                    FROM command_logs cl
+                    JOIN locations l
+                      ON LOWER(TRIM(l.location)) = LOWER(TRIM(SPLIT_PART(cl.location, '|', 1)))
+                      AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(SPLIT_PART(cl.location, '|', 2)))
+                    WHERE cl.command_used = 'empty' AND cl.timestamp >= $1
+                ) x
+                GROUP BY region
+            )
+            SELECT COALESCE(r.region, e.region, c.region) AS region,
+                COALESCE(r.restock_pts, 0) AS restock_pts,
+                COALESCE(r.restock_count, 0) AS restock_count,
+                COALESCE(e.empty_pts, 0) AS empty_pts,
+                COALESCE(e.empty_count, 0) AS empty_count,
+                COALESCE(c.contributors, 0) AS contributors,
+                COALESCE(r.restock_pts, 0) + COALESCE(e.empty_pts, 0) AS total_points
+            FROM restock_by_region r
+            FULL OUTER JOIN empty_by_region e ON r.region = e.region
+            FULL OUTER JOIN contributors_by_region c ON COALESCE(r.region, e.region) = c.region
+            """,
+            since
+        )
+
+    by_region = {r["region"]: r for r in rows if r["region"]}
+    out = []
+    for code in STATE_LABELS:
+        r = by_region.pop(code, None)
+        out.append({
+            "region": code,
+            "region_label": STATE_LABELS.get(code, code),
+            "restock_pts": round(float(r["restock_pts"]), 2) if r else 0,
+            "restock_count": int(r["restock_count"]) if r else 0,
+            "empty_pts": round(float(r["empty_pts"]), 2) if r else 0,
+            "empty_count": int(r["empty_count"]) if r else 0,
+            "contributors": int(r["contributors"]) if r else 0,
+            "total_points": round(float(r["total_points"]), 2) if r else 0,
+        })
+    # Any region code not in STATE_LABELS (shouldn't normally happen, but
+    # don't silently drop real data from an unmapped code).
+    for code, r in by_region.items():
+        out.append({
+            "region": code, "region_label": code,
             "restock_pts": round(float(r["restock_pts"]), 2),
-            "empty_pts":   round(float(r["empty_pts"]), 2),
-            "plusone_pts": round(float(r["plusone_pts"]), 2),
-            "manual_pts":  round(float(r["manual_pts"]), 2),
-            "hope_pts":    round(float(r["hope_pts"]), 2),
-            "total_points":round(float(r["total_points"]), 2),
-            "r_30": int(r["r_30"]), "r_60": int(r["r_60"]), "r_90": int(r["r_90"]),
-            "e_30": int(r["e_30"]), "e_60": int(r["e_60"]), "e_90": int(r["e_90"]),
-            "p_30": round(float(r["p_30"]), 2), "p_60": round(float(r["p_60"]), 2), "p_90": round(float(r["p_90"]), 2),
-            "m_30": round(float(r["m_30"]), 2), "m_60": round(float(r["m_60"]), 2), "m_90": round(float(r["m_90"]), 2),
-            "h_30": round(float(r["h_30"]), 2), "h_60": round(float(r["h_60"]), 2), "h_90": round(float(r["h_90"]), 2),
-        }
-        for r in rows
-    ])
+            "restock_count": int(r["restock_count"]),
+            "empty_pts": round(float(r["empty_pts"]), 2),
+            "empty_count": int(r["empty_count"]),
+            "contributors": int(r["contributors"]),
+            "total_points": round(float(r["total_points"]), 2),
+        })
+    out.sort(key=lambda x: x["total_points"], reverse=True)
+
+    return JSONResponse({
+        "period": period,
+        "since": since.isoformat(),
+        "rows": out,
+    }, headers={"Cache-Control": "no-store"})
 
 # ---- Map ----
 
