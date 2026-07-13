@@ -398,10 +398,22 @@ def _variant_tokens(s: str) -> set:
 
 
 def _card_set_text(c: dict) -> str:
+    """Human-readable set name for matching/display.
+
+    Per JustTCG's documented Card schema, 'set_name' is the display name
+    ("Ascended Heroes") while 'set' is the machine set-ID SLUG, not a name
+    (a prior version of this code read 'set' first, which — since it's a
+    plain string — meant every set-name comparison silently compared our
+    set name against an ID slug instead of the real name, weakening the
+    set_hit signal without ever raising an error).
+    """
+    name = c.get("set_name")
+    if isinstance(name, str) and name:
+        return name
     raw = c.get("set")
-    if isinstance(raw, str):
-        return raw
-    return str((raw or {}).get("name") or c.get("set_name") or "")
+    if isinstance(raw, dict):
+        return str(raw.get("name") or "")
+    return ""
 
 
 def match_display(card: dict) -> tuple:
@@ -511,6 +523,7 @@ async def _search_by_number(client, slug: str, name: str, set_name: str, card_nu
     hint = _variant_tokens(variant)
     set_target = (set_name or "").strip().lower()
     candidates: dict[str, dict] = {}   # keyed by identity/(name,set,number) to de-dupe
+    seen_sample: list = []  # (name, set_name, number, rarity) diagnostic sample, any card seen
     pages_used = 0
     for i, query in enumerate(_search_variants(name)):
         if i:
@@ -525,6 +538,8 @@ async def _search_by_number(client, slug: str, name: str, set_name: str, card_nu
                 break
             for c in cards:
                 cnum = str(c.get("number") or c.get("card_number") or "")
+                if len(seen_sample) < 8:
+                    seen_sample.append((c.get("name"), _card_set_text(c), cnum, c.get("rarity")))
                 if _numbers_match(card_number, cnum):
                     key = card_identity(c) or (str(c.get("name")), _card_set_text(c), cnum)
                     candidates[key] = c
@@ -535,8 +550,15 @@ async def _search_by_number(client, slug: str, name: str, set_name: str, card_nu
             break
 
     if not candidates:
+        # Diagnostic: show what numbers/sets search actually returned, so a
+        # persistent zero-match can be told apart from "set not indexed yet"
+        # vs. a real number-format mismatch, without more blind guessing.
+        same_set = [s for s in seen_sample if set_target and set_target in (s[1] or "").lower()]
         logger.info("JustTCG: no number match for %r #%s after %d page(s) — "
-                    "not guessing; will retry next ingest", name, card_number, pages_used)
+                    "not guessing; will retry next ingest. Sample of what search "
+                    "returned (name, set, number, rarity): %s%s",
+                    name, card_number, pages_used, seen_sample,
+                    f" | same-set cards seen: {same_set}" if same_set else " | NO cards from our set were seen at all — set may not be indexed by JustTCG yet")
         return None
 
     def rank(c: dict) -> tuple:
