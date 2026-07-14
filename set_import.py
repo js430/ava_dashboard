@@ -102,11 +102,36 @@ _PAREN_RE = re.compile(r"\s*\(([^)]+)\)\s*$")
 
 def _split_op_name(raw_name: str) -> tuple:
     """optcgapi names often carry the printing as a suffix, e.g.
-    'Monkey.D.Luffy (Alternate Art)'. Split it into (name, suffix)."""
-    m = _PAREN_RE.search(raw_name or "")
-    if m:
-        return raw_name[:m.start()].strip(), m.group(1).strip()
-    return (raw_name or "").strip(), ""
+    'Monkey.D.Luffy (Alternate Art)'. Split it into (name, suffix).
+
+    Some entries ALSO (or only) carry a redundant numeric position marker
+    in parens, e.g. 'Shanks (004)' for the plain print vs.
+    'Shanks (004) (Alternate Art)' for the alt-art one — verified against
+    live optcgapi data (OP-09). A purely-numeric trailing paren is noise,
+    not a print type, and is stripped (possibly repeatedly) so the base
+    name is IDENTICAL across every print of a card ('Shanks', not
+    'Shanks (004)' for some prints and 'Shanks' for others — which would
+    silently break exact-name matching between prints of the same card).
+    The real suffix, if any, is the first non-numeric trailing paren found.
+    """
+    name = (raw_name or "").strip()
+    suffix = ""
+    found_suffix = False
+    while True:
+        m = _PAREN_RE.search(name)
+        if not m:
+            break
+        group = m.group(1).strip()
+        if group.isdigit():
+            name = name[:m.start()].strip()
+            continue
+        if not found_suffix:
+            suffix = group
+            found_suffix = True
+            name = name[:m.start()].strip()
+            continue
+        break  # a second non-numeric paren further left — leave it alone
+    return name, suffix
 
 
 async def fetch_onepiece_sets(client: httpx.AsyncClient) -> list:

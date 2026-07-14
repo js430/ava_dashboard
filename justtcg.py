@@ -7,6 +7,8 @@ logs enough to tune the endpoints after the first real run. Free tier is
 1,000 calls/month — the ingest logs its call count so you can watch budget.
 """
 
+from __future__ import annotations
+
 import os
 import re
 import asyncio
@@ -397,6 +399,82 @@ def _variant_tokens(s: str) -> set:
             if len(w) >= 3 and w not in _VARIANT_STOPWORDS}
 
 
+# ── One Piece print/parallel matching ──
+# Verified against live optcgapi data (2026-07-13): card NUMBER is not a
+# reliable disambiguator for One Piece — parallel/alt-art/manga prints of
+# the same card routinely share both number AND base rarity (e.g. OP09-004
+# Shanks: base, Alternate Art, Wanted Poster, and Manga prints are ALL
+# rarity SR, ALL number OP09-004). optcgapi encodes the real distinction as
+# a parenthetical suffix on the card name ("Shanks (Wanted Poster)"), which
+# our import already captures into the stored variant field as
+# "SR (Wanted Poster)". Real suffixes seen: Alternate Art, Manga, Parallel,
+# SP, SPR, Wanted Poster, Full Art, Jolly Roger Foil, Textured Foil,
+# Reprint — Gold/Silver SP and Treasure Rare are the same convention,
+# unconfirmed live but handled the same way once tokenized.
+_OP_SUFFIX_RE = re.compile(r"\(([^)]+)\)\s*$")
+_OP_PRINT_STOPWORDS = {"the", "of", "and", "card"}
+
+
+def _op_suffix(s: str) -> str:
+    """Parenthetical suffix at the end of a name or variant string, e.g.
+    'SR (Wanted Poster)' -> 'Wanted Poster'; 'Shanks (004)' -> '004' (a
+    bare set-position number in parens, not a print type — callers should
+    check _op_print_tokens on the result, which naturally yields nothing
+    useful for pure-digit suffixes since they get tokenized as numbers, not
+    filtered out, so a bare '(004)' suffix still won't accidentally overlap
+    with real print-type tokens like 'manga' or 'wanted'). Plain 'SR' (no
+    parens) -> '' — meaning no print/parallel type, the base/regular print.
+    """
+    m = _OP_SUFFIX_RE.search((s or "").strip())
+    return m.group(1).strip() if m else ""
+
+
+def _op_print_tokens(s: str) -> set:
+    """Tokens for One Piece print/parallel matching. Lower length floor
+    than _variant_tokens (>=2, not >=3) so short-but-meaningful codes like
+    'SP' survive tokenization."""
+    return {w for w in re.findall(r"[a-z0-9]+", (s or "").lower())
+            if len(w) >= 2 and w not in _OP_PRINT_STOPWORDS}
+
+
+def _op_base_name(raw_name: str) -> str:
+    """Pure base name with ALL trailing parenthetical noise stripped —
+    both a real print-type suffix and any redundant numeric position
+    marker ('Shanks (004) (Alternate Art)' -> 'Shanks'). Mirrors
+    set_import._split_op_name's stripping so a JustTCG candidate name
+    compares correctly against our own (already-clean) stored name,
+    regardless of how many trailing parens JustTCG's naming carries."""
+    name = (raw_name or "").strip()
+    while True:
+        m = _OP_SUFFIX_RE.search(name)
+        if not m:
+            break
+        name = name[:m.start()].strip()
+    return name
+
+
+def _op_candidate_suffix(raw_name: str) -> str:
+    """Real (non-numeric) print-type suffix from a RAW JustTCG candidate
+    name, skipping past any purely-numeric trailing parens the same way
+    set_import._split_op_name does for our own import ('Shanks (004)
+    (Alternate Art)' -> 'Alternate Art', not '004'). Use this — not the
+    single-shot _op_suffix — whenever parsing a suffix out of a
+    candidate's OWN name field, since candidate names may carry the same
+    numeric noise raw optcgapi imports do. _op_suffix stays single-shot
+    because OUR stored variant string is already clean by construction
+    (built from set_import's fixed splitter)."""
+    name = (raw_name or "").strip()
+    while True:
+        m = _OP_SUFFIX_RE.search(name)
+        if not m:
+            return ""
+        group = m.group(1).strip()
+        if group.isdigit():
+            name = name[:m.start()].strip()
+            continue
+        return group
+
+
 def _card_set_text(c: dict) -> str:
     """Human-readable set name for matching/display.
 
@@ -490,19 +568,26 @@ async def search_card(client: httpx.AsyncClient, name: str, game: str,
                       variant: str = "") -> dict | None:
     """Search JustTCG for a card; returns the matched card object or None.
 
-    With a card number (the normal case — imports always have one), matching
-    is STRICT: paginate through search results hunting for the unique
-    number+name pair (format-tolerant numbers, space/punct-insensitive
-    names). Nothing less is ever accepted — a popular name can have far more
-    hits than one page, and "best effort" ranking is how wrong twins got
-    tracked. Rarity is then double-checked and logged if it disagrees.
+    Pokemon (card_number present — the normal case): STRICT number+name
+    matching, ranked by rarity/set/name (see _search_by_number). Card numbers
+    are reliably unique within a Pokemon set.
 
-    Without a number, the older heuristic (set/name ranking with variant
-    tie-break) applies. Raises BudgetExhausted when the run budget is gone.
+    One Piece: card numbers are NOT reliably unique — verified against live
+    optcgapi data, parallel/alt-art/manga prints of the same card routinely
+    share both number AND rarity (e.g. OP09-004 Shanks: base, Alternate Art,
+    Wanted Poster, and Manga prints are ALL rarity SR, ALL number OP09-004).
+    Handled by _search_onepiece instead (name + print-type token matching).
+
+    Pokemon without a number (hand-added watchlist seeds): the older
+    set/name/variant heuristic (_search_by_rank) applies.
+
+    Raises BudgetExhausted when the run budget is gone.
     """
     slug = _slug_for(game)
     if not slug:
         return None
+    if game == "one_piece":
+        return await _search_onepiece(client, slug, name, set_name, card_number, variant, budget)
     if card_number:
         return await _search_by_number(client, slug, name, set_name, card_number, variant, budget)
     return await _search_by_rank(client, slug, name, set_name, variant, budget)
@@ -635,6 +720,135 @@ async def _search_by_rank(client, slug: str, name: str, set_name: str,
                     "set/name — rejecting to avoid tracking the wrong card",
                     query, len(cards))
     return None
+
+
+# Base One Piece rarity-tier codes (verified against live optcgapi data
+# across 4 sets) — these describe the TIER, not a print/parallel type, and
+# must be excluded from print-token matching. Otherwise every candidate's
+# base rarity (e.g. "SR") gets tokenized as if it were a distinguishing
+# print-type signal, making the "we want the plain/base print" detection
+# (an empty print-token set) impossible to ever satisfy.
+_OP_BASE_RARITY_TOKENS = {"c", "uc", "r", "sr", "sec", "l", "pr"}
+
+
+def _op_candidate_print_tokens(c: dict) -> set:
+    """Union of print/parallel tokens visible ANYWHERE on a candidate card
+    object — we don't know whether JustTCG puts 'Wanted Poster' in rarity,
+    in a name suffix (mirroring optcgapi), or only in a nested variant's
+    printing field, so all three are checked. Known base-rarity codes are
+    excluded from the rarity field's contribution (see
+    _OP_BASE_RARITY_TOKENS) so a plain "SR"/"SEC"/etc. isn't mistaken for a
+    print-type signal; a rarity string that genuinely spells out a print
+    type (e.g. "Alternate Art SEC", if JustTCG ever folds it in that way)
+    still contributes its non-base tokens normally."""
+    toks = set()
+    toks |= _op_print_tokens(str(c.get("rarity") or "")) - _OP_BASE_RARITY_TOKENS
+    toks |= _op_print_tokens(_op_candidate_suffix(str(c.get("name") or "")))
+    for v in (c.get("variants") or []):
+        if isinstance(v, dict):
+            toks |= _op_print_tokens(str(v.get("printing") or ""))
+    return toks
+
+
+async def _search_onepiece(client, slug: str, name: str, set_name: str, card_number: str,
+                           variant: str, budget: CallBudget | None) -> dict | None:
+    """One Piece matching. Card numbers are NOT a reliable disambiguator
+    here (see module-level comment above _op_suffix) — the real signal is
+    the print/parallel type, which our variant field already carries as a
+    parenthetical suffix ("SR (Wanted Poster)" -> suffix "Wanted Poster").
+
+    Two passes:
+    1. Cheap bet: search for the FULL suffixed name ("Shanks (Wanted
+       Poster)") and tight-match the same full string — wins immediately if
+       JustTCG mirrors optcgapi's naming convention, no ranking needed.
+    2. Fallback: search the base name, collect every tight-name-matching
+       candidate (number is NOT required to match — it's an unreliable
+       signal here), then rank by print-token overlap (checked against
+       rarity/name-suffix/every nested variant's printing — see
+       _op_candidate_print_tokens) first, number match second, set match
+       third. A blank suffix (we want the plain/base print) prefers
+       candidates with NO print tokens of their own, so we don't silently
+       grab an Alternate Art/Manga print when the regular one was wanted.
+
+    Never accepts on bare name alone; requires a print-token, number, or set
+    signal. Raises BudgetExhausted when the run budget is gone.
+    """
+    suffix = _op_suffix(variant)
+    my_tokens = _op_print_tokens(suffix)
+    set_target = (set_name or "").strip().lower()
+
+    # ---- Pass 1: full suffixed name, cheap tight-match ----
+    if suffix:
+        full_name = f"{name} ({suffix})"
+        for i, query in enumerate(_search_variants(full_name)):
+            if i:
+                await asyncio.sleep(current_interval())
+            cards, _ = await _search_page(client, slug, query, 0, budget)
+            if not cards:
+                continue
+            for c in cards:
+                if _canon_tight(str(c.get("name") or "")) == _canon_tight(full_name):
+                    return c
+
+    # ---- Pass 2: base-name search, print-token ranking ----
+    candidates: dict[str, dict] = {}
+    pages_used = 0
+    for i, query in enumerate(_search_variants(name)):
+        if i:
+            await asyncio.sleep(current_interval())
+        offset = 0
+        while pages_used < _MAX_SEARCH_PAGES:
+            if pages_used:
+                await asyncio.sleep(current_interval())
+            cards, has_more = await _search_page(client, slug, query, offset, budget)
+            pages_used += 1
+            if not cards:
+                break
+            for c in cards:
+                cname = str(c.get("name") or "")
+                if _canon_tight(_op_base_name(cname)) == _canon_tight(name):
+                    key = card_identity(c) or (cname, _card_set_text(c),
+                                               str(c.get("number") or c.get("card_number") or ""))
+                    candidates[key] = c
+            if not has_more or pages_used >= _MAX_SEARCH_PAGES:
+                break
+            offset += len(cards)
+        if pages_used >= _MAX_SEARCH_PAGES:
+            break
+
+    if not candidates:
+        logger.info("JustTCG (OP): no name match for %r (suffix=%r) after %d page(s) — "
+                    "not guessing; will retry next ingest",
+                    name, suffix or "none", pages_used)
+        return None
+
+    def rank(c: dict) -> tuple:
+        cnum = str(c.get("number") or c.get("card_number") or "")
+        cset = _card_set_text(c).lower()
+        num_hit = bool(card_number) and _numbers_match(card_number, cnum)
+        set_hit = bool(set_target) and set_target in cset
+        ctoks = _op_candidate_print_tokens(c)
+        token_hit = bool(my_tokens & ctoks) if my_tokens else not ctoks
+        return (token_hit, num_hit, set_hit)
+
+    pool = list(candidates.values())
+    pool.sort(key=rank, reverse=True)
+    best = pool[0]
+    token_hit, num_hit, set_hit = rank(best)
+
+    if not (token_hit or num_hit or set_hit):
+        logger.info("JustTCG (OP): %d name-matching candidate(s) for %r (suffix=%r) but "
+                    "none confirmed by print-type/number/set — rejecting to avoid tracking "
+                    "the wrong print; will retry next ingest",
+                    len(pool), name, suffix or "none")
+        return None
+
+    if len(pool) > 1:
+        logger.info("JustTCG (OP): %d candidate(s) for %r (suffix=%r); picked %r/%s/#%s "
+                    "(token_hit=%s num_hit=%s set_hit=%s) — spot-check the price if unsure",
+                    len(pool), name, suffix or "none", best.get("name"), _card_set_text(best),
+                    best.get("number") or best.get("card_number"), token_hit, num_hit, set_hit)
+    return best
 
 
 async def fetch_cards_by_ids(client: httpx.AsyncClient, ids: list,
