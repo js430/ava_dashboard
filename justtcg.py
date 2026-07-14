@@ -752,32 +752,46 @@ def _op_candidate_print_tokens(c: dict) -> set:
 
 async def _search_onepiece(client, slug: str, name: str, set_name: str, card_number: str,
                            variant: str, budget: CallBudget | None) -> dict | None:
-    """One Piece matching. Card numbers are NOT a reliable disambiguator
-    here (see module-level comment above _op_suffix) — the real signal is
-    the print/parallel type, which our variant field already carries as a
-    parenthetical suffix ("SR (Wanted Poster)" -> suffix "Wanted Poster").
+    """One Piece matching, priority order Set -> Name -> Rarity (per
+    incident: a PRB02-006 Roronoa Zoro matched to an unrelated "SP" print in
+    a DIFFERENT set purely because the number happened to match — number
+    had been ranked as a peer signal alongside set, so it could outvote a
+    set mismatch. Number is no longer part of acceptance at all here; it's
+    an unreliable disambiguator for One Piece regardless (see module-level
+    comment above _op_suffix — parallel/alt-art/manga prints of the same
+    card routinely share both number AND base rarity).
+
+    SET is now a HARD GATE whenever we know it: a candidate whose set
+    doesn't match ours is rejected outright, never merely outranked. NAME
+    is already a hard requirement (every candidate collected below has
+    passed a tight base-name match). RARITY/print-type token overlap is the
+    tie-breaker among same-set candidates.
 
     Two passes:
     1. Cheap bet: search for the FULL suffixed name ("Shanks (Wanted
-       Poster)") and tight-match the same full string — wins immediately if
-       JustTCG mirrors optcgapi's naming convention, no ranking needed.
+       Poster)"), tight-match the same full string AND require set_hit (if
+       we know the set) — wins immediately if JustTCG mirrors optcgapi's
+       naming, without a full ranking pass.
     2. Fallback: search the base name, collect every tight-name-matching
-       candidate (number is NOT required to match — it's an unreliable
-       signal here), then rank by print-token overlap (checked against
-       rarity/name-suffix/every nested variant's printing — see
-       _op_candidate_print_tokens) first, number match second, set match
-       third. A blank suffix (we want the plain/base print) prefers
-       candidates with NO print tokens of their own, so we don't silently
-       grab an Alternate Art/Manga print when the regular one was wanted.
+       candidate, drop any whose set doesn't match ours (when set_name is
+       known), then rank the survivors by print-token overlap. A blank
+       suffix (base/plain print wanted) prefers candidates with no print
+       tokens of their own, so we don't silently grab an Alternate
+       Art/Manga print when the regular one was wanted.
 
-    Never accepts on bare name alone; requires a print-token, number, or set
-    signal. Raises BudgetExhausted when the run budget is gone.
+    Never accepts on bare name alone. Raises BudgetExhausted when the run
+    budget is gone.
     """
     suffix = _op_suffix(variant)
     my_tokens = _op_print_tokens(suffix)
     set_target = (set_name or "").strip().lower()
 
-    # ---- Pass 1: full suffixed name, cheap tight-match ----
+    def set_matches(c: dict) -> bool:
+        if not set_target:
+            return True  # nothing to check against — don't gate on it
+        return set_target in _card_set_text(c).lower()
+
+    # ---- Pass 1: full suffixed name, cheap tight-match (set-gated) ----
     if suffix:
         full_name = f"{name} ({suffix})"
         for i, query in enumerate(_search_variants(full_name)):
@@ -787,11 +801,13 @@ async def _search_onepiece(client, slug: str, name: str, set_name: str, card_num
             if not cards:
                 continue
             for c in cards:
-                if _canon_tight(str(c.get("name") or "")) == _canon_tight(full_name):
+                if _canon_tight(str(c.get("name") or "")) == _canon_tight(full_name) \
+                        and set_matches(c):
                     return c
 
-    # ---- Pass 2: base-name search, print-token ranking ----
+    # ---- Pass 2: base-name search, set-gated, rarity/print-token ranking ----
     candidates: dict[str, dict] = {}
+    rejected_wrong_set = 0
     pages_used = 0
     for i, query in enumerate(_search_variants(name)):
         if i:
@@ -806,10 +822,14 @@ async def _search_onepiece(client, slug: str, name: str, set_name: str, card_num
                 break
             for c in cards:
                 cname = str(c.get("name") or "")
-                if _canon_tight(_op_base_name(cname)) == _canon_tight(name):
-                    key = card_identity(c) or (cname, _card_set_text(c),
-                                               str(c.get("number") or c.get("card_number") or ""))
-                    candidates[key] = c
+                if _canon_tight(_op_base_name(cname)) != _canon_tight(name):
+                    continue
+                if not set_matches(c):
+                    rejected_wrong_set += 1
+                    continue
+                key = card_identity(c) or (cname, _card_set_text(c),
+                                           str(c.get("number") or c.get("card_number") or ""))
+                candidates[key] = c
             if not has_more or pages_used >= _MAX_SEARCH_PAGES:
                 break
             offset += len(cards)
@@ -817,37 +837,28 @@ async def _search_onepiece(client, slug: str, name: str, set_name: str, card_num
             break
 
     if not candidates:
-        logger.info("JustTCG (OP): no name match for %r (suffix=%r) after %d page(s) — "
-                    "not guessing; will retry next ingest",
-                    name, suffix or "none", pages_used)
+        set_note = (f" ({rejected_wrong_set} name match(es) rejected for wrong set)"
+                    if rejected_wrong_set else "")
+        logger.info("JustTCG (OP): no name+set match for %r (suffix=%r, set=%r) after "
+                    "%d page(s)%s — not guessing; will retry next ingest",
+                    name, suffix or "none", set_name or "unknown", pages_used, set_note)
         return None
 
     def rank(c: dict) -> tuple:
-        cnum = str(c.get("number") or c.get("card_number") or "")
-        cset = _card_set_text(c).lower()
-        num_hit = bool(card_number) and _numbers_match(card_number, cnum)
-        set_hit = bool(set_target) and set_target in cset
         ctoks = _op_candidate_print_tokens(c)
         token_hit = bool(my_tokens & ctoks) if my_tokens else not ctoks
-        return (token_hit, num_hit, set_hit)
+        return (token_hit,)
 
     pool = list(candidates.values())
     pool.sort(key=rank, reverse=True)
     best = pool[0]
-    token_hit, num_hit, set_hit = rank(best)
-
-    if not (token_hit or num_hit or set_hit):
-        logger.info("JustTCG (OP): %d name-matching candidate(s) for %r (suffix=%r) but "
-                    "none confirmed by print-type/number/set — rejecting to avoid tracking "
-                    "the wrong print; will retry next ingest",
-                    len(pool), name, suffix or "none")
-        return None
+    (token_hit,) = rank(best)
 
     if len(pool) > 1:
-        logger.info("JustTCG (OP): %d candidate(s) for %r (suffix=%r); picked %r/%s/#%s "
-                    "(token_hit=%s num_hit=%s set_hit=%s) — spot-check the price if unsure",
-                    len(pool), name, suffix or "none", best.get("name"), _card_set_text(best),
-                    best.get("number") or best.get("card_number"), token_hit, num_hit, set_hit)
+        logger.info("JustTCG (OP): %d same-set candidate(s) for %r (suffix=%r, set=%r); "
+                    "picked %r/%s/#%s (token_hit=%s) — spot-check the price if unsure",
+                    len(pool), name, suffix or "none", set_name, best.get("name"),
+                    _card_set_text(best), best.get("number") or best.get("card_number"), token_hit)
     return best
 
 
