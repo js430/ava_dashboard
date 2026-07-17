@@ -162,6 +162,10 @@ REQUIRED_ROLE_IDS        = {r.strip() for r in os.getenv("REQUIRED_ROLE_ID", "")
 DENY_ROLE_IDS            = {r.strip() for r in os.getenv("DENY_ROLE_IDS", "").split(",") if r.strip()}
 # Server-mod role(s): may preview the /sample page even as full members.
 MOD_ROLE_IDS             = {r.strip() for r in os.getenv("MOD_ROLE_IDS", "1406753334051737631").split(",") if r.strip()}
+# all_mods: role-management group. A SEPARATE, broader set used only to open the
+# invite-network page beyond admins. It is deliberately NOT MOD_ROLE_IDS — adding
+# a role here does not grant any of the mod-only pages (those stay on MOD_ROLE_IDS).
+ALL_MODS_ROLE_IDS        = {r.strip() for r in os.getenv("ALL_MODS_ROLE_IDS", "1481770294367748228,1406753334051737631").split(",") if r.strip()}
 GOOGLE_MAPS_API_KEY      = os.getenv("GOOGLE_MAPS_API_KEY", "")
 ANTHROPIC_API_KEY        = os.getenv("ANTHROPIC_API_KEY", "")
 # Reused across requests instead of constructing a client per scan.
@@ -993,6 +997,7 @@ async def callback(request: Request, code: str = None, error: str = None, state:
     }
     request.session["member"] = is_member
     request.session["mod"] = bool(MOD_ROLE_IDS & set(member_roles)) or is_admin_user
+    request.session["all_mods"] = bool(ALL_MODS_ROLE_IDS & set(member_roles)) or is_admin_user
     if is_member:
         request.session["max_position"] = _get_max_position(member_roles)
 
@@ -2375,6 +2380,19 @@ async def scan_page(request: Request):
     })
 
 
+def require_all_mods(request: Request) -> dict:
+    """Session gate for the invite-network page: admins or the all_mods
+    role-management group (ALL_MODS_ROLE_IDS flag). Like require_staff, it
+    deliberately does NOT require the premium member role — a role manager
+    without premium still gets in, but demo users do not."""
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if int(user["id"]) not in ADMIN_USER_IDS and not request.session.get("all_mods", False):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return user
+
+
 @app.get("/invite-network", response_class=HTMLResponse)
 async def invite_network_page(request: Request):
     user = request.session.get("user")
@@ -2383,7 +2401,7 @@ async def invite_network_page(request: Request):
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
     is_admin = int(user["id"]) in ADMIN_USER_IDS
-    if not is_admin:
+    if not is_admin and not request.session.get("all_mods", False):
         raise HTTPException(status_code=403, detail="Not authorized")
     return templates.TemplateResponse("invite_network.html", {
         "request": request,
@@ -2395,11 +2413,7 @@ async def invite_network_page(request: Request):
 
 
 @app.get("/api/invite-network")
-async def get_invite_network(request: Request, user=Depends(get_current_user)):
-    is_admin = int(user["id"]) in ADMIN_USER_IDS
-    if not is_admin:
-        raise HTTPException(status_code=403, detail="Not authorized")
-
+async def get_invite_network(request: Request, user=Depends(require_all_mods)):
     async with request.app.state.db.acquire() as conn:
         rows = await conn.fetch(
             """
