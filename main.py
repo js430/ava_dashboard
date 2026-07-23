@@ -30,6 +30,8 @@ from card_tracker import (ensure_card_tracker_schema, sync_watchlist, run_ingest
                           run_scoring, MAX_TRACKED_CARDS)
 import card_scoring
 import set_import
+import price_sources
+import grading_roi
 
 load_dotenv()
 
@@ -1754,6 +1756,120 @@ async def api_import_run(request: Request):
     return JSONResponse({"ok": True, "set_name": set_name, "added": added,
                          "skipped_duplicates": skipped, "total_tracked": total},
                         headers={"Cache-Control": "no-store"})
+
+# ---- Grading calculator (admin-only trial) ----
+# Standalone page, deliberately not wired into the card tracker: it works for
+# ANY card, not just the ~400 in tracked_cards, so it has no dependency on the
+# JustTCG watchlist. Vendor calls are admin-gated because they spend a paid
+# PriceCharting quota and eBay's 5,000/day default.
+
+@app.get("/grading-calculator", response_class=HTMLResponse)
+async def grading_calculator_page(request: Request):
+    user = request.session.get("user")
+    if not user:
+        return RedirectResponse("/login")
+    if not await terms_current(request, user):
+        return RedirectResponse("/terms")
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return templates.TemplateResponse("grading_calculator.html", {
+        "request": request,
+        "username": user["username"],
+        "avatar": user.get("avatar"),
+        "user_id": user["id"],
+        "is_admin": True,
+        "is_mod": request.session.get("mod", False),
+        "sources": price_sources.configured_sources(),
+        "grade_labels": price_sources.GRADE_LABELS,
+    })
+
+
+@app.get("/api/grading-calculator/quotes")
+@limiter.limit("20/minute")
+async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
+                             set_name: str = "", card_number: str = "",
+                             user=Depends(get_current_user)):
+    """Live graded prices for one card, merged across configured vendors."""
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="A card name is required")
+    if game not in ("pokemon", "one_piece"):
+        raise HTTPException(status_code=400, detail="Unknown game")
+
+    card = price_sources.CardRef(game=game, name=name[:120],
+                                 set_name=(set_name or "").strip()[:120],
+                                 card_number=(card_number or "").strip()[:40])
+    try:
+        result = await price_sources.fetch_all(card)
+    except Exception:
+        logger.exception("Graded quote lookup failed for %r", card.query())
+        raise HTTPException(status_code=502, detail="Price lookup failed")
+
+    return JSONResponse({
+        "card_key": card.key(),
+        "query": card.query(),
+        "sources_used": result["sources"],
+        "sources_configured": price_sources.configured_sources(),
+        "quotes": {g: q.to_dict() for g, q in result["quotes"].items()},
+        "all": [q.to_dict() for q in result["all"]],
+    }, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/grading-calculator/calc")
+@limiter.limit("120/minute")
+async def api_grading_calc(request: Request, user=Depends(get_current_user)):
+    """Pure ROI math — no network, no DB. Split from the quotes route so the
+    calculator stays instant and free while the user drags the odds slider."""
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    body = await request.json()
+
+    def _num(value, default=0.0):
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            return default
+        return out if math.isfinite(out) else default
+
+    raw_price = _num(body.get("raw_price"))
+    grade_prices = {g: _num(v) for g, v in (body.get("grade_prices") or {}).items()
+                    if g in price_sources.GRADE_KEYS}
+    odds = {g: _num(v) for g, v in (body.get("odds") or {}).items()
+            if g in price_sources.GRADE_KEYS}
+    c = body.get("costs") or {}
+    costs = grading_roi.Costs(
+        grading_fee=_num(c.get("grading_fee"), 25.0),
+        ship_to=_num(c.get("ship_to"), 5.0),
+        ship_return=_num(c.get("ship_return"), 5.0),
+        insurance=_num(c.get("insurance"), 2.0),
+        sale_fee_pct=min(max(_num(c.get("sale_fee_pct"), 0.13), 0.0), 0.9),
+        sale_ship=_num(c.get("sale_ship"), 5.0),
+    )
+    try:
+        r = grading_roi.evaluate(raw_price, grade_prices, odds, costs)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return JSONResponse({
+        "raw_net": round(r.raw_net, 2),
+        "ev_gross": round(r.ev_gross, 2),
+        "ev_net": round(r.ev_net, 2),
+        "delta": round(r.delta, 2),
+        "submission_total": round(costs.submission_total, 2),
+        "break_even_gem_rate": (round(r.break_even_gem_rate, 4)
+                                if r.break_even_gem_rate is not None else None),
+        "verdict": r.verdict,
+        "outcomes": [{"grade": o.grade, "label": price_sources.GRADE_LABELS.get(o.grade, o.grade),
+                      "probability": round(o.probability, 4), "price": round(o.price, 2),
+                      "net": round(o.net, 2), "contribution": round(o.contribution, 2)}
+                     for o in r.outcomes],
+        "sensitivity": [{"gem_rate": s["gem_rate"], "delta": round(s["delta"], 2)}
+                        for s in r.sensitivity],
+        "warnings": r.warnings,
+    }, headers={"Cache-Control": "no-store"})
+
 
 # ---- Analytics ----
 

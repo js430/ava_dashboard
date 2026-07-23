@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%23fff' stroke='%23111' stroke-width='2'/><path d='M2 16a14 14 0 0 1 28 0z' fill='%23ee1515'/><path d='M2 16h28' stroke='%23111' stroke-width='3'/><circle cx='16' cy='16' r='5' fill='%23fff' stroke='%23111' stroke-width='3'/></svg>">
+<script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Grading Calculator — Restock Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .header-title { font-size: 16px; font-weight: 600; color: #111; }
+  .header-sub { font-size: 12px; color: #999; margin-top: 1px; }
+  .nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; }
+  .nav a:hover { background: #f4f4f5; }
+  .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-group { position: relative; display: inline-flex; }
+  .nav-group-btn { font-family: inherit; font-size: 12px; color: #555; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+  .nav-group-btn:hover { background: #f4f4f5; }
+  .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-caret { font-size: 9px; line-height: 1; }
+  .nav-menu { display: none; position: absolute; top: calc(100% + 4px); right: 0; min-width: 150px; padding: 4px; background: #fff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.10); z-index: 400; }
+  .nav-group.open .nav-menu { display: block; }
+  .nav-menu a { display: block; padding: 6px 10px; border: none; border-radius: 5px; background: none; font-size: 12px; color: #555; text-decoration: none; white-space: nowrap; }
+  .nav-menu a:hover { background: #f4f4f5; }
+  .theme-toggle { font-size: 16px; background: #f4f4f5; border: 1px solid #ddd; border-radius: 6px; padding: 4px 8px; cursor: pointer; line-height: 1; flex-shrink: 0; }
+  .main { padding: 24px; max-width: 1100px; margin: 0 auto; }
+
+  .grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 16px; align-items: start; }
+  .card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; overflow: hidden; margin-bottom: 16px; }
+  .card-head { padding: 12px 16px; border-bottom: 1px solid #e4e4e7; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .card-title { font-size: 14px; font-weight: 600; color: #111; }
+  .card-body { padding: 14px 16px; }
+  .label { font-size: 12px; color: #888; margin-bottom: 5px; display: block; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .row > div { flex: 1; min-width: 120px; }
+  input[type=text], input[type=number], select { width: 100%; font-size: 12px; height: 30px; padding: 0 8px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #111; font-family: inherit; }
+  input:focus, select:focus { outline: 2px solid #5865F2; outline-offset: -1px; }
+  .btn { font-size: 12px; height: 30px; padding: 0 12px; border: none; border-radius: 6px; background: #5865F2; color: #fff; cursor: pointer; font-weight: 600; font-family: inherit; }
+  .btn:disabled { opacity: .6; cursor: not-allowed; }
+  .btn-plain { background: #fff; color: #333; border: 1px solid #ddd; font-weight: 400; }
+
+  table.grades { border-collapse: collapse; width: 100%; font-size: 12px; }
+  table.grades th { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: .05em; padding: 7px 8px; text-align: right; border-bottom: 1px solid #e4e4e7; }
+  table.grades th.left { text-align: left; }
+  table.grades td { padding: 5px 8px; text-align: right; border-bottom: 1px solid #f0f0f0; }
+  table.grades td.left { text-align: left; }
+  table.grades tr:last-child td { border-bottom: none; }
+  table.grades input { width: 84px; text-align: right; height: 26px; }
+  table.grades input.odds { width: 60px; }
+  .basis { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 8px; }
+  .basis-sold { background: #dcfce7; color: #166534; }
+  .basis-ask { background: #fef9c3; color: #854d0e; }
+  .basis-manual { background: #f3f4f6; color: #6b7280; }
+  .src { font-size: 11px; color: #aaa; }
+
+  .odds-wrap { display: flex; align-items: center; gap: 10px; margin: 4px 0 2px; }
+  .odds-wrap input[type=range] { flex: 1; accent-color: #5865F2; }
+  .odds-out { font-size: 15px; font-weight: 600; min-width: 46px; text-align: right; }
+  .hint { font-size: 11px; color: #aaa; margin-bottom: 12px; }
+
+  .headline { font-size: 32px; font-weight: 700; letter-spacing: -.02em; }
+  .headline.pos { color: #16a34a; }
+  .headline.neg { color: #dc2626; }
+  .verdict { display: inline-block; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 10px; margin-left: 8px; vertical-align: 4px; }
+  .v-grade { background: #dcfce7; color: #166534; }
+  .v-marginal { background: #fef9c3; color: #854d0e; }
+  .v-sell_raw { background: #fee2e2; color: #991b1b; }
+  .sub { font-size: 12px; color: #888; }
+  .block { border-top: 1px solid #f0f0f0; padding-top: 12px; margin-top: 12px; }
+  .be-num { font-size: 22px; font-weight: 700; }
+  .be-bar { height: 7px; background: #f0f0f0; border-radius: 4px; margin: 8px 0 6px; position: relative; overflow: hidden; }
+  .be-fill { position: absolute; left: 0; top: 0; bottom: 0; background: #5865F2; }
+  .sens { display: flex; gap: 6px; align-items: flex-end; height: 74px; }
+  .sens-col { flex: 1; text-align: center; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
+  .sens-bar { border-radius: 3px 3px 0 0; min-height: 2px; }
+  .sens-lab { font-size: 11px; color: #aaa; margin-top: 4px; }
+  .sens-val { font-size: 11px; color: #888; margin-bottom: 3px; }
+  .warn { font-size: 12px; color: #9a3412; background: #ffedd5; border-radius: 8px; padding: 7px 10px; margin-top: 10px; line-height: 1.5; }
+  .note { font-size: 11px; color: #999; line-height: 1.6; margin-top: 12px; border-top: 1px solid #f0f0f0; padding-top: 10px; }
+  .status { font-size: 12px; color: #999; margin-left: auto; }
+  .srcbar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .srcchip { font-size: 11px; padding: 2px 8px; border-radius: 8px; background: #f3f4f6; color: #6b7280; }
+  .srcchip.on { background: #dcfce7; color: #166534; }
+  .srcchip.off { background: #fee2e2; color: #991b1b; }
+
+  @media (max-width: 860px) {
+    .grid { grid-template-columns: 1fr; }
+    .main { padding: 12px; }
+    .nav-menu { left: 0; right: auto; }
+  }
+
+  html[data-theme="dark"] { color-scheme: dark; }
+  html[data-theme="dark"] body { background: #111113; color: #f0f0f0; }
+  html[data-theme="dark"] .header { background: #1c1c1f; border-bottom-color: #303033; }
+  html[data-theme="dark"] .header-title { color: #f0f0f0; }
+  html[data-theme="dark"] .nav a, html[data-theme="dark"] .nav-group-btn { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .nav a:hover, html[data-theme="dark"] .nav-group-btn:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .nav-menu { background: #1c1c1f; border-color: #383838; box-shadow: 0 6px 20px rgba(0,0,0,.45); }
+  html[data-theme="dark"] .nav-menu a { color: #bbbbc5; }
+  html[data-theme="dark"] .nav-menu a:hover { background: #2e2e32; }
+  html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
+  html[data-theme="dark"] .card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .card-head { border-bottom-color: #303033; }
+  html[data-theme="dark"] .card-title { color: #f0f0f0; }
+  html[data-theme="dark"] input[type=text], html[data-theme="dark"] input[type=number], html[data-theme="dark"] select { background: #252528; border-color: #383838; color: #f0f0f0; }
+  html[data-theme="dark"] .btn-plain { background: #252528; border-color: #383838; color: #e0e0e0; }
+  html[data-theme="dark"] table.grades th { border-bottom-color: #303033; }
+  html[data-theme="dark"] table.grades td { border-bottom-color: #242427; }
+  html[data-theme="dark"] .block, html[data-theme="dark"] .note { border-top-color: #303033; }
+  html[data-theme="dark"] .be-bar { background: #2a2a2d; }
+  html[data-theme="dark"] .srcchip { background: #252528; color: #bbbbc5; }
+  html[data-theme="dark"] .basis-manual { background: #2a2a2d; color: #bbbbc5; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="header-title">Grading Calculator</div>
+    <div class="header-sub">Is it worth grading? &mdash; admin only, trial</div>
+  </div>
+  <div class="nav">
+    <a href="/">Dashboard</a>
+    <a href="/map">Map</a>
+    <a href="/scan">Scan</a>
+    <a href="/card-tracker">Tracker</a>
+    <div class="nav-group">
+      <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        <a href="/admin">Visitor Log</a>
+        <a href="/contributors">Contributors</a>
+        <a href="/invite-network">Network</a>
+        <a href="/raffle-wheel">Raffle</a>
+      </div>
+    </div>
+    <a href="/grading-calculator" class="active">Grading</a>
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">&#127769;</button>
+    <a href="/logout">Log out</a>
+  </div>
+</div>
+
+<div class="main">
+  <div class="srcbar">
+    <span class="srcchip {% if sources.pricecharting %}on{% else %}off{% endif %}">
+      PriceCharting {% if sources.pricecharting %}connected{% else %}no API token set{% endif %}
+    </span>
+    <span class="srcchip {% if sources.ebay_browse %}on{% else %}off{% endif %}">
+      eBay {% if sources.ebay_browse %}connected{% else %}no API keys set{% endif %}
+    </span>
+    <span class="srcchip">eBay prices are asking prices, not sales</span>
+  </div>
+
+  <div class="grid">
+    <div>
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Card</span>
+          <span class="status" id="lookupStatus"></span>
+        </div>
+        <div class="card-body">
+          <div class="row">
+            <div style="flex:0 0 120px">
+              <label class="label" for="game">Game</label>
+              <select id="game">
+                <option value="pokemon">Pok&eacute;mon</option>
+                <option value="one_piece">One Piece</option>
+              </select>
+            </div>
+            <div style="flex:2">
+              <label class="label" for="cardName">Card name</label>
+              <input type="text" id="cardName" placeholder="Umbreon VMAX">
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label class="label" for="setName">Set</label>
+              <input type="text" id="setName" placeholder="Evolving Skies">
+            </div>
+            <div style="flex:0 0 130px">
+              <label class="label" for="cardNumber">Number</label>
+              <input type="text" id="cardNumber" placeholder="215/203">
+            </div>
+            <div style="flex:0 0 auto; display:flex; align-items:flex-end">
+              <button class="btn" id="lookupBtn" onclick="lookup()">Look up prices</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Prices and odds</span>
+          <span class="status">Edit any number to override</span>
+        </div>
+        <div class="card-body">
+          <table class="grades">
+            <thead>
+              <tr>
+                <th class="left">Grade</th>
+                <th>Price</th>
+                <th>Where from</th>
+                <th>Odds</th>
+              </tr>
+            </thead>
+            <tbody id="gradeRows"></tbody>
+          </table>
+
+          <div class="block">
+            <label class="label" for="gem">Odds it comes back a PSA 10</label>
+            <div class="odds-wrap">
+              <input type="range" id="gem" min="0" max="100" step="1" value="30" oninput="onGem()">
+              <span class="odds-out" id="gemOut">30%</span>
+            </div>
+            <div class="hint">Moving this rebalances the other grades proportionally. Nobody knows this number &mdash; that's why you set it yourself.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><span class="card-title">Your costs</span></div>
+        <div class="card-body">
+          <div class="row">
+            <div><label class="label" for="gradingFee">Grading tier ($)</label><input type="number" id="gradingFee" value="25" min="0" step="1"></div>
+            <div><label class="label" for="shipTo">Ship to grader ($)</label><input type="number" id="shipTo" value="5" min="0" step="1"></div>
+            <div><label class="label" for="shipReturn">Return ship ($)</label><input type="number" id="shipReturn" value="5" min="0" step="1"></div>
+          </div>
+          <div class="row">
+            <div><label class="label" for="insurance">Insurance ($)</label><input type="number" id="insurance" value="2" min="0" step="1"></div>
+            <div><label class="label" for="saleFee">Sale fee (%)</label><input type="number" id="saleFee" value="13" min="0" max="90" step="0.5"></div>
+            <div><label class="label" for="saleShip">Ship to buyer ($)</label><input type="number" id="saleShip" value="5" min="0" step="1"></div>
+          </div>
+          <div class="hint">PSA and CGC change their tier pricing regularly &mdash; check the current rate rather than trusting the default.</div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <div class="card-head"><span class="card-title">Result</span></div>
+        <div class="card-body">
+          <div class="sub">Compared with selling it raw today</div>
+          <div style="margin:3px 0 2px">
+            <span class="headline" id="delta">&mdash;</span>
+            <span class="verdict" id="verdict" style="display:none"></span>
+          </div>
+          <div class="sub" id="deltaSub">Enter a card and prices to start.</div>
+
+          <div class="block">
+            <div class="label" style="margin-bottom:3px">Break-even gem rate</div>
+            <div class="be-num" id="beNum">&mdash;</div>
+            <div class="be-bar"><div class="be-fill" id="beFill" style="width:0%"></div></div>
+            <div class="sub" id="beText">&nbsp;</div>
+          </div>
+
+          <div class="block">
+            <div class="label" style="margin-bottom:8px">If your real gem rate is&hellip;</div>
+            <div class="sens" id="sens"></div>
+          </div>
+
+          <div class="block">
+            <div class="label" style="margin-bottom:6px">Where the money goes</div>
+            <table class="grades">
+              <tbody id="breakdown"></tbody>
+            </table>
+          </div>
+
+          <div id="warnings"></div>
+
+          <div class="note">
+            This is an estimate, not a guarantee. It assumes you can actually sell at the
+            prices shown, that your card grades the way you guessed, and that the fees above
+            are current. Grading is a bet &mdash; treat the number as one opinion, not a plan.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const GRADES = ['raw','psa_8','psa_9','psa_10','bgs_9_5','bgs_10','cgc_10'];
+const LABELS = {{ grade_labels | tojson }};
+// Grades that participate in the outcome distribution. `raw` is the baseline
+// you're compared against, so it never gets odds.
+const OUTCOME_GRADES = ['psa_10','psa_9','psa_8'];
+// Default split of the non-10 remainder between a 9 and an 8-or-below.
+const NON_GEM_SPLIT = { psa_9: 0.78, psa_8: 0.22 };
+
+let quotes = {};
+let calcTimer = null;
+
+function money(v){
+  const sign = v < 0 ? '-' : '';
+  return sign + '$' + Math.abs(v).toLocaleString('en-US', {maximumFractionDigits: 0});
+}
+
+function buildRows(){
+  const tbody = document.getElementById('gradeRows');
+  tbody.innerHTML = GRADES.map(g => {
+    const q = quotes[g];
+    const price = q ? q.price : '';
+    const basis = q ? q.basis : null;
+    const badge = basis
+      ? `<span class="basis basis-${basis}">${basis}</span>`
+      : '<span class="src">&mdash;</span>';
+    const src = q ? `<div class="src">${q.source.replace('_',' ')}${q.sample_size ? ' &middot; ' + q.sample_size : ''}</div>` : '';
+    const oddsCell = OUTCOME_GRADES.includes(g)
+      ? `<input class="odds" type="number" id="odds_${g}" min="0" max="100" step="1" value="${defaultOdds(g)}" oninput="onOddsEdit()">`
+      : '<span class="src">&mdash;</span>';
+    return `<tr>
+      <td class="left">${LABELS[g] || g}</td>
+      <td><input type="number" id="price_${g}" min="0" step="1" value="${price}" oninput="scheduleCalc()"></td>
+      <td>${badge}${src}</td>
+      <td>${oddsCell}</td>
+    </tr>`;
+  }).join('');
+}
+
+function defaultOdds(g){
+  const gem = +document.getElementById('gem').value / 100;
+  if (g === 'psa_10') return Math.round(gem * 100);
+  return Math.round((1 - gem) * NON_GEM_SPLIT[g] * 100);
+}
+
+function onGem(){
+  const gem = +document.getElementById('gem').value;
+  document.getElementById('gemOut').textContent = gem + '%';
+  OUTCOME_GRADES.forEach(g => {
+    const el = document.getElementById('odds_' + g);
+    if (el) el.value = defaultOdds(g);
+  });
+  scheduleCalc();
+}
+
+function onOddsEdit(){
+  // Hand-edited odds win — keep the slider in sync with the PSA 10 field so
+  // the two controls never disagree on screen.
+  const el = document.getElementById('odds_psa_10');
+  if (el){
+    const v = Math.min(100, Math.max(0, +el.value || 0));
+    document.getElementById('gem').value = v;
+    document.getElementById('gemOut').textContent = v + '%';
+  }
+  scheduleCalc();
+}
+
+async function lookup(){
+  const name = document.getElementById('cardName').value.trim();
+  const status = document.getElementById('lookupStatus');
+  const btn = document.getElementById('lookupBtn');
+  if (!name){ status.textContent = 'Enter a card name first.'; return; }
+  btn.disabled = true;
+  status.textContent = 'Looking up…';
+  try {
+    const params = new URLSearchParams({
+      name: name,
+      game: document.getElementById('game').value,
+      set_name: document.getElementById('setName').value.trim(),
+      card_number: document.getElementById('cardNumber').value.trim()
+    });
+    const resp = await fetch('/api/grading-calculator/quotes?' + params);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const d = await resp.json();
+    quotes = d.quotes || {};
+    buildRows();
+    const found = Object.keys(quotes).length;
+    status.textContent = found
+      ? `${found} price(s) from ${d.sources_used.join(', ') || 'no source'}`
+      : 'No prices found — enter them by hand below.';
+    scheduleCalc();
+  } catch(e){
+    status.textContent = 'Lookup failed. Enter prices by hand below.';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function scheduleCalc(){
+  clearTimeout(calcTimer);
+  calcTimer = setTimeout(calc, 180);
+}
+
+async function calc(){
+  const gradePrices = {}, odds = {};
+  GRADES.forEach(g => {
+    const el = document.getElementById('price_' + g);
+    if (el && el.value !== '') gradePrices[g] = +el.value;
+  });
+  OUTCOME_GRADES.forEach(g => {
+    const el = document.getElementById('odds_' + g);
+    if (el && el.value !== '') odds[g] = (+el.value) / 100;
+  });
+  if (!Object.values(odds).some(v => v > 0)) return;
+
+  const body = {
+    raw_price: gradePrices.raw || 0,
+    grade_prices: gradePrices,
+    odds: odds,
+    costs: {
+      grading_fee: +document.getElementById('gradingFee').value || 0,
+      ship_to: +document.getElementById('shipTo').value || 0,
+      ship_return: +document.getElementById('shipReturn').value || 0,
+      insurance: +document.getElementById('insurance').value || 0,
+      sale_fee_pct: (+document.getElementById('saleFee').value || 0) / 100,
+      sale_ship: +document.getElementById('saleShip').value || 0
+    }
+  };
+  try {
+    const resp = await fetch('/api/grading-calculator/calc', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) return;
+    render(await resp.json());
+  } catch(e){}
+}
+
+function render(d){
+  const deltaEl = document.getElementById('delta');
+  deltaEl.textContent = (d.delta >= 0 ? '+' : '') + money(d.delta);
+  deltaEl.className = 'headline ' + (d.delta >= 0 ? 'pos' : 'neg');
+
+  const v = document.getElementById('verdict');
+  v.style.display = 'inline-block';
+  v.className = 'verdict v-' + d.verdict;
+  v.textContent = { grade: 'Worth grading', marginal: 'Too close to call', sell_raw: 'Sell it raw' }[d.verdict];
+
+  document.getElementById('deltaSub').textContent =
+    `Graded nets ${money(d.ev_net)} on average · raw nets ${money(d.raw_net)} · ${money(d.submission_total)} to submit`;
+
+  const be = d.break_even_gem_rate;
+  const beNum = document.getElementById('beNum');
+  const beFill = document.getElementById('beFill');
+  const beText = document.getElementById('beText');
+  if (be === null){
+    beNum.textContent = 'n/a';
+    beFill.style.width = '0%';
+    beText.textContent = 'A PSA 9 already beats selling raw here, so there is no gem rate you need to hit.';
+  } else {
+    beNum.textContent = Math.round(be * 100) + '%';
+    beFill.style.width = Math.min(100, be * 100) + '%';
+    const oneIn = Math.max(1, Math.round(1 / be));
+    const yours = +document.getElementById('gem').value / 100;
+    beText.textContent = `Roughly 1 in ${oneIn} needs to come back a 10 just to cover costs. `
+      + (yours >= be ? 'You set a higher rate than that, so there is room.'
+                     : 'You set a lower rate than that, so this loses money on average.');
+  }
+
+  const sens = document.getElementById('sens');
+  if (!d.sensitivity.length){
+    sens.innerHTML = '<div class="sub">Needs both a PSA 9 and a PSA 10 price.</div>';
+  } else {
+    const max = Math.max(...d.sensitivity.map(s => Math.abs(s.delta)), 1);
+    sens.innerHTML = d.sensitivity.map(s => {
+      const h = Math.max(2, Math.round(Math.abs(s.delta) / max * 42));
+      const colour = s.delta >= 0 ? '#16a34a' : '#dc2626';
+      return `<div class="sens-col">
+        <div class="sens-val">${(s.delta >= 0 ? '+' : '') + money(s.delta)}</div>
+        <div class="sens-bar" style="height:${h}px;background:${colour}"></div>
+        <div class="sens-lab">${Math.round(s.gem_rate * 100)}%</div>
+      </div>`;
+    }).join('');
+  }
+
+  document.getElementById('breakdown').innerHTML = d.outcomes.map(o =>
+    `<tr>
+      <td class="left">${o.label} <span class="src">${Math.round(o.probability * 100)}%</span></td>
+      <td>${money(o.price)}</td>
+      <td>nets ${money(o.net)}</td>
+      <td>${money(o.contribution)}</td>
+    </tr>`).join('');
+
+  document.getElementById('warnings').innerHTML = d.warnings.length
+    ? '<div class="warn">' + d.warnings.join('<br>') + '</div>' : '';
+}
+
+['gradingFee','shipTo','shipReturn','insurance','saleFee','saleShip']
+  .forEach(id => document.getElementById(id).addEventListener('input', scheduleCalc));
+
+buildRows();
+
+(function(){
+  var btn = document.getElementById('themeToggle');
+  function upd(){
+    if (!btn) return;
+    var d = document.documentElement.getAttribute('data-theme') === 'dark';
+    btn.textContent = d ? '☀️' : '🌙';
+    btn.title = d ? 'Light mode' : 'Dark mode';
+  }
+  window.toggleTheme = function(){
+    var d = document.documentElement.getAttribute('data-theme') === 'dark';
+    var n = d ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', n);
+    localStorage.setItem('theme', n);
+    upd();
+  };
+  upd();
+})();
+
+function closeNavGroups(){
+  document.querySelectorAll('.nav-group.open').forEach(function(g){
+    g.classList.remove('open');
+    var b = g.querySelector('.nav-group-btn');
+    if (b) b.setAttribute('aria-expanded', 'false');
+  });
+}
+function toggleNavGroup(ev){
+  ev.preventDefault();
+  ev.stopPropagation();
+  var btn = ev.currentTarget, grp = btn.parentElement, wasOpen = grp.classList.contains('open');
+  closeNavGroups();
+  if (!wasOpen){ grp.classList.add('open'); btn.setAttribute('aria-expanded', 'true'); }
+}
+document.addEventListener('click', closeNavGroups);
+document.addEventListener('keydown', function(ev){ if (ev.key === 'Escape') closeNavGroups(); });
+</script>
+</body>
+</html>
