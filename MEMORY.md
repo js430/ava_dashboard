@@ -41,10 +41,56 @@ push the 150px panel off-screen left.
 
 ---
 
-## 2026-07-23 — Card tracker: detail panel above the table, 7/14/30-day graph range
+## 2026-07-23 — Card tracker: detail panel above the table, 7/14/30/90-day graph range
 
 **Decided:** The card detail panel moved above the main table (was below), and
-the price graph got a 7/14/30-day range toggle defaulting to 30.
+the price graph got a 7/14/30/90-day range toggle defaulting to 30.
+
+**90 days is pursued two ways, on the assumption neither is reliable alone.**
+
+*Ask the source for more.* JustTCG's `priceHistoryDuration` accepts
+7d/30d/90d/180d/1y and **defaults to 7d** — so a request that fails to carry the
+parameter silently returns a week, which is what we were seeing. Fixed in
+`justtcg.py`: duration is now `HISTORY_DURATION` (env `JUSTTCG_HISTORY_DURATION`,
+default `90d`) and history is requested **three ways at once** —
+`priceHistoryDuration` and `include_price_history` on the query string, plus
+`include_price_history: true` on each batch body item (the field their SDK
+documents on `BatchLookupItem`). The query string alone appears to be ignored on
+the batch POST. Unverified against a live key — `_log_history_depth()` logs the
+returned point count every run precisely so a regression to ~7 is visible
+instead of silent.
+
+*Accumulate regardless.* **Nothing has ever deleted snapshots** — the only
+`DELETE FROM price_snapshots` statements are the two admin buttons — so each
+nightly ingest adds a day and the window fills in over ~3 months even if the
+source only ever hands back a week. Deliberately did NOT add a retention/prune
+job; rows older than 90 days are kept.
+
+**Backfill now runs every ingest, not just on a card's first fetch.** It inserts
+only calendar days (UTC) the card doesn't already have, so it is idempotent
+without a unique index on (card_id, day) — and it self-heals two things the old
+first-fetch-only version could not: nights the scheduler didn't fire, and cards
+permanently stuck on a 7-day history from before this fix. Costs no extra API
+calls (same requests, bigger payload). Rejected adding a unique constraint:
+existing rows may already contain same-day duplicates from manual refreshes, so
+the migration could fail on live data.
+
+**Graph collapses to one point per calendar day** (`dailySeries`). A manual
+"Refresh prices" can add several snapshots to a day on top of the scheduled
+nightly one, which would otherwise show as a jagged multi-point day. Last
+snapshot of a day wins.
+
+**Range windows step by calendar days, not `n * 86400000`.** A fixed 24h step
+drops a point from the window across a DST change — caught by a test, fixed with
+`setDate()`. Same trap applies to any future date-window code here.
+
+**Gaps are surfaced, not hidden.** The note under the graph counts days in the
+span with no price ("5 days in that stretch have no price yet") so a nightly
+ingest that stopped landing is visible instead of looking like a smooth line.
+The scheduler is an in-process asyncio loop (`main.py`), so a Railway restart
+near 11pm silently skips that day. No startup catch-up was added on purpose —
+Railway redeploys on every push and each catch-up would spend JustTCG's 100/day
+free-tier budget.
 
 **Range filtering is client-side.** `/api/card-tracker/history` already returns
 every snapshot for a card in one response, so switching range trims the array

@@ -216,12 +216,13 @@
           <button id="range7" onclick="setChartRange(7)">7 days</button>
           <button id="range14" onclick="setChartRange(14)">14 days</button>
           <button id="range30" class="active" onclick="setChartRange(30)">30 days</button>
+          <button id="range90" onclick="setChartRange(90)">90 days</button>
         </div>
       </div>
       {% if is_admin %}
       <div style="margin-top:8px;">
         <button class="refresh-btn" id="rematchBtn" style="background:#dc2626;height:26px;font-size:12px;padding:0 10px;" onclick="rematchCard()">Re-match card (clears its price history)</button>
-        <button class="refresh-btn" id="resetHistoryBtn" style="background:#d97706;height:26px;font-size:12px;padding:0 10px;margin-left:6px;" onclick="resetHistory()" title="Keeps the current JustTCG match, just clears snapshots so the next refresh re-requests the 30-day history backfill">Re-fetch 30d history</button>
+        <button class="refresh-btn" id="resetHistoryBtn" style="background:#d97706;height:26px;font-size:12px;padding:0 10px;margin-left:6px;" onclick="resetHistory()" title="Only needed to force a full re-pull — the nightly refresh now fills in missing days on its own. Keeps the current JustTCG match and clears this card's snapshots so the next refresh re-requests the full history.">Re-fetch full history</button>
         <span class="detail-sub" id="rematchNote" style="margin-left:8px;"></span>
       </div>
       {% endif %}
@@ -230,7 +231,7 @@
       <div class="chart-wrap"><canvas id="priceChart"></canvas></div>
       <div class="chart-note" id="chartNote"></div>
       <div class="why-grid" id="whyGrid"></div>
-      <div class="why-note">Score = 100 × (0.35·momentum7 + 0.25·momentum30 + 0.40·age bonus) × liquidity multiplier. Momentum saturates at ±30%; the age bonus peaks ~240 days after release; liquidity scales the total between 0.5× and 1×. Knobs live in <code>card_scoring.py</code>.<br><br>The score and the numbers below always use the full price history, no matter which range the graph is showing.<br><br>If 7D and 30D show the same number, this card likely only has 1-2 price snapshots (e.g. from before the 30-day history backfill existed) — both windows fall back to the same single baseline price. Use "Re-fetch 30d history" above to fix it for this card, or "Re-fetch history (all)" in the table toolbar for every card.</div>
+      <div class="why-note">Score = 100 × (0.35·momentum7 + 0.25·momentum30 + 0.40·age bonus) × liquidity multiplier. Momentum saturates at ±30%; the age bonus peaks ~240 days after release; liquidity scales the total between 0.5× and 1×. Knobs live in <code>card_scoring.py</code>.<br><br>The score and the numbers below always use the full price history, no matter which range the graph is showing.<br><br>Every nightly refresh adds one more day and nothing is ever thrown away, so the 90-day view keeps filling in over time even when the price source only hands back a week of history. A card added today starts with whatever history the source gives it and builds from there.<br><br>If 7D and 30D show the same number, this card only has one or two prices so far, so both windows fall back to the same baseline. That usually sorts itself out after the next nightly refresh, now that missing days get filled in automatically.</div>
     </div>
   </div>
 
@@ -239,7 +240,7 @@
       <span class="table-header-title">Ranked by potential</span>
       <button class="clear-filters-btn" onclick="clearFilters()">Clear filters</button>
       <span class="filter-count" id="filterCount"></span>
-      {% if is_admin %}<button class="refresh-btn" id="resetAllHistoryBtn" style="background:#d97706" onclick="resetAllHistory()" title="Keeps all JustTCG matches, just clears every card's price history so the next Refresh re-backfills 30 days for everyone">Re-fetch history (all)</button>{% endif %}
+      {% if is_admin %}<button class="refresh-btn" id="resetAllHistoryBtn" style="background:#d97706" onclick="resetAllHistory()" title="Rarely needed now — the nightly refresh backfills missing days automatically. Keeps all JustTCG matches and clears every card's price history so the next Refresh re-pulls the full window for everyone.">Re-fetch history (all)</button>{% endif %}
       {% if is_admin %}<button class="refresh-btn" id="refreshBtn" onclick="refreshData()">Refresh prices</button>{% endif %}
       <span class="refresh-note" id="refreshNote"></span>
     </div>
@@ -486,24 +487,47 @@ function buildStats(){
 }
 
 // The graph range only trims what's already been fetched — switching between
-// 7/14/30 days never costs another request.
+// 7/14/30/90 days never costs another request.
+const CHART_RANGES = [7, 14, 30, 90];
+
 function setChartRange(days){
   chartRange = days;
-  [7, 14, 30].forEach(d => {
+  CHART_RANGES.forEach(d => {
     const btn = document.getElementById('range' + d);
     if (btn) btn.classList.toggle('active', d === days);
   });
   if (chartSnapshots.length) renderChart();
 }
 
+// Midnight of a snapshot's day, so points taken at different times of day
+// (the 11pm ingest vs backfilled rows stamped noon UTC) still compare cleanly.
+function dayStart(snapshot){
+  const d = new Date(snapshot.captured_at);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+// Collapse to one point per calendar day. A manual "Refresh prices" can add
+// several snapshots to the same day on top of the scheduled nightly one; the
+// graph should read as a clean daily line no matter how often it was run.
+// Snapshots arrive oldest-first, so the last write per day is the latest price.
+function dailySeries(snaps){
+  const byDay = new Map();
+  snaps.forEach(s => byDay.set(dayStart(s), s));
+  return Array.from(byDay.values());
+}
+
 // Anchored to the newest snapshot rather than "now" so a card whose prices
 // haven't updated in a while still draws something instead of an empty graph.
 function snapshotsInRange(){
-  if (!chartSnapshots.length) return [];
-  const newest = new Date(chartSnapshots[chartSnapshots.length - 1].captured_at).getTime();
-  const cutoff = newest - (chartRange - 1) * 86400000;
-  const kept = chartSnapshots.filter(s => new Date(s.captured_at).getTime() >= cutoff);
-  return kept.length ? kept : chartSnapshots.slice(-1);
+  const daily = dailySeries(chartSnapshots);
+  if (!daily.length) return [];
+  // Step back by calendar days, not by a fixed 24h — the clocks change twice a
+  // year and a 23-hour day would otherwise silently drop a point from the window.
+  const cutoff = new Date(dayStart(daily[daily.length - 1]));
+  cutoff.setDate(cutoff.getDate() - (chartRange - 1));
+  const kept = daily.filter(s => dayStart(s) >= cutoff.getTime());
+  return kept.length ? kept : daily.slice(-1);
 }
 
 function renderChart(){
@@ -520,7 +544,7 @@ function renderChart(){
   chart = new Chart(document.getElementById('priceChart'), {
     type: 'line',
     data: { labels, datasets: [
-      { label: 'Mid', data: mids, borderColor: '#5865F2', backgroundColor: 'rgba(88,101,242,0.08)', fill: true, tension: 0.25, pointRadius: 2, borderWidth: 2 },
+      { label: 'Mid', data: mids, borderColor: '#5865F2', backgroundColor: 'rgba(88,101,242,0.08)', fill: true, tension: 0.25, pointRadius: snaps.length > 45 ? 0 : 2, borderWidth: 2 },
       { label: 'Low', data: lows, borderColor: 'rgba(34,197,94,0.6)', borderDash: [4,3], pointRadius: 0, borderWidth: 1, fill: false },
       { label: 'High', data: highs, borderColor: 'rgba(239,68,68,0.55)', borderDash: [4,3], pointRadius: 0, borderWidth: 1, fill: false },
     ]},
@@ -538,16 +562,25 @@ function renderChart(){
   const note = document.getElementById('chartNote');
   if (!note) return;
   if (!snaps.length){
-    note.textContent = 'No price history yet for this card.';
-  } else if (snaps.length < 2){
-    note.textContent = 'Only one price so far — the line fills in as more daily prices come in.';
-  } else {
-    const spanDays = Math.round(
-      (new Date(snaps[snaps.length - 1].captured_at) - new Date(snaps[0].captured_at)) / 86400000) + 1;
-    note.textContent = spanDays < chartRange
-      ? `Showing all ${snaps.length} prices — only about ${spanDays} day${spanDays === 1 ? '' : 's'} of history so far, less than the ${chartRange} days picked.`
-      : `Showing the last ${chartRange} days — ${snaps.length} price${snaps.length === 1 ? '' : 's'}.`;
+    note.textContent = 'No prices yet for this card.';
+    return;
   }
+  if (snaps.length < 2){
+    note.textContent = 'Only one day of prices so far — the line fills in as the nightly refresh runs.';
+    return;
+  }
+  const days = d => d === 1 ? '1 day' : d + ' days';
+  const spanDays = Math.round((dayStart(snaps[snaps.length - 1]) - dayStart(snaps[0])) / 86400000) + 1;
+  const missing = spanDays - snaps.length;
+  const parts = [`Showing ${snaps.length} daily price${snaps.length === 1 ? '' : 's'} across ${days(spanDays)}.`];
+  if (spanDays < chartRange){
+    parts.push(`That's every price we have, less than the ${days(chartRange)} picked — `
+             + 'history grows by a day with each nightly refresh.');
+  }
+  if (missing > 0){
+    parts.push(`${days(missing)} in that stretch ${missing === 1 ? 'has' : 'have'} no price yet.`);
+  }
+  note.textContent = parts.join(' ');
 }
 
 async function showDetail(id){
@@ -621,7 +654,7 @@ async function resetHistory(){
   if (!selectedId) return;
   const row = allRows.find(r => r.id === selectedId);
   const label = row ? row.name : 'this card';
-  if (!confirm(`Re-fetch 30-day history for "${label}"?\n\nKeeps the current JustTCG match, just deletes its price snapshots/scores so the next Refresh treats it as a first-time fetch and re-requests the 30-day priceHistory backfill. Use this when 7D and 30D momentum show the same number (usually means it only has 1-2 snapshots — e.g. from before the backfill feature existed).`)) return;
+  if (!confirm(`Re-fetch the full price history for "${label}"?\n\nYou usually do not need this any more — every nightly refresh already fills in days this card is missing.\n\nKeeps the current JustTCG match, but DELETES this card's price snapshots and scores so the next Refresh pulls its history from scratch. Any day the price source no longer offers is gone for good.`)) return;
   const note = document.getElementById('rematchNote');
   try {
     const resp = await fetch('/api/card-tracker/reset-history', {
@@ -659,7 +692,7 @@ async function refreshData(){
 }
 
 async function resetAllHistory(){
-  if (!confirm('Re-fetch 30-day history for EVERY tracked card?\n\nKeeps all current JustTCG matches — just deletes every price snapshot/score so the next Refresh re-backfills 30 days for every card instead of adding one more daily point. Use this once if most cards are showing 7D == 30D momentum (usually means they only have 1-2 snapshots from before the backfill feature existed).\n\nThis cannot be undone.')) return;
+  if (!confirm('Re-fetch the full price history for EVERY tracked card?\n\nYou usually do not need this any more — every nightly refresh already fills in missing days for every card.\n\nKeeps all JustTCG matches, but DELETES every price snapshot and score collected so far. Days the price source no longer offers will NOT come back.\n\nThis cannot be undone.')) return;
   const btn = document.getElementById('resetAllHistoryBtn');
   const note = document.getElementById('refreshNote');
   btn.disabled = true;

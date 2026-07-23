@@ -235,14 +235,22 @@ async def run_ingest(pool) -> dict:
             cards = await conn.fetch(
                 "SELECT id, name, variant, justtcg_card_id FROM tracked_cards "
                 "WHERE justtcg_card_id IS NOT NULL ORDER BY id")
+            # Which calendar days (UTC) each card already has a price for, so
+            # the backfill below can add only what's missing.
             have_rows = await conn.fetch(
-                "SELECT DISTINCT card_id FROM price_snapshots WHERE card_id = ANY($1::int[])",
+                "SELECT DISTINCT card_id, (captured_at AT TIME ZONE 'UTC')::date AS day "
+                "FROM price_snapshots WHERE card_id = ANY($1::int[]) "
+                "AND captured_at >= NOW() - INTERVAL '200 days'",
                 [c["id"] for c in cards])
-        have_snapshots = {r["card_id"] for r in have_rows}
+        have_days: dict = {}
+        for r in have_rows:
+            have_days.setdefault(r["card_id"], set()).add(r["day"])
         by_jid = {c["justtcg_card_id"]: c for c in cards}
-        # Ask for 30d of priceHistory when any card is on its first fetch —
-        # same number of API calls, just a bigger payload.
-        need_history = any(c["id"] not in have_snapshots for c in cards)
+        # Always ask for history. It costs no extra API calls (same requests,
+        # bigger payload), and asking every run is what lets us fill days we
+        # don't have: nights the ingest didn't fire, and cards first fetched
+        # back when the request shape was silently getting 7 days instead of 90.
+        need_history = True
         try:
             fetched = await justtcg.fetch_cards_by_ids(client, list(by_jid.keys()),
                                                        budget=pricing_budget,
@@ -268,26 +276,33 @@ async def run_ingest(pool) -> dict:
                     logger.warning("Ingest: no prices found for %r — raw keys: %s",
                                    card_row["name"], sorted(obj.keys())[:15])
                     continue
-                # First fetch for this card: backfill its 30d history so
-                # momentum/liquidity are meaningful immediately. Only days
-                # BEFORE today — today's live snapshot is inserted below.
-                if card_row["id"] not in have_snapshots:
-                    history = justtcg.extract_price_history(obj, card_row["variant"] or "")
-                    inserted = 0
-                    for h in history:
-                        if h["captured_at"].date() >= today_utc:
-                            continue
-                        await conn.execute(
-                            "INSERT INTO price_snapshots (card_id, captured_at, price_low, "
-                            "price_mid, price_high, source) VALUES ($1, $2, $3, $4, $5, 'justtcg-history')",
-                            card_row["id"], h["captured_at"], h["price_low"],
-                            h["price_mid"], h["price_high"])
-                        inserted += 1
-                    summary["backfilled"] += inserted
-                    logger.info("Ingest: backfill for %r -> %d history day(s) from JustTCG "
-                                "(fewer than ~30 usually means their priceHistory is sparse/"
-                                "event-driven for this card, not a bug)",
-                                card_row["name"], inserted)
+                # Backfill any day the source knows about that we don't have.
+                # Runs every ingest, not just on a card's first fetch, so a
+                # missed night or a card stuck on an old 7-day fetch heals
+                # itself. Skipping days we already have keeps it idempotent —
+                # there's no unique index on (card_id, day) to lean on. Only
+                # days BEFORE today; today's live snapshot is inserted below.
+                known_days = have_days.setdefault(card_row["id"], set())
+                history = justtcg.extract_price_history(obj, card_row["variant"] or "")
+                inserted = 0
+                for h in history:
+                    day = h["captured_at"].date()
+                    if day >= today_utc or day in known_days:
+                        continue
+                    await conn.execute(
+                        "INSERT INTO price_snapshots (card_id, captured_at, price_low, "
+                        "price_mid, price_high, source) VALUES ($1, $2, $3, $4, $5, 'justtcg-history')",
+                        card_row["id"], h["captured_at"], h["price_low"],
+                        h["price_mid"], h["price_high"])
+                    known_days.add(day)
+                    inserted += 1
+                summary["backfilled"] += inserted
+                if inserted or history:
+                    logger.info("Ingest: %r -> source offered %d history day(s), %d were new "
+                                "(source history near 7 days when we asked for %s means the "
+                                "duration parameter is being ignored)",
+                                card_row["name"], len(history), inserted,
+                                justtcg.HISTORY_DURATION)
                 await conn.execute(
                     "INSERT INTO price_snapshots (card_id, price_low, price_mid, price_high, source) "
                     "VALUES ($1, $2, $3, $4, 'justtcg')",

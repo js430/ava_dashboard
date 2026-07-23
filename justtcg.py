@@ -35,6 +35,12 @@ PLAN_PROFILES = {
 _429_WAITS = (10.0, 30.0)      # fallback backoff when no Retry-After header
 _MAX_TRIES = 3
 
+# How much price history to request. JustTCG accepts 7d/30d/90d/180d/1y and
+# **defaults to 7d** — a request that fails to carry the parameter silently
+# comes back with a week, which is exactly what we saw. Ask for the longest
+# window the dashboard graphs (90d). Overridable without a deploy.
+HISTORY_DURATION = os.getenv("JUSTTCG_HISTORY_DURATION", "90d")
+
 
 class BudgetExhausted(Exception):
     """Raised when a per-run JustTCG call budget is used up."""
@@ -862,16 +868,43 @@ async def _search_onepiece(client, slug: str, name: str, set_name: str, card_num
     return best
 
 
+def _log_history_depth(cards: list) -> None:
+    """Log how many history points actually came back. If this reports ~7 when
+    HISTORY_DURATION asks for 90d, the duration parameter is being ignored —
+    that's the failure mode this whole request shape exists to avoid, and it is
+    otherwise invisible because a short history looks identical to a new card."""
+    depths = []
+    for c in cards:
+        if not isinstance(c, dict):
+            continue
+        deepest = 0
+        for v in (c.get("variants") or []):
+            if isinstance(v, dict):
+                pts = v.get("priceHistory") or v.get("price_history") or []
+                deepest = max(deepest, len(pts) if isinstance(pts, list) else 0)
+        depths.append(deepest)
+    if not depths:
+        return
+    logger.info("JustTCG history depth for %d card(s) asking %s: min=%d median=%d max=%d "
+                "(a max near 7 means priceHistoryDuration is being ignored)",
+                len(depths), HISTORY_DURATION, min(depths),
+                int(statistics.median(depths)), max(depths))
+
+
 async def fetch_cards_by_ids(client: httpx.AsyncClient, ids: list,
                              budget: CallBudget | None = None,
                              include_history: bool = False) -> dict:
     """Fetch current pricing for known JustTCG ids, batched 20/request (free
     tier cap). Falls back to per-id GETs if the batch shape is rejected.
     Stops (returning partial results) if the run's call budget runs out.
-    include_history asks for 30 days of priceHistory on the same calls
+    include_history asks for HISTORY_DURATION of priceHistory on the same calls
     (bigger payload, zero extra API-call cost). Returns {id: card_obj}.
     """
-    history_params = {"priceHistoryDuration": "30d"} if include_history else None
+    # Each endpoint gets history requested the way IT documents it. Nothing
+    # speculative goes on the batch query string: an unknown param that 400s
+    # would drop the whole chunk into the per-id fallback below, turning ~20
+    # calls into ~400 and blowing the daily cap.
+    history_params = {"priceHistoryDuration": HISTORY_DURATION} if include_history else None
     out: dict = {}
     i = 0
     while i < len(ids):
@@ -889,9 +922,17 @@ async def fetch_cards_by_ids(client: httpx.AsyncClient, ids: list,
                            len(out), len(ids))
             return out
         try:
+            # History is requested two ways on purpose: priceHistoryDuration on
+            # the query string, and include_price_history per body item (the
+            # field their SDK documents on a batch lookup). Sending only the
+            # query string appears to be ignored on the batch endpoint, which
+            # silently drops you to the 7d default.
+            body = [{"cardId": cid} for cid in chunk]
+            if include_history:
+                for item in body:
+                    item["include_price_history"] = True
             resp = await _request_with_backoff(client, "POST", f"{JUSTTCG_API_BASE}/cards",
-                                               json=[{"cardId": cid} for cid in chunk],
-                                               params=history_params)
+                                               json=body, params=history_params)
             if resp.status_code == 200:
                 payload = resp.json()
                 cards = payload.get("data") if isinstance(payload, dict) else payload
@@ -900,6 +941,8 @@ async def fetch_cards_by_ids(client: httpx.AsyncClient, ids: list,
                         cid = card_identity(c)
                         if cid:
                             out[cid] = c
+                    if include_history:
+                        _log_history_depth(cards)
                     continue
             logger.warning("JustTCG batch lookup -> HTTP %s (falling back to per-id): %s",
                            resp.status_code, resp.text[:200])
@@ -917,7 +960,10 @@ async def fetch_cards_by_ids(client: httpx.AsyncClient, ids: list,
             try:
                 per_id_params = {"cardId": cid}
                 if history_params:
+                    # On a single GET there is no body to carry the flag, so
+                    # include_price_history belongs on the query string here.
                     per_id_params.update(history_params)
+                    per_id_params["include_price_history"] = "true"
                 r = await _request_with_backoff(client, "GET", f"{JUSTTCG_API_BASE}/cards",
                                                 params=per_id_params)
                 if r.status_code != 200:
