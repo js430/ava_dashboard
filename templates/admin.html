@@ -16,6 +16,16 @@
   .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; }
   .nav a:hover { background: #f4f4f5; }
   .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-group { position: relative; display: inline-flex; }
+  .nav-group-btn { font-family: inherit; font-size: 12px; color: #555; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+  .nav-group-btn:hover { background: #f4f4f5; }
+  .nav-group-btn.active, .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-caret { font-size: 9px; line-height: 1; }
+  .nav-menu { display: none; position: absolute; top: calc(100% + 4px); right: 0; min-width: 150px; padding: 4px; background: #fff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.10); z-index: 400; }
+  .nav-group.open .nav-menu { display: block; }
+  .nav-menu a { display: block; padding: 6px 10px; border: none; border-radius: 5px; background: none; font-size: 12px; color: #555; text-decoration: none; white-space: nowrap; }
+  .nav-menu a:hover { background: #f4f4f5; }
+  .nav-menu a.active { background: #5865F2; color: #fff; }
   .main { padding: 24px; max-width: 1200px; margin: 0 auto; }
 
   /* Stat cards */
@@ -59,7 +69,8 @@
   @media (max-width: 640px) {
     .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px; }
     .nav { flex-wrap: wrap; gap: 5px; }
-    .nav a { font-size: 12px; padding: 3px 7px; }
+    .nav a, .nav-group-btn { font-size: 12px; padding: 3px 7px; }
+    .nav-menu { left: 0; right: auto; }
     .main { padding: 12px; }
     .stat-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 16px; }
     .stat-card { padding: 10px 12px; }
@@ -85,6 +96,13 @@
   html[data-theme="dark"] .nav a { background: #252528; border-color: #383838; color: #bbbbc5; }
   html[data-theme="dark"] .nav a:hover { background: #2e2e32; }
   html[data-theme="dark"] .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .nav-group-btn { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .nav-group-btn:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav-group-btn.active, html[data-theme="dark"] .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .nav-menu { background: #1c1c1f; border-color: #383838; box-shadow: 0 6px 20px rgba(0,0,0,0.45); }
+  html[data-theme="dark"] .nav-menu a { color: #bbbbc5; }
+  html[data-theme="dark"] .nav-menu a:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav-menu a.active { background: #5865F2; color: #fff; }
   html[data-theme="dark"] .stat-card { background: #1c1c1f; border-color: #303033; }
   html[data-theme="dark"] .stat-value { color: #f0f0f0; }
   html[data-theme="dark"] .table-card { background: #1c1c1f; border-color: #303033; }
@@ -114,9 +132,14 @@
     <a href="/map">Map</a>
     <a href="/status">Status</a>
     <a href="/scan">Scan</a>
-    <a href="/admin" class="active">Admin</a>
-    <a href="/contributors">Contributors</a>
-    <a href="/invite-network">Network</a>
+    <div class="nav-group">
+      <button class="nav-group-btn active" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        <a href="/admin" class="active">Visitor Log</a>
+        <a href="/contributors">Contributors</a>
+        <a href="/invite-network">Network</a>
+      </div>
+    </div>
     <a href="/raffle-wheel">Raffle</a>
     <a href="/card-tracker">Tracker</a>
     <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
@@ -267,6 +290,25 @@ async function loadSessions(){
 loadSessions();
 setInterval(loadSessions, 30000);
 (function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();};upd();})();
+</script>
+<script>
+// Admin Tools dropdown — click the button to open, click anywhere else or press Esc to close.
+function closeNavGroups(){
+  document.querySelectorAll('.nav-group.open').forEach(function(g){
+    g.classList.remove('open');
+    var b = g.querySelector('.nav-group-btn');
+    if (b) b.setAttribute('aria-expanded', 'false');
+  });
+}
+function toggleNavGroup(ev){
+  ev.preventDefault();
+  ev.stopPropagation();
+  var btn = ev.currentTarget, grp = btn.parentElement, wasOpen = grp.classList.contains('open');
+  closeNavGroups();
+  if (!wasOpen){ grp.classList.add('open'); btn.setAttribute('aria-expanded', 'true'); }
+}
+document.addEventListener('click', closeNavGroups);
+document.addEventListener('keydown', function(ev){ if (ev.key === 'Escape') closeNavGroups(); });
 </script>
 </body>
 </html>

@@ -18,6 +18,16 @@
   .header-user { font-size: 12px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
   .header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
   .logout { font-size: 12px; color: #888; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; white-space: nowrap; }
+  .nav-group { position: relative; display: inline-flex; }
+  .nav-group-btn { font-family: inherit; font-size: 12px; color: #888; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: none; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+  .nav-group-btn:hover { background: #f4f4f5; }
+  .nav-group-btn.active, .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-caret { font-size: 9px; line-height: 1; }
+  .nav-menu { display: none; position: absolute; top: calc(100% + 4px); right: 0; min-width: 150px; padding: 4px; background: #fff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.10); z-index: 400; }
+  .nav-group.open .nav-menu { display: block; }
+  .nav-menu a { display: block; padding: 6px 10px; border: none; border-radius: 5px; background: none; font-size: 12px; color: #888; text-decoration: none; white-space: nowrap; }
+  .nav-menu a:hover { background: #f4f4f5; }
+  .nav-menu a.active { background: #5865F2; color: #fff; }
   .locations-btn { display: none; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: #5865F2; background: #f0f1ff; border: 1px solid #c7caff; border-radius: 6px; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
   .locations-btn-dot { width: 7px; height: 7px; border-radius: 50%; background: #5865F2; flex-shrink: 0; }
 
@@ -117,7 +127,8 @@
   @media (max-width: 768px) {
     .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 8px 12px; }
     .header-right { flex-wrap: wrap; gap: 5px; width: 100%; }
-    .logout { font-size: 12px; padding: 3px 7px; }
+    .logout, .nav-group-btn { font-size: 12px; padding: 3px 7px; }
+    .nav-menu { left: 0; right: auto; }
     .locations-btn { display: flex; font-size: 12px; padding: 3px 8px; }
     .sidebar { position: fixed; top: 0; left: -260px; width: 260px; height: 100vh; height: 100dvh; z-index: 400; transition: left 0.25s ease; box-shadow: 2px 0 12px rgba(0,0,0,0.1); }
     .sidebar-footer { padding-bottom: max(10px, calc(10px + env(safe-area-inset-bottom))); }
@@ -142,6 +153,13 @@
   html[data-theme="dark"] .header-title { color: #f0f0f0; }
   html[data-theme="dark"] .logout { color: #bbbbc5; border-color: #383838; background: #252528; }
   html[data-theme="dark"] .logout:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav-group-btn { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .nav-group-btn:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav-group-btn.active, html[data-theme="dark"] .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .nav-menu { background: #1c1c1f; border-color: #383838; box-shadow: 0 6px 20px rgba(0,0,0,0.45); }
+  html[data-theme="dark"] .nav-menu a { color: #bbbbc5; }
+  html[data-theme="dark"] .nav-menu a:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav-menu a.active { background: #5865F2; color: #fff; }
   html[data-theme="dark"] .locations-btn { color: #818cf8; background: #1e2040; border-color: #3730a3; }
   html[data-theme="dark"] .overlay { background: rgba(0,0,0,0.6); }
   html[data-theme="dark"] .sidebar { background: #1c1c1f; border-right-color: #303033; }
@@ -209,9 +227,16 @@
   <a href="/map" class="logout">Map</a>
   <a href="/status" class="logout">Status</a>
   <a href="/scan" class="logout">Scan</a>
-  {% if is_admin %}<a href="/admin" class="logout">Admin</a>{% endif %}
-  {% if is_admin %}<a href="/contributors" class="logout">Contributors</a>{% endif %}
-  {% if is_admin %}<a href="/invite-network" class="logout">Network</a>{% endif %}
+  {% if is_admin %}
+  <div class="nav-group">
+    <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
+    <div class="nav-menu">
+      <a href="/admin">Visitor Log</a>
+      <a href="/contributors">Contributors</a>
+      <a href="/invite-network">Network</a>
+    </div>
+  </div>
+  {% endif %}
   {% if is_admin %}<a href="/raffle-wheel" class="logout">Raffle</a>{% endif %}
   {% if is_admin or is_mod %}<a href="/card-tracker" class="logout">Tracker</a>{% endif %}
   {% if is_admin or is_mod %}<a href="/sample" class="logout">Sample</a>{% endif %}
@@ -904,6 +929,25 @@ loadRegions().then(()=>loadLocations()).then(()=>fetchData());
 setInterval(()=>{ if(document.visibilityState==="visible") fetchData(); }, 120_000);
 guardWatermark();
 (function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();requestAnimationFrame(drawWatermark);};upd();})();
+</script>
+<script>
+// Admin Tools dropdown — click the button to open, click anywhere else or press Esc to close.
+function closeNavGroups(){
+  document.querySelectorAll('.nav-group.open').forEach(function(g){
+    g.classList.remove('open');
+    var b = g.querySelector('.nav-group-btn');
+    if (b) b.setAttribute('aria-expanded', 'false');
+  });
+}
+function toggleNavGroup(ev){
+  ev.preventDefault();
+  ev.stopPropagation();
+  var btn = ev.currentTarget, grp = btn.parentElement, wasOpen = grp.classList.contains('open');
+  closeNavGroups();
+  if (!wasOpen){ grp.classList.add('open'); btn.setAttribute('aria-expanded', 'true'); }
+}
+document.addEventListener('click', closeNavGroups);
+document.addEventListener('keydown', function(ev){ if (ev.key === 'Escape') closeNavGroups(); });
 </script>
 </body>
 </html>
