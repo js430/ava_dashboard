@@ -32,6 +32,7 @@ import card_scoring
 import set_import
 import price_sources
 import grading_roi
+import grading_tiers
 
 load_dotenv()
 
@@ -1785,6 +1786,7 @@ async def grading_calculator_page(request: Request):
         "is_mod": request.session.get("mod", False),
         "sources": price_sources.configured_sources(),
         "grade_labels": price_sources.GRADE_LABELS,
+        "grading_companies": grading_tiers.GRADING_COMPANIES,
     })
 
 

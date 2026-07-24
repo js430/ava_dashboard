@@ -236,16 +236,30 @@
         <div class="card-head"><span class="card-title">Your costs</span></div>
         <div class="card-body">
           <div class="row">
-            <div><label class="label" for="gradingFee">Grading tier ($)</label><input type="number" id="gradingFee" value="25" min="0" step="1"></div>
+            <div><label class="label" for="gradeCompany">Grader</label>
+              <select id="gradeCompany" onchange="onCompanyChange()">
+                <option value="">Custom / other</option>
+                {% for cid, c in grading_companies.items() %}<option value="{{ cid }}">{{ c.label }}</option>{% endfor %}
+              </select>
+            </div>
+            <div><label class="label" for="gradeTier">Tier</label>
+              <select id="gradeTier" onchange="onTierChange()"><option value="">&mdash;</option></select>
+            </div>
+            <div><label class="label" for="gradingFee">Grading fee ($)</label>
+              <input type="number" id="gradingFee" value="25" min="0" step="0.01" oninput="onFeeManual()"></div>
+          </div>
+          <div class="hint" id="tierHint">Pick a grader and tier to auto-fill the fee, or type it in. Prices change often &mdash; verify at the grader's site before relying on them.</div>
+          <div class="warn" id="coverageWarn" style="display:none"></div>
+          <div class="row">
             <div><label class="label" for="shipTo">Ship to grader ($)</label><input type="number" id="shipTo" value="5" min="0" step="1"></div>
             <div><label class="label" for="shipReturn">Return ship ($)</label><input type="number" id="shipReturn" value="5" min="0" step="1"></div>
+            <div><label class="label" for="insurance">Insurance ($)</label><input type="number" id="insurance" value="2" min="0" step="1"></div>
           </div>
           <div class="row">
-            <div><label class="label" for="insurance">Insurance ($)</label><input type="number" id="insurance" value="2" min="0" step="1"></div>
             <div><label class="label" for="saleFee">Sale fee (%)</label><input type="number" id="saleFee" value="13" min="0" max="90" step="0.5"></div>
             <div><label class="label" for="saleShip">Ship to buyer ($)</label><input type="number" id="saleShip" value="5" min="0" step="1"></div>
+            <div></div>
           </div>
-          <div class="hint">PSA and CGC change their tier pricing regularly &mdash; check the current rate rather than trusting the default.</div>
         </div>
       </div>
     </div>
@@ -301,9 +315,113 @@ const LABELS = {{ grade_labels | tojson }};
 const OUTCOME_GRADES = ['psa_10','psa_9','psa_8'];
 // Default split of the non-10 remainder between a 9 and an 8-or-below.
 const NON_GEM_SPLIT = { psa_9: 0.78, psa_8: 0.22 };
+// Grading company / tier reference (fee, turnaround, coverage). Single source
+// of truth lives in grading_tiers.py; the fee is a default and stays editable.
+const GRADERS = {{ grading_companies | tojson }};
 
 let quotes = {};
 let calcTimer = null;
+let feeIsManual = false;   // true once the user types a fee by hand
+
+// Top graded value of the card — what you'd declare, used for coverage checks
+// and CGC's Unlimited Value fee (base + 1% of value).
+function cardValue(){
+  const p10 = +(document.getElementById('price_psa_10') || {}).value || 0;
+  if (p10 > 0) return p10;
+  let best = 0;
+  ['bgs_10','cgc_10','psa_9','bgs_9_5','psa_8'].forEach(g => {
+    const el = document.getElementById('price_' + g);
+    if (el && +el.value > best) best = +el.value;
+  });
+  if (best > 0) return best;
+  const raw = document.getElementById('price_raw');
+  return raw ? +raw.value || 0 : 0;
+}
+
+function tierFee(tier){
+  let fee = tier.fee;
+  if (tier.fee_pct_fmv) fee += tier.fee_pct_fmv * cardValue();
+  return Math.round(fee * 100) / 100;
+}
+
+function onCompanyChange(){
+  const cid = document.getElementById('gradeCompany').value;
+  const tierSel = document.getElementById('gradeTier');
+  if (!cid || !GRADERS[cid]){
+    tierSel.innerHTML = '<option value="">&mdash;</option>';
+    document.getElementById('tierHint').textContent =
+      'Type the fee in yourself, or pick a grader to auto-fill it.';
+    document.getElementById('coverageWarn').style.display = 'none';
+    return;
+  }
+  tierSel.innerHTML = GRADERS[cid].tiers
+    .map(t => `<option value="${t.id}">${t.label} &mdash; $${t.fee.toFixed(2)}</option>`).join('');
+  feeIsManual = false;
+  onTierChange();
+}
+
+function currentTier(){
+  const cid = document.getElementById('gradeCompany').value;
+  const tid = document.getElementById('gradeTier').value;
+  if (!cid || !GRADERS[cid]) return null;
+  return GRADERS[cid].tiers.find(t => t.id === tid) || null;
+}
+
+function onTierChange(){
+  const tier = currentTier();
+  if (!tier) return;
+  feeIsManual = false;
+  document.getElementById('gradingFee').value = tierFee(tier);
+  const cov = tier.coverage === null || tier.coverage === undefined
+    ? 'no declared-value limit'
+    : 'covers up to $' + tier.coverage.toLocaleString('en-US');
+  const fmv = tier.fee_pct_fmv ? ' + 1% of value' : '';
+  document.getElementById('tierHint').textContent =
+    `${tier.turnaround} · ${cov}${fmv}. Verify at the grader's site before relying on it.`;
+  refreshTier();
+  scheduleCalc();
+}
+
+// Recompute fee (for value-dependent tiers) and the coverage warning whenever
+// the card's value changes. Never overrides a hand-typed fee.
+function refreshTier(){
+  const cid = document.getElementById('gradeCompany').value;
+  const tier = currentTier();
+  const warn = document.getElementById('coverageWarn');
+  if (!tier){ warn.style.display = 'none'; return; }
+  if (!feeIsManual && tier.fee_pct_fmv)
+    document.getElementById('gradingFee').value = tierFee(tier);
+
+  const val = cardValue();
+  const rule = GRADERS[cid].coverage_rule;
+  if (tier.coverage && val > tier.coverage){
+    if (rule === 'upcharge'){
+      const correct = GRADERS[cid].tiers.find(t => t.coverage === null || t.coverage >= val);
+      const msg = correct
+        ? `This card's value (~$${val.toLocaleString('en-US')}) is above this tier's $${tier.coverage.toLocaleString('en-US')} coverage. ${GRADERS[cid].label} would upcharge you to ${correct.label} ($${correct.fee.toFixed(2)}).`
+        : `This card's value (~$${val.toLocaleString('en-US')}) exceeds every listed tier's coverage — expect an upcharge.`;
+      warn.innerHTML = msg;
+      warn.style.display = 'block';
+    } else if (rule === 'capped'){
+      warn.innerHTML = `This card's value (~$${val.toLocaleString('en-US')}) is above this tier's $${tier.coverage.toLocaleString('en-US')} coverage cap. ${GRADERS[cid].label} won't upcharge, but the card would be under-insured if lost.`;
+      warn.style.display = 'block';
+    } else {
+      warn.style.display = 'none';
+    }
+  } else {
+    warn.style.display = 'none';
+  }
+}
+
+function onFeeManual(){
+  feeIsManual = true;
+  scheduleCalc();
+}
+
+function onPriceInput(){
+  refreshTier();
+  scheduleCalc();
+}
 
 function money(v){
   const sign = v < 0 ? '-' : '';
@@ -325,7 +443,7 @@ function buildRows(){
       : '<span class="src">&mdash;</span>';
     return `<tr>
       <td class="left">${LABELS[g] || g}</td>
-      <td><input type="number" id="price_${g}" min="0" step="1" value="${price}" oninput="scheduleCalc()"></td>
+      <td><input type="number" id="price_${g}" min="0" step="1" value="${price}" oninput="onPriceInput()"></td>
       <td>${badge}${src}</td>
       <td>${oddsCell}</td>
     </tr>`;
@@ -383,6 +501,7 @@ async function lookup(){
     status.textContent = found
       ? `${found} price(s) from ${d.sources_used.join(', ') || 'no source'}`
       : 'No prices found — enter them by hand below.';
+    refreshTier();
     scheduleCalc();
   } catch(e){
     status.textContent = 'Lookup failed. Enter prices by hand below.';
