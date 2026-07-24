@@ -195,15 +195,13 @@
     </div>
     <a href="/analytics" class="active">Analytics</a>
     <a href="/raffle-wheel">Raffle</a>
-    {% if is_admin or is_mod %}
     <div class="nav-group">
       <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Nexus Playground<span class="nav-caret">&#9662;</span></button>
       <div class="nav-menu">
-        <a href="/card-tracker">Tracker</a>
+        {% if is_admin %}<a href="/card-tracker">Tracker</a>{% endif %}
         <a href="/grading-calculator">Grading Calculator</a>
       </div>
     </div>
-    {% endif %}
     <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
     <a href="/logout">Log out</a>
   </div>

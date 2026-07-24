@@ -177,15 +177,13 @@
     </div>
     {% endif %}
     {% if is_admin %}<a href="/raffle-wheel">Raffle</a>{% endif %}
-    {% if is_admin or is_mod %}
     <div class="nav-group">
       <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Nexus Playground<span class="nav-caret">&#9662;</span></button>
       <div class="nav-menu">
-        <a href="/card-tracker">Tracker</a>
+        {% if is_admin %}<a href="/card-tracker">Tracker</a>{% endif %}
         <a href="/grading-calculator">Grading Calculator</a>
       </div>
     </div>
-    {% endif %}
     {% if is_admin or is_mod %}<a href="/sample">Sample</a>{% endif %}
     {% if is_admin or is_mod %}<a href="/sample-map">Sample Map</a>{% endif %}
     {% if is_admin or is_mod %}<a href="/sample-status">Sample Status</a>{% endif %}

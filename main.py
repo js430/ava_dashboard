@@ -1356,25 +1356,34 @@ def require_staff(request: Request) -> dict:
         raise HTTPException(status_code=403, detail="Not authorized")
     return user
 
+def require_admin(request: Request) -> dict:
+    """Admin-only session gate (ADMIN_USER_IDS). Used by the card tracker,
+    which is admin-only — mods no longer have tracker access."""
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return user
+
 @app.get("/card-tracker", response_class=HTMLResponse)
 async def card_tracker_page(request: Request):
     user = request.session.get("user")
     if not user:
         return RedirectResponse("/login")
-    is_admin = int(user["id"]) in ADMIN_USER_IDS
-    if not is_admin and not request.session.get("mod", False):
+    if int(user["id"]) not in ADMIN_USER_IDS:
         raise HTTPException(status_code=403, detail="Not authorized")
     return templates.TemplateResponse("card_tracker.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
         "user_id": user["id"],
-        "is_admin": is_admin,
+        "is_admin": True,
         "is_mod": request.session.get("mod", False),
     })
 
 @app.get("/api/card-tracker/list")
-async def api_card_tracker_list(request: Request, user=Depends(require_staff)):
+async def api_card_tracker_list(request: Request, user=Depends(require_admin)):
     def _f(x):
         return float(x) if x is not None else None
     async with request.app.state.db.acquire() as conn:
@@ -1429,7 +1438,7 @@ async def api_card_tracker_list(request: Request, user=Depends(require_staff)):
     ], headers={"Cache-Control": "no-store"})
 
 @app.get("/api/card-tracker/history")
-async def api_card_tracker_history(request: Request, card_id: int, user=Depends(require_staff)):
+async def api_card_tracker_history(request: Request, card_id: int, user=Depends(require_admin)):
     def _f(x):
         return float(x) if x is not None else None
     async with request.app.state.db.acquire() as conn:
@@ -1499,7 +1508,7 @@ async def _run_tracker_refresh(app) -> None:
 
 @app.post("/api/card-tracker/refresh")
 @limiter.limit("3/hour")
-async def api_card_tracker_refresh(request: Request, user=Depends(require_staff)):
+async def api_card_tracker_refresh(request: Request, user=Depends(require_admin)):
     # Spending the JustTCG call budget stays admin-only; mods can view.
     if int(user["id"]) not in ADMIN_USER_IDS:
         raise HTTPException(status_code=403, detail="Refresh is admin-only")
@@ -1512,7 +1521,7 @@ async def api_card_tracker_refresh(request: Request, user=Depends(require_staff)
     return JSONResponse({"ok": True, "started": True}, headers={"Cache-Control": "no-store"})
 
 @app.get("/api/card-tracker/refresh/status")
-async def api_card_tracker_refresh_status(request: Request, user=Depends(require_staff)):
+async def api_card_tracker_refresh_status(request: Request, user=Depends(require_admin)):
     state = dict(_tracker_refresh_state(request.app))
     if not state["running"]:
         eastern = ZoneInfo("America/New_York")
@@ -1526,7 +1535,7 @@ async def api_card_tracker_refresh_status(request: Request, user=Depends(require
 
 @app.post("/api/card-tracker/rematch")
 @limiter.limit("30/hour")
-async def api_card_tracker_rematch(request: Request, user=Depends(require_staff)):
+async def api_card_tracker_rematch(request: Request, user=Depends(require_admin)):
     """Clear a card's JustTCG match AND its price/score history (which belong
     to the wrongly-matched card). The next ingest re-resolves it with the
     current matching logic. Admin-only because it deletes data."""
@@ -1552,7 +1561,7 @@ async def api_card_tracker_rematch(request: Request, user=Depends(require_staff)
 
 @app.post("/api/card-tracker/reset-history")
 @limiter.limit("30/hour")
-async def api_card_tracker_reset_history(request: Request, user=Depends(require_staff)):
+async def api_card_tracker_reset_history(request: Request, user=Depends(require_admin)):
     """Clear price/score history WITHOUT touching the JustTCG match, so the
     next ingest treats the card as a first-time fetch and re-requests the
     30-day priceHistory backfill — no extra search/resolution API call spent.
@@ -1778,22 +1787,22 @@ async def api_import_run(request: Request):
                          "skipped_duplicates": skipped, "total_tracked": total},
                         headers={"Cache-Control": "no-store"})
 
-# ---- Grading calculator (admin-only trial) ----
+# ---- Grading calculator ----
 # Standalone page, deliberately not wired into the card tracker: it works for
 # ANY card, not just the ~400 in tracked_cards, so it has no dependency on the
-# JustTCG watchlist. Vendor calls are admin-gated because they spend a paid
-# PriceCharting quota and eBay's 5,000/day default.
+# JustTCG watchlist. Open to members (same gate as the map/dashboard); the
+# vendor-backed lookups spend paid quota, so they keep a per-IP rate limit.
 
 @app.get("/grading-calculator", response_class=HTMLResponse)
 async def grading_calculator_page(request: Request):
     user = request.session.get("user")
     if not user:
         return RedirectResponse("/login")
+    if is_demo(request):
+        return RedirectResponse("/sample")
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
     is_admin = int(user["id"]) in ADMIN_USER_IDS
-    if not is_admin and not request.session.get("mod", False):
-        raise HTTPException(status_code=403, detail="Not authorized")
     return templates.TemplateResponse("grading_calculator.html", {
         "request": request,
         "username": user["username"],
@@ -1812,10 +1821,11 @@ async def grading_calculator_page(request: Request):
 @limiter.limit("20/minute")
 async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
                              set_name: str = "", card_number: str = "",
-                             user=Depends(require_staff)):
+                             user=Depends(get_current_user)):
     """Live graded prices for one card, merged across configured vendors.
-    Spends paid PriceCharting quota and eBay's daily budget — staff-gated
-    (admins + mods) rather than open to all members."""
+    Open to members (like the rest of the grading calculator). Spends paid
+    PriceCharting quota and eBay's daily budget, so it keeps the per-IP rate
+    limit above — watch aggregate usage if member traffic grows."""
     name = (name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="A card name is required")
@@ -1843,7 +1853,7 @@ async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
 
 @app.post("/api/grading-calculator/calc")
 @limiter.limit("120/minute")
-async def api_grading_calc(request: Request, user=Depends(require_staff)):
+async def api_grading_calc(request: Request, user=Depends(get_current_user)):
     """Pure ROI math — no network, no DB. Split from the quotes route so the
     calculator stays instant and free while the user drags the odds slider."""
     body = await request.json()
@@ -1903,7 +1913,7 @@ _grading_set_cache: dict[tuple[str, str], list] = {}
 @app.get("/api/grading-calculator/set-cards")
 @limiter.limit("60/hour")
 async def api_grading_set_cards(request: Request, game: str, set_id: str,
-                                user=Depends(require_staff)):
+                                user=Depends(get_current_user)):
     if game not in ("pokemon", "one_piece"):
         raise HTTPException(status_code=400, detail="Unknown game")
     set_id = (set_id or "").strip()
