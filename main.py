@@ -1864,10 +1864,10 @@ async def api_grading_calc(request: Request, user=Depends(require_staff)):
     costs = grading_roi.Costs(
         grading_fee=_num(c.get("grading_fee"), 25.0),
         ship_to=_num(c.get("ship_to"), 5.0),
-        ship_return=_num(c.get("ship_return"), 5.0),
-        insurance=_num(c.get("insurance"), 2.0),
-        sale_fee_pct=min(max(_num(c.get("sale_fee_pct"), 0.13), 0.0), 0.9),
-        sale_ship=_num(c.get("sale_ship"), 5.0),
+        ship_return=_num(c.get("ship_return"), 20.0),
+        insurance=_num(c.get("insurance"), 0.0),
+        sale_fee_pct=min(max(_num(c.get("sale_fee_pct"), 0.0), 0.0), 0.9),
+        sale_ship=_num(c.get("sale_ship"), 0.0),
     )
     try:
         r = grading_roi.evaluate(raw_price, grade_prices, odds, costs)

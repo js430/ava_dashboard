@@ -33,10 +33,10 @@ class Costs:
     """Per-card costs. All dollars except sale_fee_pct (0.13 = 13%)."""
     grading_fee: float = 25.0      # service tier, per card
     ship_to: float = 5.0           # your share of shipping to the grader
-    ship_return: float = 5.0       # your share of return shipping
-    insurance: float = 2.0         # declared-value insurance, per card
-    sale_fee_pct: float = 0.13     # marketplace + payment processing
-    sale_ship: float = 5.0         # what shipping the sold card costs you
+    ship_return: float = 20.0      # your share of return shipping
+    insurance: float = 0.0         # declared-value insurance, per card
+    sale_fee_pct: float = 0.0      # marketplace + payment processing
+    sale_ship: float = 0.0         # what shipping the sold card costs you
 
     @property
     def submission_total(self) -> float:
