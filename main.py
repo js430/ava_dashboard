@@ -1606,9 +1606,15 @@ def _require_tracker_admin(request: Request) -> dict:
 _CATALOG_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 
 async def _fetch_set_candidates(game: str, set_id: str, rarity: str) -> tuple:
-    """(set_name, cards) from the free catalog APIs, rarity-filtered."""
+    """(set_name, cards) from the free catalog APIs, rarity-filtered.
+
+    Retries transient failures: pokemontcg.io throws intermittent HTTP 500s,
+    and both APIs occasionally time out. 5xx and timeouts are retried with a
+    short backoff; 4xx (a real bad request / missing set) fails immediately.
+    """
     last_exc = None
-    for attempt in range(2):
+    attempts = 4
+    for attempt in range(attempts):
         try:
             async with httpx.AsyncClient(timeout=_CATALOG_TIMEOUT) as client:
                 if game == "pokemon":
@@ -1618,9 +1624,19 @@ async def _fetch_set_candidates(game: str, set_id: str, rarity: str) -> tuple:
             break
         except httpx.TimeoutException as e:
             last_exc = e
-            logger.warning("Catalog fetch timed out (attempt %d/2) for %s/%s", attempt + 1, game, set_id)
+            logger.warning("Catalog fetch timed out (attempt %d/%d) for %s/%s",
+                           attempt + 1, attempts, game, set_id)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code < 500:
+                raise      # a real 4xx (bad set id etc.) — don't retry
+            last_exc = e
+            logger.warning("Catalog fetch got HTTP %d (attempt %d/%d) for %s/%s",
+                           e.response.status_code, attempt + 1, attempts, game, set_id)
+        if attempt < attempts - 1:
+            await asyncio.sleep(0.8 * (attempt + 1))
     else:
-        raise RuntimeError("The card catalog API timed out twice — try again in a minute.") from last_exc
+        raise RuntimeError("The card catalog API is having a moment (repeated "
+                           "errors) — try again in a minute.") from last_exc
     if rarity:
         cards = [c for c in cards if rarity.lower() in (c["variant"] or "").lower()]
     return set_name, cards[: set_import.MAX_CARDS_PER_IMPORT]
