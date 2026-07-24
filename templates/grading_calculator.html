@@ -175,31 +175,46 @@
         </div>
         <div class="card-body">
           <div class="row">
-            <div style="flex:0 0 120px">
+            <div style="flex:0 0 130px">
               <label class="label" for="game">Game</label>
-              <select id="game">
+              <select id="game" onchange="onGameChange()">
                 <option value="pokemon">Pok&eacute;mon</option>
                 <option value="one_piece">One Piece</option>
               </select>
             </div>
-            <div style="flex:2">
-              <label class="label" for="cardName">Card name</label>
-              <input type="text" id="cardName" placeholder="Umbreon VMAX">
+            <div style="flex:1">
+              <label class="label" for="setSelect">Set</label>
+              <select id="setSelect" onchange="onSetChange()"><option value="">Choose a set&hellip;</option></select>
             </div>
           </div>
           <div class="row">
-            <div>
-              <label class="label" for="setName">Set</label>
-              <input type="text" id="setName" placeholder="Evolving Skies">
-            </div>
-            <div style="flex:0 0 130px">
-              <label class="label" for="cardNumber">Number</label>
-              <input type="text" id="cardNumber" placeholder="215/203">
+            <div style="flex:1">
+              <label class="label" for="cardSelect">Card</label>
+              <select id="cardSelect" onchange="onCardChange()" disabled><option value="">Choose a set first</option></select>
             </div>
             <div style="flex:0 0 auto; display:flex; align-items:flex-end">
               <button class="btn" id="lookupBtn" onclick="lookup()">Look up prices</button>
             </div>
           </div>
+          <details style="margin-top:2px">
+            <summary style="font-size:12px; color:#5865F2; cursor:pointer">Enter a card manually instead</summary>
+            <div class="row" style="margin-top:8px">
+              <div style="flex:2">
+                <label class="label" for="cardName">Card name</label>
+                <input type="text" id="cardName" placeholder="Umbreon VMAX" oninput="onManualEntry()">
+              </div>
+            </div>
+            <div class="row">
+              <div>
+                <label class="label" for="setName">Set name</label>
+                <input type="text" id="setName" placeholder="Evolving Skies" oninput="onManualEntry()">
+              </div>
+              <div style="flex:0 0 130px">
+                <label class="label" for="cardNumber">Number</label>
+                <input type="text" id="cardNumber" placeholder="215/203" oninput="onManualEntry()">
+              </div>
+            </div>
+          </details>
         </div>
       </div>
 
@@ -318,9 +333,81 @@ const NON_GEM_SPLIT = { psa_9: 0.78, psa_8: 0.22 };
 // Grading company / tier reference (fee, turnaround, coverage). Single source
 // of truth lives in grading_tiers.py; the fee is a default and stays editable.
 const GRADERS = {{ grading_companies | tojson }};
+// Hardcoded set lists (grading_sets.py). Cards within a set are fetched on
+// demand from the catalog API when a set is chosen.
+const SETS = {{ grading_sets | tojson }};
 
 let quotes = {};
 let calcTimer = null;
+let setCards = [];   // cards for the currently selected set (from the API)
+
+function buildSetOptions(){
+  const game = document.getElementById('game').value;
+  const sel = document.getElementById('setSelect');
+  const list = SETS[game] || [];
+  sel.innerHTML = '<option value="">Choose a set&hellip;</option>' + list.map(s =>
+    `<option value="${s.id}">${s.name}${s.year ? ' (' + s.year + ')' : ''}</option>`).join('');
+}
+
+function resetCardSelect(msg){
+  const c = document.getElementById('cardSelect');
+  c.innerHTML = `<option value="">${msg}</option>`;
+  c.disabled = true;
+  setCards = [];
+}
+
+function onGameChange(){
+  buildSetOptions();
+  resetCardSelect('Choose a set first');
+}
+
+async function onSetChange(){
+  const game = document.getElementById('game').value;
+  const setId = document.getElementById('setSelect').value;
+  const status = document.getElementById('lookupStatus');
+  if (!setId){ resetCardSelect('Choose a set first'); return; }
+  resetCardSelect('Loading cards…');
+  status.textContent = 'Loading set…';
+  try {
+    const resp = await fetch(`/api/grading-calculator/set-cards?game=${encodeURIComponent(game)}&set_id=${encodeURIComponent(setId)}`);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const d = await resp.json();
+    setCards = d.cards || [];
+    const c = document.getElementById('cardSelect');
+    if (!setCards.length){
+      resetCardSelect('No cards found — enter manually');
+      status.textContent = 'No cards returned for that set.';
+      return;
+    }
+    c.innerHTML = '<option value="">Choose a card&hellip;</option>' + setCards.map((card, i) => {
+      const meta = [card.card_number, card.variant].filter(Boolean).join(' · ');
+      return `<option value="${i}">${card.name}${meta ? '  —  ' + meta : ''}</option>`;
+    }).join('');
+    c.disabled = false;
+    status.textContent = `${setCards.length} cards loaded — pick one.`;
+  } catch(e){
+    resetCardSelect('Couldn’t load cards — enter manually');
+    status.textContent = 'Set lookup failed. Enter the card manually below.';
+  }
+}
+
+function onCardChange(){
+  const i = document.getElementById('cardSelect').value;
+  if (i === '') return;
+  const card = setCards[+i];
+  if (!card) return;
+  document.getElementById('cardName').value = card.name || '';
+  document.getElementById('setName').value = card.set_name || '';
+  document.getElementById('cardNumber').value = card.card_number || '';
+  lookup();
+}
+
+// Typing in the manual fields detaches from the dropdown selection so the two
+// can't silently disagree.
+function onManualEntry(){
+  const c = document.getElementById('cardSelect');
+  if (c.value !== ''){ c.value = ''; }
+}
 let feeIsManual = false;   // true once the user types a fee by hand
 
 // Top graded value of the card — what you'd declare, used for coverage checks
@@ -613,6 +700,7 @@ function render(d){
   .forEach(id => document.getElementById(id).addEventListener('input', scheduleCalc));
 
 buildRows();
+buildSetOptions();
 
 (function(){
   var btn = document.getElementById('themeToggle');

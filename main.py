@@ -33,6 +33,7 @@ import set_import
 import price_sources
 import grading_roi
 import grading_tiers
+import grading_sets
 
 load_dotenv()
 
@@ -1787,6 +1788,7 @@ async def grading_calculator_page(request: Request):
         "sources": price_sources.configured_sources(),
         "grade_labels": price_sources.GRADE_LABELS,
         "grading_companies": grading_tiers.GRADING_COMPANIES,
+        "grading_sets": grading_sets.GRADING_SETS,
     })
 
 
@@ -1873,6 +1875,41 @@ async def api_grading_calc(request: Request, user=Depends(require_staff)):
                         for s in r.sensitivity],
         "warnings": r.warnings,
     }, headers={"Cache-Control": "no-store"})
+
+
+# Cards-in-a-set are fetched from the free catalog APIs for the grading
+# calculator's card picker. Cached in-process (a set's card list is static)
+# so repeated picks don't re-hit the external API. Separate from the admin
+# import endpoints: mod-accessible, no DB duplicate work, lighter rate limit.
+_grading_set_cache: dict[tuple[str, str], list] = {}
+
+
+@app.get("/api/grading-calculator/set-cards")
+@limiter.limit("60/hour")
+async def api_grading_set_cards(request: Request, game: str, set_id: str,
+                                user=Depends(require_staff)):
+    if game not in ("pokemon", "one_piece"):
+        raise HTTPException(status_code=400, detail="Unknown game")
+    set_id = (set_id or "").strip()
+    if not set_id or len(set_id) > 40:
+        raise HTTPException(status_code=400, detail="Invalid set")
+
+    cache_key = (game, set_id)
+    if cache_key not in _grading_set_cache:
+        try:
+            set_name, cards = await _fetch_set_candidates(game, set_id, "")
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception:
+            logger.exception("Grading set-cards fetch failed for %s/%s", game, set_id)
+            raise HTTPException(status_code=502, detail="Couldn't fetch that set's cards")
+        _grading_set_cache[cache_key] = [
+            {"name": c["name"], "card_number": c["card_number"],
+             "variant": c["variant"], "set_name": set_name}
+            for c in cards
+        ]
+    return JSONResponse({"set_id": set_id, "cards": _grading_set_cache[cache_key]},
+                        headers={"Cache-Control": "no-store"})
 
 
 # ---- Analytics ----
