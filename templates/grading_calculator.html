@@ -19,7 +19,8 @@
   .nav-group { position: relative; display: inline-flex; }
   .nav-group-btn { font-family: inherit; font-size: 12px; color: #555; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
   .nav-group-btn:hover { background: #f4f4f5; }
-  .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-group-btn.active, .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-menu a.active { background: #5865F2; color: #fff; }
   .nav-caret { font-size: 9px; line-height: 1; }
   .nav-menu { display: none; position: absolute; top: calc(100% + 4px); right: 0; min-width: 150px; padding: 4px; background: #fff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.10); z-index: 400; }
   .nav-group.open .nav-menu { display: block; }
@@ -99,9 +100,11 @@
   html[data-theme="dark"] .nav a, html[data-theme="dark"] .nav-group-btn { background: #252528; border-color: #383838; color: #bbbbc5; }
   html[data-theme="dark"] .nav a:hover, html[data-theme="dark"] .nav-group-btn:hover { background: #2e2e32; }
   html[data-theme="dark"] .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .nav-group-btn.active, html[data-theme="dark"] .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
   html[data-theme="dark"] .nav-menu { background: #1c1c1f; border-color: #383838; box-shadow: 0 6px 20px rgba(0,0,0,.45); }
   html[data-theme="dark"] .nav-menu a { color: #bbbbc5; }
   html[data-theme="dark"] .nav-menu a:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav-menu a.active { background: #5865F2; color: #fff; }
   html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
   html[data-theme="dark"] .card { background: #1c1c1f; border-color: #303033; }
   html[data-theme="dark"] .card-head { border-bottom-color: #303033; }
@@ -127,7 +130,7 @@
     <a href="/">Dashboard</a>
     <a href="/map">Map</a>
     <a href="/scan">Scan</a>
-    <a href="/card-tracker">Tracker</a>
+    {% if is_admin %}
     <div class="nav-group">
       <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
       <div class="nav-menu">
@@ -137,7 +140,16 @@
         <a href="/raffle-wheel">Raffle</a>
       </div>
     </div>
-    <a href="/grading-calculator" class="active">Grading</a>
+    {% endif %}
+    {% if is_admin or is_mod %}
+    <div class="nav-group">
+      <button class="nav-group-btn active" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Nexus Playground<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        <a href="/card-tracker">Tracker</a>
+        <a href="/grading-calculator" class="active">Grading Calculator</a>
+      </div>
+    </div>
+    {% endif %}
     <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">&#127769;</button>
     <a href="/logout">Log out</a>
   </div>

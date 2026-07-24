@@ -1037,7 +1037,9 @@ async def admin_page(request: Request, user=Depends(get_current_user)):
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
-        "user_id": user["id"]
+        "user_id": user["id"],
+        "is_admin": True,
+        "is_mod": request.session.get("mod", False),
     })
 
 @app.get("/admin/api")
@@ -1246,6 +1248,7 @@ async def raffle_wheel_page(request: Request):
         "avatar": user.get("avatar"),
         "user_id": user["id"],
         "is_admin": True,
+        "is_mod": request.session.get("mod", False),
     })
 
 @app.get("/api/raffle-wheel/raffles")
@@ -1770,14 +1773,15 @@ async def grading_calculator_page(request: Request):
         return RedirectResponse("/login")
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
-    if int(user["id"]) not in ADMIN_USER_IDS:
+    is_admin = int(user["id"]) in ADMIN_USER_IDS
+    if not is_admin and not request.session.get("mod", False):
         raise HTTPException(status_code=403, detail="Not authorized")
     return templates.TemplateResponse("grading_calculator.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
         "user_id": user["id"],
-        "is_admin": True,
+        "is_admin": is_admin,
         "is_mod": request.session.get("mod", False),
         "sources": price_sources.configured_sources(),
         "grade_labels": price_sources.GRADE_LABELS,
@@ -1788,10 +1792,10 @@ async def grading_calculator_page(request: Request):
 @limiter.limit("20/minute")
 async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
                              set_name: str = "", card_number: str = "",
-                             user=Depends(get_current_user)):
-    """Live graded prices for one card, merged across configured vendors."""
-    if int(user["id"]) not in ADMIN_USER_IDS:
-        raise HTTPException(status_code=403, detail="Not authorized")
+                             user=Depends(require_staff)):
+    """Live graded prices for one card, merged across configured vendors.
+    Spends paid PriceCharting quota and eBay's daily budget — staff-gated
+    (admins + mods) rather than open to all members."""
     name = (name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="A card name is required")
@@ -1819,11 +1823,9 @@ async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
 
 @app.post("/api/grading-calculator/calc")
 @limiter.limit("120/minute")
-async def api_grading_calc(request: Request, user=Depends(get_current_user)):
+async def api_grading_calc(request: Request, user=Depends(require_staff)):
     """Pure ROI math — no network, no DB. Split from the quotes route so the
     calculator stays instant and free while the user drags the odds slider."""
-    if int(user["id"]) not in ADMIN_USER_IDS:
-        raise HTTPException(status_code=403, detail="Not authorized")
     body = await request.json()
 
     def _num(value, default=0.0):
@@ -1887,6 +1889,8 @@ async def analytics_page(request: Request):
         "username": user["username"],
         "avatar": user.get("avatar"),
         "user_id": user["id"],
+        "is_admin": True,
+        "is_mod": request.session.get("mod", False),
     })
 
 @app.get("/api/analytics")
@@ -2206,6 +2210,7 @@ async def contributors_page(request: Request):
         "avatar": user.get("avatar"),
         "user_id": user["id"],
         "is_admin": True,
+        "is_mod": request.session.get("mod", False),
     })
 
 def _contributors_period_since(period: str):
@@ -2525,6 +2530,7 @@ async def invite_network_page(request: Request):
         "avatar": user.get("avatar"),
         "user_id": user["id"],
         "is_admin": is_admin,
+        "is_mod": request.session.get("mod", False),
     })
 
 
