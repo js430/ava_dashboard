@@ -32,11 +32,13 @@ import httpx
 logger = logging.getLogger("dashboard.price_sources")
 
 # Canonical grade vocabulary. grading_roi.GRADE_ORDER must stay in sync.
-GRADE_KEYS = ("raw", "psa_8", "psa_9", "psa_10", "bgs_9_5", "bgs_10", "cgc_10")
+GRADE_KEYS = ("raw", "psa_8", "psa_9", "psa_10", "bgs_9_5", "bgs_10",
+              "cgc_10", "sgc_10")
 
 GRADE_LABELS = {
     "raw": "Raw", "psa_8": "PSA 8", "psa_9": "PSA 9", "psa_10": "PSA 10",
     "bgs_9_5": "BGS 9.5", "bgs_10": "BGS 10", "cgc_10": "CGC 10",
+    "sgc_10": "SGC 10",
 }
 
 
@@ -80,26 +82,37 @@ def _now() -> str:
 
 
 # ───────────────────────────── PriceCharting ─────────────────────────────
-# PriceCharting reuses its old video-game price-guide field names for cards,
-# so the field -> grade mapping is NOT self-describing. This table is the
-# mapping their card docs describe; their docs page returned HTTP 403 to
-# automated fetches, so IT IS UNVERIFIED. _log_unknown_fields() dumps any
-# price-looking key we didn't map on the first response of each process —
-# check the logs after the first live call and correct this table.
+# PriceCharting reuses its old video-game price-guide field names for cards
+# (loose/cib/new/box-only/manual-only), so the field -> grade mapping is NOT
+# self-describing. VERIFIED against PriceCharting's "Prices API: Description
+# of Keys" documentation — the comments below quote the card meanings.
+#
+# cib-price (cards: graded 7 or 7.5) is deliberately unmapped: the calculator
+# models 8/9/10, and a 7 doesn't inform the grade-or-sell decision.
+#
 # Values arrive in PENNIES.
 PRICECHARTING_FIELD_MAP = {
-    "loose-price":        "raw",
-    "new-price":          "psa_8",
-    "graded-price":       "psa_9",
-    "box-only-price":     "bgs_9_5",
-    "manual-only-price":  "psa_10",
-    "bgs-10-price":       "bgs_10",
-    "condition-17-price": "cgc_10",
+    "loose-price":        "raw",       # Ungraded card
+    "new-price":          "psa_8",     # Graded 8 or 8.5
+    "graded-price":       "psa_9",     # Graded 9
+    "box-only-price":     "bgs_9_5",   # Graded 9.5
+    "manual-only-price":  "psa_10",    # Graded 10 by PSA
+    "bgs-10-price":       "bgs_10",    # BGS 10
+    "condition-17-price": "cgc_10",    # CGC 10
+    "condition-18-price": "sgc_10",    # SGC 10
+}
+
+# Priced fields we knowingly drop — keeps the "unmapped field" warning meaningful
+# instead of firing on every lookup for a grade we've chosen not to model.
+PRICECHARTING_IGNORED_FIELDS = {
+    "cib-price",           # cards: graded 7 or 7.5
+    "retail-cib-buy", "retail-cib-sell", "retail-loose-buy", "retail-loose-sell",
+    "retail-new-buy", "retail-new-sell",   # retailer buy/sell guidance, not comps
+    "gamestop-price",      # video-game only
 }
 
 PRICECHARTING_BASE = os.getenv("PRICECHARTING_API_BASE",
                                "https://www.pricecharting.com/api")
-_pc_logged_shape = False
 
 
 def _pc_query(card: CardRef) -> str:
@@ -127,18 +140,35 @@ def pricecharting_available() -> bool:
     return bool(os.getenv("PRICECHARTING_API_TOKEN"))
 
 
-def _log_unknown_fields(payload: dict) -> None:
-    """Log price-looking keys we don't have a mapping for — once per process."""
-    global _pc_logged_shape
-    if _pc_logged_shape:
-        return
-    _pc_logged_shape = True
-    keys = sorted(k for k in payload if k.endswith("-price"))
-    unknown = [k for k in keys if k not in PRICECHARTING_FIELD_MAP]
-    logger.info("PriceCharting response price fields: %s", keys)
-    if unknown:
-        logger.warning("PriceCharting fields with NO grade mapping: %s — "
-                       "check PRICECHARTING_FIELD_MAP against their docs", unknown)
+def _log_price_fields(payload: dict) -> None:
+    """Dump every price field WITH ITS VALUE on every lookup.
+
+    Deliberately not once-per-process: the field->grade mapping is unverified,
+    and the only way to check it is to compare a real response against that
+    card's page on pricecharting.com. Dollar values (not pennies) so they can
+    be read straight across against the site's columns. Unmapped fields are
+    flagged separately — a populated field we ignore is a grade the calculator
+    silently isn't showing.
+    """
+    priced, empty = [], []
+    for key in sorted(k for k in payload if k.endswith("-price")):
+        dollars = _pennies(payload.get(key))
+        target = PRICECHARTING_FIELD_MAP.get(key, "UNMAPPED")
+        if dollars is None:
+            empty.append(key)
+        else:
+            priced.append(f"{key}={dollars} -> {target}")
+    logger.info("PriceCharting fields with values: %s", "; ".join(priced) or "(none)")
+    if empty:
+        logger.info("PriceCharting fields empty/zero: %s", ", ".join(empty))
+    unmapped = [k for k in payload
+                if k.endswith("-price") and k not in PRICECHARTING_FIELD_MAP
+                and k not in PRICECHARTING_IGNORED_FIELDS
+                and _pennies(payload.get(k)) is not None]
+    if unmapped:
+        logger.warning("PriceCharting returned PRICED but UNMAPPED fields: %s — "
+                       "these grades are being dropped; fix PRICECHARTING_FIELD_MAP",
+                       unmapped)
 
 
 def _pennies(value) -> float | None:
@@ -178,7 +208,7 @@ async def fetch_pricecharting(client: httpx.AsyncClient, card: CardRef) -> list[
         logger.info("PriceCharting no match for %r: %s", query, payload.get("status"))
         return []
 
-    _log_unknown_fields(payload)
+    _log_price_fields(payload)
     product = payload.get("product-name") or ""
     console = payload.get("console-name") or ""
     matched_name = " — ".join(p for p in (product, console) if p)
@@ -222,6 +252,7 @@ _GRADE_PATTERNS = {
     "bgs_10":  re.compile(r"\bbgs\s*10\b", re.I),
     "bgs_9_5": re.compile(r"\bbgs\s*9\.5\b", re.I),
     "cgc_10":  re.compile(r"\bcgc\s*10\b", re.I),
+    "sgc_10":  re.compile(r"\bsgc\s*10\b", re.I),
 }
 _ANY_GRADER = re.compile(r"\b(psa|bgs|cgc|sgc|tag|ace)\s*\d", re.I)
 

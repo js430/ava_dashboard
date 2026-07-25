@@ -15,7 +15,8 @@ from dataclasses import dataclass, field
 
 # Canonical grade keys. Every price source maps its own vocabulary into these
 # (see price_sources.GRADE_KEYS) so the math never sees a vendor's naming.
-GRADE_ORDER = ("psa_10", "bgs_10", "cgc_10", "bgs_9_5", "psa_9", "psa_8", "psa_low")
+GRADE_ORDER = ("psa_10", "bgs_10", "cgc_10", "sgc_10", "bgs_9_5",
+               "psa_9", "psa_8", "psa_low")
 
 # Verdict thresholds, expressed as a fraction of the raw card's net value.
 # Below FLOOR the graded path loses money vs just selling raw; between FLOOR
