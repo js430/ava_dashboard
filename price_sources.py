@@ -103,6 +103,27 @@ PRICECHARTING_BASE = os.getenv("PRICECHARTING_API_BASE",
 _pc_logged_shape = False
 
 
+def _pc_query(card: CardRef) -> str:
+    """PriceCharting-specific search string.
+
+    Their products are named like "Mew ex #232" under a console named
+    "Pokemon Paldean Fates". Two things differ from the generic query():
+      - card_number arrives from pokemontcg.io as "232/091" (number/printedTotal);
+        PriceCharting only knows the bare "232", and the "/091" is a token that
+        matches nothing, which sinks the search.
+      - the console is prefixed with the game ("Pokemon <set>"), so we prefix it
+        too rather than sending the bare set name.
+    """
+    number = (card.card_number or "").split("/")[0].strip()
+    game_word = {"pokemon": "Pokemon", "one_piece": "One Piece"}.get(card.game, "")
+    parts = [card.name.strip()]
+    if number:
+        parts.append(number)
+    if card.set_name.strip():
+        parts.append(f"{game_word} {card.set_name}".strip())
+    return " ".join(p for p in parts if p)
+
+
 def pricecharting_available() -> bool:
     return bool(os.getenv("PRICECHARTING_API_TOKEN"))
 
@@ -136,29 +157,37 @@ async def fetch_pricecharting(client: httpx.AsyncClient, card: CardRef) -> list[
     token = os.getenv("PRICECHARTING_API_TOKEN")
     if not token:
         return []
+    query = _pc_query(card)
     try:
         resp = await client.get(f"{PRICECHARTING_BASE}/product",
-                                params={"t": token, "q": card.query()})
+                                params={"t": token, "q": query})
     except Exception:
-        logger.exception("PriceCharting request failed for %r", card.query())
+        logger.exception("PriceCharting request failed for %r", query)
         return []
 
     if resp.status_code != 200:
-        logger.warning("PriceCharting HTTP %s for %r", resp.status_code, card.query())
+        logger.warning("PriceCharting HTTP %s for %r", resp.status_code, query)
         return []
     try:
         payload = resp.json()
     except Exception:
-        logger.warning("PriceCharting returned non-JSON for %r", card.query())
+        logger.warning("PriceCharting returned non-JSON for %r", query)
         return []
     if not isinstance(payload, dict):
         return []
     if str(payload.get("status", "success")).lower() not in ("success", "ok", ""):
-        logger.info("PriceCharting no match for %r: %s", card.query(), payload.get("status"))
+        logger.info("PriceCharting no match for %r: %s", query, payload.get("status"))
         return []
 
     _log_unknown_fields(payload)
-    matched_name = payload.get("product-name") or payload.get("console-name") or ""
+    product = payload.get("product-name") or ""
+    console = payload.get("console-name") or ""
+    matched_name = " — ".join(p for p in (product, console) if p)
+    # Logged every lookup (not once per process): a wrong-but-plausible match is
+    # the failure mode that silently produces confident garbage, so the matched
+    # product must always be checkable against what was asked for.
+    logger.info("PriceCharting %r -> matched %r (id=%s)",
+                query, matched_name or "?", payload.get("id"))
 
     quotes = []
     for field_name, grade in PRICECHARTING_FIELD_MAP.items():
@@ -170,7 +199,7 @@ async def fetch_pricecharting(client: httpx.AsyncClient, card: CardRef) -> list[
             as_of=_now(), note=matched_name or None,
         ))
     if not quotes:
-        logger.info("PriceCharting matched %r but returned no usable prices", card.query())
+        logger.info("PriceCharting matched %r but returned no usable prices", query)
     return quotes
 
 
