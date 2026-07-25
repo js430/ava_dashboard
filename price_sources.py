@@ -169,6 +169,16 @@ def _log_price_fields(payload: dict) -> None:
         logger.warning("PriceCharting returned PRICED but UNMAPPED fields: %s — "
                        "these grades are being dropped; fix PRICECHARTING_FIELD_MAP",
                        unmapped)
+    # Every remaining key, so a grade arriving under a name that doesn't end in
+    # "-price" can't hide from the scan above. This is the whole payload minus
+    # the price fields already reported — set PRICECHARTING_DEBUG=1 to also dump
+    # the raw JSON.
+    others = sorted(k for k in payload if not k.endswith("-price"))
+    if others:
+        logger.info("PriceCharting other keys: %s",
+                    ", ".join(f"{k}={payload[k]!r}" for k in others))
+    if os.getenv("PRICECHARTING_DEBUG", "").strip() not in ("", "0", "false"):
+        logger.info("PriceCharting RAW payload: %s", payload)
 
 
 def _pennies(value) -> float | None:
