@@ -43,6 +43,33 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s"
 )
 
+
+class _RedactSecretsFilter(logging.Filter):
+    """Strip API keys out of logged URLs.
+
+    httpx logs every request line at INFO including the full query string, so a
+    vendor that authenticates via a query param (PriceCharting's ?t=<token>)
+    would otherwise write its own credential into the logs on every call.
+    """
+    _PATTERN = re.compile(r"([?&](?:t|token|key|api_key|apikey)=)[^&\s\"']+",
+                          re.IGNORECASE)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        if "=" in msg:
+            redacted = self._PATTERN.sub(r"\1<redacted>", msg)
+            if redacted != msg:
+                record.msg = redacted
+                record.args = ()
+        return True
+
+
+for _noisy in ("httpx", "httpcore"):
+    logging.getLogger(_noisy).addFilter(_RedactSecretsFilter())
+
 def get_real_ip(request: Request) -> str:
     """Real client IP behind Railway's proxy.
 

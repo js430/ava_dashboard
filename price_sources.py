@@ -24,7 +24,6 @@ import os
 import re
 import base64
 import logging
-import statistics
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 
@@ -211,6 +210,8 @@ async def fetch_pricecharting(client: httpx.AsyncClient, card: CardRef) -> list[
 EBAY_BASE = os.getenv("EBAY_API_BASE", "https://api.ebay.com")
 EBAY_MARKETPLACE = os.getenv("EBAY_MARKETPLACE_ID", "EBAY_US")
 EBAY_SEARCH_LIMIT = 50
+# How many of the cheapest listings per grade get averaged into the quote.
+EBAY_PRICE_SAMPLE = 5
 
 # Title patterns per grade. Order matters for `raw` (checked last, by
 # exclusion). \b on the trailing digit stops "PSA 9" matching "PSA 9.5".
@@ -338,14 +339,19 @@ async def fetch_ebay(client: httpx.AsyncClient, card: CardRef) -> list[GradedQuo
     quotes = []
     for grade, prices in buckets.items():
         prices.sort()
-        # Median, not lowest: the cheapest listing is disproportionately a
-        # wrong card, a damaged copy, or bait. Lowest is carried separately
-        # as `low` because it IS what you'd compete against on price.
+        # Average of the N CHEAPEST listings, not of all of them: the low end of
+        # the ask stack is what a seller actually has to compete with, and it
+        # ignores the aspirational $5k listing that has sat unsold for months.
+        # Averaging several (rather than taking the single lowest) blunts the
+        # one bad listing — wrong card, damaged copy, bait price.
+        sample = prices[:EBAY_PRICE_SAMPLE]
         quotes.append(GradedQuote(
-            grade=grade, price=round(statistics.median(prices), 2), basis="ask",
-            source="ebay_browse", as_of=_now(), sample_size=len(prices),
+            grade=grade, price=round(sum(sample) / len(sample), 2), basis="ask",
+            source="ebay_browse", as_of=_now(), sample_size=len(sample),
             low=round(prices[0], 2),
-            note=f"{len(prices)} active listing(s)",
+            note=(f"avg of {len(sample)} cheapest of {len(prices)} active listing(s)"
+                  if len(prices) > len(sample)
+                  else f"avg of {len(sample)} active listing(s)"),
         ))
     if not quotes:
         logger.info("eBay returned %d item(s) for %r, none classifiable",
