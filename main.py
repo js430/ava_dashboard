@@ -1917,8 +1917,14 @@ async def api_grading_calc(request: Request, user=Depends(get_current_user)):
         sale_fee_pct=min(max(_num(c.get("sale_fee_pct"), 0.0), 0.0), 0.9),
         sale_ship=_num(c.get("sale_ship"), 0.0),
     )
+    # "What you'd net" reports on whichever grading company is picked in Your
+    # costs — each company's own top-two grade keys, from grading_tiers.py.
+    # Falls back to PSA 10/9 when no company is selected ("Custom / other").
+    company = (body.get("company") or "").strip().lower()
+    report_grades = grading_tiers.GRADING_COMPANIES.get(company, {}).get(
+        "report_grades") or grading_roi.REPORTED_GRADES
     try:
-        r = grading_roi.evaluate(raw_price, grade_prices, costs)
+        r = grading_roi.evaluate(raw_price, grade_prices, costs, grades=report_grades)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

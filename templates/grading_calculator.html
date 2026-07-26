@@ -305,7 +305,7 @@
 </div>
 
 <script>
-const GRADES = ['raw','psa_8','psa_9','psa_10','bgs_9_5','bgs_10','cgc_10','sgc_10'];
+const GRADES = ['raw','psa_8','psa_9','psa_10','bgs_9_5','bgs_10','cgc_9','cgc_10','sgc_10','tag_9','tag_10'];
 const LABELS = {{ grade_labels | tojson }};
 // Grades the result panel reports on. Everything else is still shown in the
 // price table for reference, but PSA 10 and 9 carry the sale volume.
@@ -443,7 +443,7 @@ function cardValue(){
   const p10 = +(document.getElementById('price_psa_10') || {}).value || 0;
   if (p10 > 0) return p10;
   let best = 0;
-  ['bgs_10','cgc_10','psa_9','bgs_9_5','psa_8'].forEach(g => {
+  ['bgs_10','cgc_10','tag_10','psa_9','bgs_9_5','cgc_9','tag_9','psa_8'].forEach(g => {
     const el = document.getElementById('price_' + g);
     if (el && +el.value > best) best = +el.value;
   });
@@ -466,6 +466,7 @@ function onCompanyChange(){
     document.getElementById('tierHint').textContent =
       'Type the fee in yourself, or pick a grader to auto-fill it.';
     document.getElementById('coverageWarn').style.display = 'none';
+    scheduleCalc();   // "What you'd net" falls back to PSA 10/9
     return;
   }
   tierSel.innerHTML = GRADERS[cid].tiers
@@ -619,6 +620,9 @@ async function calc(){
   const body = {
     raw_price: gradePrices.raw || 0,
     grade_prices: gradePrices,
+    // Which company's top-two grades "What you'd net" reports on — empty
+    // means Custom/other, which the server falls back to PSA 10/9 for.
+    company: document.getElementById('gradeCompany').value,
     costs: {
       grading_fee: +document.getElementById('gradingFee').value || 0,
       ship_to: +document.getElementById('shipTo').value || 0,
@@ -644,11 +648,20 @@ function money(v){
     {minimumFractionDigits: 2, maximumFractionDigits: 2});
 }
 
+// Grade keys "What you'd net" targets for the currently selected company —
+// mirrors grading_tiers.GRADING_COMPANIES["report_grades"] server-side, used
+// here only to word the empty-state message.
+function reportedGradeKeys(){
+  const cid = document.getElementById('gradeCompany').value;
+  return (GRADERS[cid] && GRADERS[cid].report_grades) || ['psa_10', 'psa_9'];
+}
+
 function render(d){
   const wrap = document.getElementById('netCards');
   if (!d.grades.length){
-    wrap.innerHTML = '<div class="sub">No PSA 10 or PSA 9 price yet — look up a card, '
-                   + 'or type the prices in on the left.</div>';
+    const names = reportedGradeKeys().map(g => LABELS[g] || g).join(' or ');
+    wrap.innerHTML = `<div class="sub">No ${names} price yet — look up a card, `
+                   + `or type the prices in on the left.</div>`;
   } else {
     wrap.innerHTML = d.grades.map(g => {
       const better = g.vs_raw >= 0;

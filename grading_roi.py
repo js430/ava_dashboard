@@ -15,11 +15,14 @@ Run `python -m grading_roi` for a synthetic-data demo.
 from dataclasses import dataclass, field
 
 # Canonical grade keys, best first. price_sources.GRADE_KEYS must stay in sync.
-GRADE_ORDER = ("psa_10", "bgs_10", "cgc_10", "sgc_10", "bgs_9_5",
-               "psa_9", "psa_8", "psa_low")
+GRADE_ORDER = ("psa_10", "bgs_10", "cgc_10", "sgc_10", "tag_10", "bgs_9_5",
+               "psa_9", "cgc_9", "tag_9", "psa_8", "psa_low")
 
-# Grades the calculator reports on. PSA 10 and PSA 9 are where essentially all
-# the graded-sale volume is, so they're the only two worth showing by default.
+# Default grades the calculator reports on when no grading company is picked.
+# PSA 10/9 is where essentially all the graded-sale volume is, so it's the
+# fallback; grading_tiers.GRADING_COMPANIES["report_grades"] overrides this
+# per company (BGS reports bgs_10/bgs_9_5, etc) so the net-proceeds cards
+# match the company actually selected in "Your costs".
 REPORTED_GRADES = ("psa_10", "psa_9")
 
 

@@ -33,13 +33,16 @@ import httpx
 logger = logging.getLogger("dashboard.price_sources")
 
 # Canonical grade vocabulary. grading_roi.GRADE_ORDER must stay in sync.
+# cgc_9/tag_10/tag_9 exist so each grading company's own top-two grades (see
+# grading_tiers.GRADING_COMPANIES["report_grades"]) are representable — PPT's
+# salesByGrade already returns cgc9/tag10/tag9, they just weren't read before.
 GRADE_KEYS = ("raw", "psa_8", "psa_9", "psa_10", "bgs_9_5", "bgs_10",
-              "cgc_10", "sgc_10")
+              "cgc_9", "cgc_10", "sgc_10", "tag_9", "tag_10")
 
 GRADE_LABELS = {
     "raw": "Raw", "psa_8": "PSA 8", "psa_9": "PSA 9", "psa_10": "PSA 10",
-    "bgs_9_5": "BGS 9.5", "bgs_10": "BGS 10", "cgc_10": "CGC 10",
-    "sgc_10": "SGC 10",
+    "bgs_9_5": "BGS 9.5", "bgs_10": "BGS 10", "cgc_9": "CGC 9", "cgc_10": "CGC 10",
+    "sgc_10": "SGC 10", "tag_9": "TAG 9", "tag_10": "TAG 10",
 }
 
 
@@ -297,8 +300,11 @@ PPT_GRADE_FIELDS = {
     "psa10": "psa_10",
     "bgs95": "bgs_9_5",
     "bgs10": "bgs_10",
+    "cgc9":  "cgc_9",
     "cgc10": "cgc_10",
     "sgc10": "sgc_10",
+    "tag9":  "tag_9",
+    "tag10": "tag_10",
 }
 
 # Per-grade price, best first. smartMarketPrice is PPT's own filtered+weighted
@@ -872,8 +878,11 @@ _GRADE_PATTERNS = {
     "psa_8":   re.compile(r"\bpsa\s*8\b", re.I),
     "bgs_10":  re.compile(r"\bbgs\s*10\b", re.I),
     "bgs_9_5": re.compile(r"\bbgs\s*9\.5\b", re.I),
+    "cgc_9":   re.compile(r"\bcgc\s*9(?!\.5)\b", re.I),
     "cgc_10":  re.compile(r"\bcgc\s*10\b", re.I),
     "sgc_10":  re.compile(r"\bsgc\s*10\b", re.I),
+    "tag_9":   re.compile(r"\btag\s*9(?!\.5)\b", re.I),
+    "tag_10":  re.compile(r"\btag\s*10\b", re.I),
 }
 _ANY_GRADER = re.compile(r"\b(psa|bgs|cgc|sgc|tag|ace)\s*\d", re.I)
 
