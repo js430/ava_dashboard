@@ -292,6 +292,30 @@ def _ppt_search_name(name: str) -> str:
     return re.sub(r"\s+", " ", (name or "").replace("-", " ")).strip()
 
 
+def _ppt_canon(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (value or "").lower())
+
+
+def _ppt_strip_set_code(set_name: str) -> str:
+    """'SV10: Destined Rivals' -> 'Destined Rivals'.
+
+    PPT prefixes set names with the release code ('SV10:', 'ME:', 'SV:'),
+    which the catalog APIs don't use. Everything before the first colon is
+    that code, not part of the set's name.
+    """
+    raw = set_name or ""
+    return raw.split(":", 1)[1].strip() if ":" in raw else raw.strip()
+
+
+def _ppt_strip_name_suffix(name: str) -> str:
+    """"Team Rocket's Mewtwo ex - 240/182" -> "Team Rocket's Mewtwo ex".
+
+    PPT appends the card number to disambiguate printings; the catalogs keep
+    it in a separate field, so drop it before comparing names.
+    """
+    return re.sub(r"\s*-\s*\d+[a-z]?(/\d+)?\s*$", "", (name or ""), flags=re.I).strip()
+
+
 def _ppt_pick_card(rows: list, card: CardRef) -> dict | None:
     """Best row for the card we asked about.
 
@@ -303,24 +327,37 @@ def _ppt_pick_card(rows: list, card: CardRef) -> dict | None:
     """
     if not rows:
         return None
-    canon = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())
     want_num = (card.card_number or "").split("/")[0].strip().lstrip("0").lower()
-    want_name = canon(_ppt_search_name(card.name))
-    want_set = canon(card.set_name)
+    want_name = _ppt_canon(_ppt_search_name(card.name))
+    want_set = _ppt_canon(card.set_name)
 
     def by_number(row) -> bool:
         got = str(row.get("cardNumber") or "").split("/")[0].strip().lstrip("0").lower()
         return bool(want_num) and bool(got) and got == want_num
 
     def by_name(row) -> bool:
-        return canon(_ppt_search_name(str(row.get("name") or ""))) == want_name
+        got = _ppt_strip_name_suffix(str(row.get("name") or ""))
+        return _ppt_canon(_ppt_search_name(got)) == want_name
 
-    # When the set is known it is a HARD filter, never a preference: card
-    # numbers repeat across sets (78/73 in Shining Legends vs 78/68 in Hidden
-    # Fates), so a bare number match from the wrong set is a different card at
-    # a completely different price. Better to return nothing.
+    def same_set(row) -> bool:
+        """Exact match, after stripping PPT's release-code prefix.
+
+        Deliberately NOT substring matching: "Base Set" is contained in
+        "Base Set 2", which is a different set with a different Charizard at a
+        very different price. Unrecognised naming drift returns no match and
+        falls through to the other vendors, which is the safe failure.
+        """
+        if not want_set:
+            return True
+        return want_set in (_ppt_canon(row.get("setName")),
+                            _ppt_canon(_ppt_strip_set_code(row.get("setName"))))
+
+    # A known set is a HARD filter, never a preference: card numbers repeat
+    # across sets (78/73 in Shining Legends vs 78/68 in Hidden Fates), so a
+    # bare number match from the wrong set is a different card at a completely
+    # different price. Better to return nothing than a plausible wrong answer.
     if want_set:
-        rows = [r for r in rows if canon(r.get("setName")) == want_set]
+        rows = [r for r in rows if same_set(r)]
         if not rows:
             return None
 
@@ -328,8 +365,8 @@ def _ppt_pick_card(rows: list, card: CardRef) -> dict | None:
         for row in rows:
             if test(row):
                 return row
-    # Set matched but neither number nor name did: only trust that if the set
-    # was specified (the candidate list is already constrained to it).
+    # Set matched but neither number nor name did — trust that only when the
+    # candidate list was already constrained to the requested set.
     return rows[0] if want_set else None
 
 
