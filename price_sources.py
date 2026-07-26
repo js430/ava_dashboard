@@ -282,26 +282,55 @@ def pokemonpricetracker_available() -> bool:
     return bool(os.getenv("POKEMONPRICETRACKER_API_KEY"))
 
 
+def _ppt_search_name(name: str) -> str:
+    """Normalize a card name for PPT's text search.
+
+    pokemontcg.io hyphenates suffixes ("Mewtwo-GX", "Charizard-EX"); every
+    other catalog spaces them ("Mewtwo GX"). Sending the hyphenated form
+    returns zero rows, so flatten the hyphens to spaces.
+    """
+    return re.sub(r"\s+", " ", (name or "").replace("-", " ")).strip()
+
+
 def _ppt_pick_card(rows: list, card: CardRef) -> dict | None:
     """Best row for the card we asked about.
 
     Prefers an exact card-number match (comparing only the numerator, since
     "215/203" and "215" both occur), then an exact name match, then the first
-    row. Returning the wrong printing would quietly price a different card.
+    row. When the set is known, rows from that set win within each tier —
+    a same-number card from another set is a different card. Returning the
+    wrong printing would quietly price something else.
     """
     if not rows:
         return None
+    canon = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())
     want_num = (card.card_number or "").split("/")[0].strip().lstrip("0").lower()
-    want_name = re.sub(r"[^a-z0-9]", "", card.name.lower())
-    if want_num:
+    want_name = canon(_ppt_search_name(card.name))
+    want_set = canon(card.set_name)
+
+    def by_number(row) -> bool:
+        got = str(row.get("cardNumber") or "").split("/")[0].strip().lstrip("0").lower()
+        return bool(want_num) and bool(got) and got == want_num
+
+    def by_name(row) -> bool:
+        return canon(_ppt_search_name(str(row.get("name") or ""))) == want_name
+
+    # When the set is known it is a HARD filter, never a preference: card
+    # numbers repeat across sets (78/73 in Shining Legends vs 78/68 in Hidden
+    # Fates), so a bare number match from the wrong set is a different card at
+    # a completely different price. Better to return nothing.
+    if want_set:
+        rows = [r for r in rows if canon(r.get("setName")) == want_set]
+        if not rows:
+            return None
+
+    for test in (by_number, by_name):
         for row in rows:
-            got = str(row.get("cardNumber") or "").split("/")[0].strip().lstrip("0").lower()
-            if got and got == want_num:
+            if test(row):
                 return row
-    for row in rows:
-        if re.sub(r"[^a-z0-9]", "", str(row.get("name") or "").lower()) == want_name:
-            return row
-    return rows[0]
+    # Set matched but neither number nor name did: only trust that if the set
+    # was specified (the candidate list is already constrained to it).
+    return rows[0] if want_set else None
 
 
 async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
@@ -321,42 +350,60 @@ async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
         logger.info("PokemonPriceTracker cache hit for %r (no credits spent)", cache_key)
         return list(hit[1])
 
-    params = {
-        "search": card.name.strip(),
-        "limit": PPT_SEARCH_LIMIT,
-        "includeEbay": "true",
-    }
+    search = _ppt_search_name(card.name)
+    headers = {"Authorization": f"Bearer {key}"}
+
+    async def _search(params: dict):
+        """One request. Returns (rows, response) or (None, None) on failure."""
+        try:
+            resp = await client.get(f"{PPT_BASE}/cards", headers=headers, params=params)
+        except Exception:
+            logger.exception("PokemonPriceTracker request failed for %r", search)
+            return None, None
+        if resp.status_code == 401:
+            logger.warning("PokemonPriceTracker rejected the API key (401)")
+            return None, None
+        if resp.status_code == 429:
+            logger.warning("PokemonPriceTracker rate/credit limit hit (429)")
+            return None, None
+        if resp.status_code != 200:
+            logger.warning("PokemonPriceTracker HTTP %s for %r: %s",
+                           resp.status_code, search, resp.text[:300])
+            return None, None
+        try:
+            payload = resp.json()
+        except Exception:
+            logger.warning("PokemonPriceTracker returned non-JSON for %r", search)
+            return None, None
+        return ((payload or {}).get("data") or []), resp
+
+    base_params = {"search": search, "limit": PPT_SEARCH_LIMIT, "includeEbay": "true"}
+    attempts = []
     if card.set_name.strip():
-        params["set"] = card.set_name.strip()
+        attempts.append({**base_params, "set": card.set_name.strip()})
+    attempts.append(base_params)      # set filter dropped; matched client-side
 
-    try:
-        resp = await client.get(f"{PPT_BASE}/cards",
-                                headers={"Authorization": f"Bearer {key}"},
-                                params=params)
-    except Exception:
-        logger.exception("PokemonPriceTracker request failed for %r", card.name)
-        return []
+    rows, resp, row = [], None, None
+    for i, params in enumerate(attempts):
+        rows, resp = await _search(params)
+        if rows is None:
+            return []
+        row = _ppt_pick_card(rows, card)
+        if row:
+            break
+        # An empty result costs no per-card credits, so retrying without the
+        # set filter is cheap. Their own docs use a lowercase slug ("celebrations"),
+        # so a title-cased multi-word set name may simply not match the filter.
+        if i < len(attempts) - 1:
+            logger.info("PokemonPriceTracker: %d row(s) for %r with set=%r — "
+                        "retrying without the set filter",
+                        len(rows), search, card.set_name)
 
-    if resp.status_code == 401:
-        logger.warning("PokemonPriceTracker rejected the API key (401)")
-        return []
-    if resp.status_code == 429:
-        logger.warning("PokemonPriceTracker rate/credit limit hit (429)")
-        return []
-    if resp.status_code != 200:
-        logger.warning("PokemonPriceTracker HTTP %s for %r: %s",
-                       resp.status_code, card.name, resp.text[:300])
-        return []
-    try:
-        payload = resp.json()
-    except Exception:
-        logger.warning("PokemonPriceTracker returned non-JSON for %r", card.name)
-        return []
-
-    rows = (payload or {}).get("data") or []
-    row = _ppt_pick_card(rows, card)
     if not row:
-        logger.info("PokemonPriceTracker: no match for %r (%s)", card.name, card.set_name)
+        logger.info("PokemonPriceTracker: no match for %r (%s); %d row(s) seen: %s",
+                    search, card.set_name, len(rows),
+                    [(r.get("name"), r.get("cardNumber"), r.get("setName"))
+                     for r in rows[:5]])
         return []
 
     # Credit accounting is in the response headers — log it so budget burn is
