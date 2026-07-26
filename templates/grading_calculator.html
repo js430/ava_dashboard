@@ -84,6 +84,35 @@
   .srcchip.on { background: #dcfce7; color: #166534; }
   .srcchip.off { background: #fee2e2; color: #991b1b; }
 
+  /* ── Scanner ── */
+  .scan-toggle-btn { height: 26px; padding: 0 10px; border-radius: 6px; font-size: 12px; display: inline-flex; align-items: center; gap: 5px; }
+  .scanner-panel { border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px; margin-bottom: 14px; background: #fafafa; }
+  .scan-viewport { position: relative; width: 100%; max-width: 320px; margin: 0 auto; aspect-ratio: 3/4; background: #111; border-radius: 10px; overflow: hidden; touch-action: manipulation; }
+  .scan-viewport video, .scan-viewport img#scanFrozen { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .scan-placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: #71717a; font-size: 12px; text-align: center; padding: 16px; }
+  .scan-placeholder svg { color: #52525b; }
+  .scan-hint { position: absolute; left: 0; right: 0; bottom: 10px; text-align: center; font-size: 12px; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.7); pointer-events: none; }
+  .card-guide { position: absolute; top: 46%; left: 50%; transform: translate(-50%,-50%); width: 64%; aspect-ratio: 0.714; pointer-events: none; }
+  .gc { position: absolute; width: 22px; height: 22px; border-color: #fff; border-style: solid; border-width: 0; filter: drop-shadow(0 0 2px rgba(0,0,0,.7)); }
+  .gc-tl { top: -2px; left: -2px; border-top-width: 3px; border-left-width: 3px; border-radius: 6px 0 0 0; }
+  .gc-tr { top: -2px; right: -2px; border-top-width: 3px; border-right-width: 3px; border-radius: 0 6px 0 0; }
+  .gc-bl { bottom: -2px; left: -2px; border-bottom-width: 3px; border-left-width: 3px; border-radius: 0 0 0 6px; }
+  .gc-br { bottom: -2px; right: -2px; border-bottom-width: 3px; border-right-width: 3px; border-radius: 0 0 6px 0; }
+  .scan-focus-ring { position: absolute; width: 56px; height: 56px; margin-left: -28px; margin-top: -28px; border: 2px solid #fff; border-radius: 50%; pointer-events: none; box-shadow: 0 0 0 1px rgba(0,0,0,.4); animation: scanFocusPulse .5s ease-out; }
+  @keyframes scanFocusPulse { from { transform: scale(1.35); opacity: .4; } to { transform: scale(1); opacity: 1; } }
+  .scan-zoom-row { display: flex; align-items: center; gap: 8px; max-width: 320px; margin: 8px auto 0; color: #888; }
+  .scan-zoom-row input[type=range] { flex: 1; accent-color: #5865F2; }
+  .scan-controls { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 10px; }
+  .scan-controls .btn, .scan-controls .btn-plain { flex: 0 0 auto; }
+  .shutter-btn { width: 52px; height: 52px; border-radius: 50%; background: #fff; border: 3px solid #5865F2; cursor: pointer; padding: 0; }
+  .shutter-btn:hover { background: #f0f1ff; }
+  .shutter-btn:active { transform: scale(.94); }
+  .scan-icon-btn { width: 38px; height: 38px; border-radius: 50%; background: #fff; border: 1px solid #ddd; color: #555; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; }
+  .scan-icon-btn:hover { background: #f4f4f5; }
+  .scan-icon-btn.on { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .scan-status-line { text-align: center; font-size: 12px; color: #888; margin-top: 10px; }
+  #scannerPanel .warn { max-width: 320px; margin: 10px auto 0; }
+
   @media (max-width: 860px) {
     .grid { grid-template-columns: 1fr; }
     .main { padding: 12px; }
@@ -116,6 +145,11 @@
   html[data-theme="dark"] .net-card { border-color: #303033; }
   html[data-theme="dark"] .net-grade { color: #f0f0f0; }
   html[data-theme="dark"] .net-total { border-top-color: #303033; }
+  html[data-theme="dark"] .scanner-panel { background: #18181b; border-color: #303033; }
+  html[data-theme="dark"] .scan-icon-btn { background: #252528; border-color: #383838; color: #d4d4d8; }
+  html[data-theme="dark"] .scan-icon-btn:hover { background: #2e2e32; }
+  html[data-theme="dark"] .scan-zoom-row { color: #71717a; }
+  html[data-theme="dark"] .scan-status-line { color: #a1a1aa; }
 </style>
 </head>
 <body>
@@ -128,7 +162,6 @@
   <div class="nav">
     <a href="/">Dashboard</a>
     <a href="/map">Map</a>
-    <a href="/scan">Scan</a>
     {% if is_admin %}
     <div class="nav-group">
       <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
@@ -171,9 +204,57 @@
       <div class="card">
         <div class="card-head">
           <span class="card-title">Card</span>
+          <button class="btn-plain scan-toggle-btn" id="scanToggleBtn" onclick="toggleScanner()" type="button">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z"/><circle cx="12" cy="13.5" r="3.5"/></svg>
+            Scan card
+          </button>
           <span class="status" id="lookupStatus"></span>
         </div>
         <div class="card-body">
+          <div id="scannerPanel" class="scanner-panel" style="display:none">
+            <div class="scan-viewport" id="scanViewport">
+              <video id="scanVideo" autoplay playsinline muted style="display:none"></video>
+              <img id="scanFrozen" alt="Captured card" style="display:none">
+              <canvas id="scanCanvas" style="display:none"></canvas>
+              <div class="card-guide" id="cardGuide" style="display:none">
+                <div class="gc gc-tl"></div><div class="gc gc-tr"></div>
+                <div class="gc gc-bl"></div><div class="gc gc-br"></div>
+              </div>
+              <div class="scan-placeholder" id="scanPlaceholder">
+                <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z"/><circle cx="12" cy="13.5" r="3.5"/></svg>
+                <div>Open the camera or upload a photo</div>
+              </div>
+              <div class="scan-hint" id="scanHint" style="display:none">Line the card up with the frame</div>
+            </div>
+
+            <div class="scan-zoom-row" id="scanZoomRow" style="display:none">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+              <input type="range" id="scanZoom" min="0" max="1" step="0.01" value="0" oninput="onScanZoom()">
+            </div>
+
+            <div class="scan-controls" id="scanControlsIdle">
+              <button class="btn" onclick="openScanCamera()" type="button">Open camera</button>
+              <button class="btn btn-plain" onclick="document.getElementById('scanFileInput').click()" type="button">Upload photo</button>
+              <input type="file" id="scanFileInput" accept="image/*" style="display:none" onchange="handleScanFile(event)">
+            </div>
+            <div class="scan-controls" id="scanControlsLive" style="display:none">
+              <button class="scan-icon-btn" id="scanTorchBtn" onclick="toggleScanTorch()" type="button" style="display:none" title="Toggle flashlight" aria-label="Toggle flashlight">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6M10 22h4M12 2a7 7 0 00-4 12.7V17h8v-2.3A7 7 0 0012 2z"/></svg>
+              </button>
+              <button class="shutter-btn" onclick="captureScanPhoto()" type="button" aria-label="Capture photo"></button>
+              <button class="scan-icon-btn" onclick="closeScanCamera()" type="button" title="Close camera" aria-label="Close camera">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 18L18 6M6 6l12 12"/></svg>
+              </button>
+            </div>
+            <div class="scan-controls" id="scanControlsReview" style="display:none">
+              <button class="btn btn-plain" onclick="retakeScan()" type="button">Retake</button>
+              <button class="btn" id="scanIdentifyBtn" onclick="identifyScannedCard()" type="button">Identify card</button>
+            </div>
+
+            <div class="scan-status-line" id="scanStatusLine" style="display:none"></div>
+            <div class="warn" id="scanErrorLine" style="display:none"></div>
+          </div>
+
           <div class="row">
             <div style="flex:0 0 120px">
               <label class="label" for="game">Game</label>
@@ -705,8 +786,439 @@ function render(d){
 ['gradingFee','shipTo','shipReturn','insurance','saleFee','saleShip']
   .forEach(id => document.getElementById(id).addEventListener('input', scheduleCalc));
 
+// ───────────────────────────── Scanner ─────────────────────────────
+// Camera capture with a card-shaped guide (crops the photo to the guide
+// before it's sent, so Claude sees the card and not the desk it's on) and
+// capability-gated focus/zoom/torch — each control only appears when the
+// active camera track actually exposes it, so nothing here is a placebo on
+// hardware that doesn't support it.
+const SCAN_GUIDE_FRAC_W = 0.64;
+const SCAN_GUIDE_ASPECT = 0.714;   // ~63:88mm TCG card ratio, matches .card-guide's CSS
+
+let scanStream = null;
+let scanTrack = null;
+let scanCapturedDataUrl = null;
+let scanTorchOn = false;
+
+function toggleScanner(){
+  const panel = document.getElementById('scannerPanel');
+  const willShow = panel.style.display === 'none';
+  panel.style.display = willShow ? 'block' : 'none';
+  if (!willShow) resetScannerPanel();
+}
+
+function resetScannerPanel(){
+  closeScanCamera();
+  scanCapturedDataUrl = null;
+  document.getElementById('scanFrozen').style.display = 'none';
+  document.getElementById('scanFrozen').src = '';
+  document.getElementById('scanPlaceholder').style.display = 'flex';
+  document.getElementById('cardGuide').style.display = 'none';
+  document.getElementById('scanHint').style.display = 'none';
+  document.getElementById('scanControlsIdle').style.display = 'flex';
+  document.getElementById('scanControlsLive').style.display = 'none';
+  document.getElementById('scanControlsReview').style.display = 'none';
+  document.getElementById('scanZoomRow').style.display = 'none';
+  hideScanStatus();
+}
+
+function hideScanStatus(){
+  document.getElementById('scanStatusLine').style.display = 'none';
+  document.getElementById('scanErrorLine').style.display = 'none';
+}
+function showScanError(msg){
+  hideScanStatus();
+  const el = document.getElementById('scanErrorLine');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+function showScanStatus(msg){
+  hideScanStatus();
+  const el = document.getElementById('scanStatusLine');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+async function openScanCamera(){
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    showScanError('This browser can\'t open the camera here — use Upload photo instead.');
+    return;
+  }
+  const video = document.getElementById('scanVideo');
+  try {
+    scanStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1920 } },
+      audio: false
+    });
+  } catch(e){
+    showScanError('Could not open the camera — check permissions, or use Upload photo instead.');
+    return;
+  }
+  scanTrack = scanStream.getVideoTracks()[0];
+  video.srcObject = scanStream;
+  video.style.display = 'block';
+  document.getElementById('scanPlaceholder').style.display = 'none';
+  document.getElementById('scanFrozen').style.display = 'none';
+  document.getElementById('cardGuide').style.display = 'block';
+  document.getElementById('scanHint').style.display = 'block';
+  document.getElementById('scanControlsIdle').style.display = 'none';
+  document.getElementById('scanControlsReview').style.display = 'none';
+  document.getElementById('scanControlsLive').style.display = 'flex';
+  hideScanStatus();
+  setUpScanCapabilities();
+  video.addEventListener('click', onScanVideoTap);
+}
+
+// Torch/zoom controls are hidden entirely unless MediaTrackCapabilities says
+// the hardware supports them — most desktop webcams and many phone browsers
+// don't expose either, and a control that silently no-ops is worse than one
+// that isn't there.
+function setUpScanCapabilities(){
+  const torchBtn = document.getElementById('scanTorchBtn');
+  const zoomRow = document.getElementById('scanZoomRow');
+  const zoomInput = document.getElementById('scanZoom');
+  torchBtn.style.display = 'none';
+  zoomRow.style.display = 'none';
+  scanTorchOn = false;
+  torchBtn.classList.remove('on');
+  if (!scanTrack || typeof scanTrack.getCapabilities !== 'function') return;
+  let caps;
+  try { caps = scanTrack.getCapabilities(); } catch(e){ return; }
+  if (caps.torch) torchBtn.style.display = 'inline-flex';
+  if (caps.zoom && caps.zoom.min !== undefined && caps.zoom.max !== undefined && caps.zoom.max > caps.zoom.min){
+    zoomInput.min = caps.zoom.min;
+    zoomInput.max = caps.zoom.max;
+    zoomInput.step = caps.zoom.step || (caps.zoom.max - caps.zoom.min) / 20;
+    const settings = scanTrack.getSettings ? scanTrack.getSettings() : {};
+    zoomInput.value = settings.zoom || caps.zoom.min;
+    zoomRow.style.display = 'flex';
+  }
+}
+
+function onScanZoom(){
+  if (!scanTrack) return;
+  const v = +document.getElementById('scanZoom').value;
+  scanTrack.applyConstraints({ advanced: [{ zoom: v }] }).catch(()=>{});
+}
+
+function toggleScanTorch(){
+  if (!scanTrack) return;
+  scanTorchOn = !scanTorchOn;
+  scanTrack.applyConstraints({ advanced: [{ torch: scanTorchOn }] }).catch(() => { scanTorchOn = !scanTorchOn; });
+  document.getElementById('scanTorchBtn').classList.toggle('on', scanTorchOn);
+}
+
+// Tap-to-focus — attempted, and the feedback ring only shown, when the track
+// actually reports focus support. On hardware without it, tapping the video
+// does nothing, which is honest; a ring with no real effect would not be.
+function onScanVideoTap(ev){
+  if (!scanTrack || typeof scanTrack.getCapabilities !== 'function') return;
+  let caps;
+  try { caps = scanTrack.getCapabilities(); } catch(e){ return; }
+  const modes = caps.focusMode || [];
+  if (!modes.includes('single-shot') && !modes.includes('manual')) return;
+
+  const rect = ev.currentTarget.getBoundingClientRect();
+  const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
+  const pt = containerPointToVideoNormalized(x, y, rect.width, rect.height,
+    ev.currentTarget.videoWidth, ev.currentTarget.videoHeight);
+  const constraint = modes.includes('single-shot')
+    ? { focusMode: 'single-shot', pointsOfInterest: [pt] }
+    : { focusMode: 'manual', pointsOfInterest: [pt] };
+  scanTrack.applyConstraints({ advanced: [constraint] }).then(() => {
+    showScanFocusRing(x, y);
+  }).catch(()=>{});
+}
+
+function showScanFocusRing(x, y){
+  const viewport = document.getElementById('scanViewport');
+  const ring = document.createElement('div');
+  ring.className = 'scan-focus-ring';
+  ring.style.left = x + 'px';
+  ring.style.top = y + 'px';
+  viewport.appendChild(ring);
+  setTimeout(() => ring.remove(), 550);
+}
+
+// Maps a point in CSS pixels within the (object-fit:cover) viewport to a
+// normalized [0,1]x[0,1] point in the VIDEO's native frame. Needed because
+// object-fit:cover crops the video to fill the container, so on-screen
+// coordinates and native video pixel coordinates diverge whenever their
+// aspect ratios differ — a raw tap position is the wrong point otherwise.
+function containerPointToVideoNormalized(x, y, containerW, containerH, videoW, videoH){
+  if (!videoW || !videoH) return { x: 0.5, y: 0.5 };
+  const scale = Math.max(containerW / videoW, containerH / videoH);
+  const renderedW = videoW * scale, renderedH = videoH * scale;
+  const offX = (renderedW - containerW) / 2, offY = (renderedH - containerH) / 2;
+  const nx = (x + offX) / scale, ny = (y + offY) / scale;
+  return { x: Math.min(1, Math.max(0, nx / videoW)), y: Math.min(1, Math.max(0, ny / videoH)) };
+}
+
+// Same object-fit:cover math, applied to the on-screen guide rectangle's
+// corners, to find the crop rect in native video pixels — so the captured
+// photo contains only what the guide outlined. guideTop mirrors the CSS
+// (top:46%, translateY(-50%)) exactly; keep the two in sync if either changes.
+function computeGuideCropRect(containerW, containerH, videoW, videoH, guideFracW, guideAspect){
+  const scale = Math.max(containerW / videoW, containerH / videoH);
+  const renderedW = videoW * scale, renderedH = videoH * scale;
+  const offX = (renderedW - containerW) / 2, offY = (renderedH - containerH) / 2;
+  const guideW = containerW * guideFracW;
+  const guideH = guideW / guideAspect;
+  const guideLeft = (containerW - guideW) / 2;
+  const guideTop = containerH * 0.46 - guideH / 2;
+  const toNative = (px, py) => [(px + offX) / scale, (py + offY) / scale];
+  const [x1, y1] = toNative(guideLeft, guideTop);
+  const [x2, y2] = toNative(guideLeft + guideW, guideTop + guideH);
+  const clamp = (v, max) => Math.min(max, Math.max(0, v));
+  const x = clamp(x1, videoW), y = clamp(y1, videoH);
+  const w = clamp(x2, videoW) - x, h = clamp(y2, videoH) - y;
+  return { x, y, w: Math.max(1, w), h: Math.max(1, h) };
+}
+
+function captureScanPhoto(){
+  const video = document.getElementById('scanVideo');
+  const canvas = document.getElementById('scanCanvas');
+  const viewport = document.getElementById('scanViewport');
+  if (!video.videoWidth || !video.videoHeight){
+    showScanError('Camera not ready yet — try again in a moment.');
+    return;
+  }
+  const rect = viewport.getBoundingClientRect();
+  const crop = computeGuideCropRect(rect.width, rect.height, video.videoWidth, video.videoHeight,
+    SCAN_GUIDE_FRAC_W, SCAN_GUIDE_ASPECT);
+  canvas.width = crop.w;
+  canvas.height = crop.h;
+  canvas.getContext('2d').drawImage(video, crop.x, crop.y, crop.w, crop.h, 0, 0, crop.w, crop.h);
+  scanCapturedDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+  closeScanCamera();
+  showScanReview();
+}
+
+function showScanReview(){
+  const frozen = document.getElementById('scanFrozen');
+  frozen.src = scanCapturedDataUrl;
+  frozen.style.display = 'block';
+  document.getElementById('scanPlaceholder').style.display = 'none';
+  document.getElementById('cardGuide').style.display = 'none';
+  document.getElementById('scanHint').style.display = 'none';
+  document.getElementById('scanZoomRow').style.display = 'none';
+  document.getElementById('scanControlsIdle').style.display = 'none';
+  document.getElementById('scanControlsLive').style.display = 'none';
+  document.getElementById('scanControlsReview').style.display = 'flex';
+  hideScanStatus();
+}
+
+function closeScanCamera(){
+  if (scanStream){
+    scanStream.getTracks().forEach(t => t.stop());
+    scanStream = null;
+    scanTrack = null;
+  }
+  const video = document.getElementById('scanVideo');
+  video.removeEventListener('click', onScanVideoTap);
+  video.style.display = 'none';
+  video.srcObject = null;
+  if (!scanCapturedDataUrl){
+    document.getElementById('scanPlaceholder').style.display = 'flex';
+    document.getElementById('cardGuide').style.display = 'none';
+    document.getElementById('scanHint').style.display = 'none';
+    document.getElementById('scanControlsIdle').style.display = 'flex';
+    document.getElementById('scanControlsLive').style.display = 'none';
+    document.getElementById('scanZoomRow').style.display = 'none';
+  }
+}
+
+function retakeScan(){
+  scanCapturedDataUrl = null;
+  document.getElementById('scanFrozen').style.display = 'none';
+  document.getElementById('scanFrozen').src = '';
+  document.getElementById('scanControlsReview').style.display = 'none';
+  hideScanStatus();
+  openScanCamera();
+}
+
+function handleScanFile(ev){
+  const file = ev.target.files[0];
+  ev.target.value = '';
+  if (!file) return;
+  closeScanCamera();
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    scanCapturedDataUrl = e.target.result;
+    showScanReview();
+  };
+  reader.readAsDataURL(file);
+}
+
+async function identifyScannedCard(){
+  if (!scanCapturedDataUrl) return;
+  const btn = document.getElementById('scanIdentifyBtn');
+  btn.disabled = true;
+  showScanStatus('Identifying card…');
+  let data;
+  try {
+    const resp = await fetch('/api/grading-calculator/scan', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ image: scanCapturedDataUrl })
+    });
+    data = await resp.json();
+    if (!resp.ok || data.error){
+      showScanError(data.error || data.detail || 'Could not identify the card.');
+      btn.disabled = false;
+      return;
+    }
+  } catch(e){
+    showScanError('Network error — please try again.');
+    btn.disabled = false;
+    return;
+  }
+  hideScanStatus();
+  btn.disabled = false;
+  toggleScanner();          // collapse the panel, revealing the populated pickers
+  await applyScanResult(data);
+}
+
+// Normalizes for fuzzy matching — lowercase, letters/digits only (mirrors
+// price_sources._ppt_canon's spirit so a scan and a manual pick land on the
+// same card the same way).
+function scanNorm(s){
+  return (s || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+}
+
+// Matches the JSON /api/grading-calculator/scan returned — exactly what
+// Claude Vision output, plus the game key normalized to this page's game
+// values — against the same PPT/catalog set-and-card lists the picker
+// already uses. A scan result and a manual pick go through identical
+// downstream matching, so nothing about card selection is scan-specific.
+async function applyScanResult(scan){
+  const status = document.getElementById('lookupStatus');
+  const mappedGame = (scan.game === 'pokemon' || scan.game === 'one_piece') ? scan.game : null;
+
+  if (!mappedGame){
+    document.getElementById('cardName').value = scan.name || '';
+    document.getElementById('setName').value = scan.set || '';
+    document.getElementById('cardNumber').value = scan.number || '';
+    onManualEntry();
+    status.textContent = `Scanned a ${scan.game || 'card'} — this calculator covers Pokémon `
+      + `and One Piece, so nothing was auto-matched. The scanned name/set/number are filled in above.`;
+    return;
+  }
+
+  document.getElementById('game').value = mappedGame;
+  resetCardSelect('Choose a set first');
+  await buildSetOptions();
+
+  const setSel = document.getElementById('setSelect');
+  const wantSet = scanNorm(scan.set);
+  let matchedSetValue = null;
+  if (wantSet){
+    for (const opt of setSel.options){
+      const optNorm = scanNorm(opt.textContent);
+      if (!optNorm) continue;
+      if (optNorm === wantSet || optNorm.includes(wantSet) || wantSet.includes(optNorm)){
+        matchedSetValue = opt.value;
+        break;
+      }
+    }
+  }
+
+  if (!matchedSetValue){
+    document.getElementById('cardName').value = scan.name || '';
+    document.getElementById('setName').value = scan.set || '';
+    document.getElementById('cardNumber').value = scan.number || '';
+    onManualEntry();
+    status.textContent = scan.set
+      ? `Scanned "${scan.set}" — no matching set in the picker, so nothing was auto-selected. Prices are looked up from the scanned name/number.`
+      : `Scanned the card but couldn't read a set — enter it manually below.`;
+    lookup();
+    return;
+  }
+
+  setSel.value = matchedSetValue;
+  await onSetChange();
+
+  const wantNum = (scan.number || '').split('/')[0].replace(/^0+/, '').toLowerCase();
+  const wantName = scanNorm(scan.name);
+  let idx = -1;
+  if (wantNum){
+    idx = setCards.findIndex(c => {
+      const got = (c.card_number || '').split('/')[0].replace(/^0+/, '').toLowerCase();
+      return got && got === wantNum;
+    });
+  }
+  if (idx < 0 && wantName){
+    idx = setCards.findIndex(c => scanNorm(c.name) === wantName);
+  }
+  if (idx < 0 && wantName){
+    idx = setCards.findIndex(c => scanNorm(c.name).startsWith(wantName) || wantName.startsWith(scanNorm(c.name)));
+  }
+  // One Piece often prints the same number as multiple variants (alt art,
+  // manga, SP). When the number match is ambiguous, prefer whichever
+  // candidate's variant text agrees with what Claude flagged on the card.
+  if (idx >= 0 && wantNum){
+    const sameNumber = setCards
+      .map((c, i) => [c, i])
+      .filter(([c]) => (c.card_number || '').split('/')[0].replace(/^0+/, '').toLowerCase() === wantNum);
+    if (sameNumber.length > 1){
+      const scored = sameNumber.map(([c, i]) => {
+        const v = (c.variant || '').toLowerCase();
+        let score = 0;
+        if (scan.is_alt_art && v.includes('alt')) score += 1;
+        else if (!scan.is_alt_art && v.includes('alt')) score -= 1;
+        if (scan.is_manga && v.includes('manga')) score += 1;
+        else if (!scan.is_manga && v.includes('manga')) score -= 1;
+        if (scan.is_sp && (v.includes(' sp') || v.startsWith('sp') || v.includes('special'))) score += 1;
+        return [i, score];
+      });
+      scored.sort((a, b) => b[1] - a[1]);
+      idx = scored[0][0];
+    }
+  }
+
+  if (idx >= 0){
+    document.getElementById('cardSelect').value = String(idx);
+    onCardChange();
+    status.textContent = 'Matched from the scan — ' + (setCards[idx].name || '');
+  } else {
+    document.getElementById('cardName').value = scan.name || '';
+    document.getElementById('setName').value = scan.set || '';
+    document.getElementById('cardNumber').value = scan.number || '';
+    onManualEntry();
+    status.textContent = 'Matched the set but not the exact card — enter it manually below, '
+      + 'or the search may still find it.';
+    lookup();
+  }
+}
+
+(function(){
+  const vp = document.getElementById('scanViewport');
+  vp.addEventListener('dragover', (e) => e.preventDefault());
+  vp.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file && file.type.startsWith('image/')){
+      closeScanCamera();
+      const reader = new FileReader();
+      reader.onload = (ev) => { scanCapturedDataUrl = ev.target.result; showScanReview(); };
+      reader.readAsDataURL(file);
+    }
+  });
+  document.getElementById('scanPlaceholder').addEventListener('click', () => {
+    if (!scanStream) openScanCamera();
+  });
+})();
+
 buildRows();
 buildSetOptions();
+
+// Default to PSA Regular — the common case; every field stays editable.
+document.getElementById('gradeCompany').value = 'psa';
+onCompanyChange();
+(function(){
+  const tierSel = document.getElementById('gradeTier');
+  const hasRegular = Array.prototype.some.call(tierSel.options, o => o.value === 'regular');
+  if (hasRegular){ tierSel.value = 'regular'; onTierChange(); }
+})();
 
 (function(){
   var btn = document.getElementById('themeToggle');
