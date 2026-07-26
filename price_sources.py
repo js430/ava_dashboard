@@ -427,7 +427,14 @@ async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
         except Exception:
             logger.warning("PokemonPriceTracker returned non-JSON for %r", search)
             return None, None
-        return ((payload or {}).get("data") or []), resp
+        # `data` is a list for a search but a single object for an id lookup —
+        # normalise to a list so callers only handle one shape.
+        data = (payload or {}).get("data")
+        if isinstance(data, dict):
+            data = [data]
+        elif not isinstance(data, list):
+            data = []
+        return data, resp
 
     # The search runs WITHOUT includeEbay: that flag bills an extra credit for
     # every card returned, and only the one card we actually pick needs graded
@@ -737,21 +744,25 @@ async def fetch_all(card: CardRef, manual: list[GradedQuote] | None = None,
     used = ["manual"] if manual else []
 
     async with httpx.AsyncClient(timeout=timeout) as client:
+        async def _run(name: str, fetcher) -> None:
+            """Run one vendor. A bug or outage in any single source must not
+            fail the whole lookup — the others still have useful prices."""
+            try:
+                quotes = await fetcher(client, card)
+            except Exception:
+                logger.exception("%s lookup failed for %r — continuing without it",
+                                 name, card.query())
+                return
+            if quotes:
+                used.append(name)
+            groups.append(quotes or [])
+
         if pokemonpricetracker_available() and card.game == "pokemon":
-            ppt = await fetch_pokemonpricetracker(client, card)
-            if ppt:
-                used.append("pokemonpricetracker")
-            groups.append(ppt)
+            await _run("pokemonpricetracker", fetch_pokemonpricetracker)
         if pricecharting_available():
-            pc = await fetch_pricecharting(client, card)
-            if pc:
-                used.append("pricecharting")
-            groups.append(pc)
+            await _run("pricecharting", fetch_pricecharting)
         if ebay_available():
-            eb = await fetch_ebay(client, card)
-            if eb:
-                used.append("ebay_browse")
-            groups.append(eb)
+            await _run("ebay_browse", fetch_ebay)
 
     merged = merge_quotes(*groups)
     flat = [q for g in groups for q in (g or [])]
