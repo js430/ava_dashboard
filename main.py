@@ -1858,7 +1858,7 @@ async def grading_calculator_page(request: Request):
 @limiter.limit("20/minute")
 async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
                              set_name: str = "", card_number: str = "",
-                             tcgplayer_id: str = "",
+                             tcgplayer_id: str = "", language: str = "english",
                              user=Depends(get_current_user)):
     """Live graded prices for one card, merged across configured vendors.
     Open to members (like the rest of the grading calculator). Spends paid
@@ -1873,7 +1873,8 @@ async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
     card = price_sources.CardRef(game=game, name=name[:120],
                                  set_name=(set_name or "").strip()[:120],
                                  card_number=(card_number or "").strip()[:40],
-                                 tcgplayer_id=(tcgplayer_id or "").strip()[:32] or None)
+                                 tcgplayer_id=(tcgplayer_id or "").strip()[:32] or None,
+                                 language=price_sources.ppt_language(language))
     try:
         result = await price_sources.fetch_all(card)
     except Exception:
@@ -1952,6 +1953,7 @@ _grading_set_cache: dict[tuple[str, str], list] = {}
 @app.get("/api/grading-calculator/sets")
 @limiter.limit("120/hour")
 async def api_grading_sets(request: Request, game: str = "pokemon",
+                           language: str = "english",
                            user=Depends(get_current_user)):
     """Set list for the picker.
 
@@ -1962,25 +1964,34 @@ async def api_grading_sets(request: Request, game: str = "pokemon",
     """
     if game not in ("pokemon", "one_piece"):
         raise HTTPException(status_code=400, detail="Unknown game")
+    language = price_sources.ppt_language(language)
 
     if game == "pokemon" and price_sources.pokemonpricetracker_available():
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                sets = await price_sources.fetch_ppt_sets(client)
+                sets = await price_sources.fetch_ppt_sets(client, language=language)
             if sets:
-                return JSONResponse({"source": "pokemonpricetracker", "sets": sets},
+                return JSONResponse({"source": "pokemonpricetracker",
+                                     "language": language, "sets": sets},
                                     headers={"Cache-Control": "no-store"})
         except Exception:
             logger.exception("PPT set list failed — falling back to the baked list")
+    # The baked list is English-only; a Japanese request with no PPT falls back
+    # to it rather than showing nothing, so say which language actually came back.
+    if language != "english":
+        logger.info("Japanese sets unavailable (PPT off or empty) — serving the "
+                    "English catalog list")
 
     return JSONResponse(
-        {"source": "catalog", "sets": grading_sets.GRADING_SETS.get(game, [])},
+        {"source": "catalog", "language": "english",
+         "sets": grading_sets.GRADING_SETS.get(game, [])},
         headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/grading-calculator/set-cards")
 @limiter.limit("60/hour")
 async def api_grading_set_cards(request: Request, game: str, set_id: str,
+                                language: str = "english",
                                 user=Depends(get_current_user)):
     if game not in ("pokemon", "one_piece"):
         raise HTTPException(status_code=400, detail="Unknown game")
@@ -1988,6 +1999,7 @@ async def api_grading_set_cards(request: Request, game: str, set_id: str,
     # PPT set ids ARE set names, so this is longer than a catalog set code.
     if not set_id or len(set_id) > 120:
         raise HTTPException(status_code=400, detail="Invalid set")
+    language = price_sources.ppt_language(language)
 
     # Pokemon: take the card list from PPT so each card carries its
     # tcgPlayerId. A lookup can then pin the exact printing instead of
@@ -1995,12 +2007,14 @@ async def api_grading_set_cards(request: Request, game: str, set_id: str,
     if game == "pokemon" and price_sources.pokemonpricetracker_available():
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
-                cards = await price_sources.fetch_ppt_set_cards(client, set_id)
+                cards = await price_sources.fetch_ppt_set_cards(
+                    client, set_id, language=language)
             if cards:
                 return JSONResponse({"set_id": set_id, "source": "pokemonpricetracker",
-                                     "cards": cards},
+                                     "language": language, "cards": cards},
                                     headers={"Cache-Control": "no-store"})
-            logger.info("PPT returned no cards for set %r — falling back to catalog", set_id)
+            logger.info("PPT returned no cards for set %r [%s] — falling back to catalog",
+                        set_id, language)
         except Exception:
             logger.exception("PPT set-cards failed for %r — falling back to catalog", set_id)
 
@@ -2021,6 +2035,7 @@ async def api_grading_set_cards(request: Request, game: str, set_id: str,
             for c in cards
         ]
     return JSONResponse({"set_id": set_id, "source": "catalog",
+                         "language": "english",
                          "cards": _grading_set_cache[cache_key]},
                         headers={"Cache-Control": "no-store"})
 

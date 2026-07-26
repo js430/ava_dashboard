@@ -53,6 +53,7 @@ class CardRef:
     # PokemonPriceTracker's own id, when the card came from their catalog. Pins
     # the exact printing, so no name/set matching is needed at all.
     tcgplayer_id: str | None = None
+    language: str = "english"    # PPT's `language` param: english | japanese
 
     def query(self) -> str:
         """Free-text search string shared by both vendors."""
@@ -60,10 +61,13 @@ class CardRef:
         return " ".join(p.strip() for p in parts if p and p.strip())
 
     def key(self) -> str:
-        """Stable identity for caching/snapshot rows."""
+        """Stable identity for caching/snapshot rows. Language is part of it —
+        the Japanese and English printings of a card are different products at
+        different prices, so they must never share a cache entry."""
         norm = lambda s: re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
         return "|".join((norm(self.game), norm(self.name),
-                         norm(self.set_name), norm(self.card_number)))
+                         norm(self.set_name), norm(self.card_number),
+                         norm(self.language)))
 
 
 @dataclass
@@ -371,6 +375,17 @@ PPT_CATALOG_TTL_SECONDS = 24 * 3600
 _ppt_sets_cache: dict[str, tuple[float, list]] = {}
 _ppt_set_cards_cache: dict[str, tuple[float, list]] = {}
 
+# PPT's `language` values. Allowlisted rather than passed through, so a bad
+# value can't reach the vendor as an arbitrary query string.
+PPT_LANGUAGES = ("english", "japanese")
+PPT_DEFAULT_LANGUAGE = "english"
+
+
+def ppt_language(value: str | None) -> str:
+    """Normalise to a supported language, defaulting to English."""
+    candidate = (value or "").strip().lower()
+    return candidate if candidate in PPT_LANGUAGES else PPT_DEFAULT_LANGUAGE
+
 _ppt_logged_set_shape = False
 _ppt_logged_card_shape = False
 
@@ -415,19 +430,23 @@ async def _ppt_get(client: httpx.AsyncClient, path: str, params: dict,
     return data, resp
 
 
-async def fetch_ppt_sets(client: httpx.AsyncClient) -> list:
+async def fetch_ppt_sets(client: httpx.AsyncClient,
+                         language: str = PPT_DEFAULT_LANGUAGE) -> list:
     """[{id, name, year}] of every Pokemon set PPT knows, newest first.
 
-    Cheap (one call) and cached for a day. Names are PPT's own, which is the
-    point: the set string in the dropdown is exactly what its price lookups
-    expect.
+    Cheap (one call) and cached for a day, per language. Names are PPT's own,
+    which is the point: the set string in the dropdown is exactly what its
+    price lookups expect.
     """
     global _ppt_logged_set_shape
-    hit = _ppt_sets_cache.get("pokemon")
+    language = ppt_language(language)
+    cache_key = f"pokemon:{language}"
+    hit = _ppt_sets_cache.get(cache_key)
     if hit and (time.time() - hit[0]) < PPT_CATALOG_TTL_SECONDS:
         return list(hit[1])
 
-    rows, resp = await _ppt_get(client, "/sets", {"limit": 500}, "sets")
+    rows, resp = await _ppt_get(client, "/sets",
+                                {"limit": 500, "language": language}, "sets")
     if not rows:
         return []
     if not _ppt_logged_set_shape:
@@ -456,30 +475,32 @@ async def fetch_ppt_sets(client: httpx.AsyncClient) -> list:
         })
     # Newest first where dates exist; undated sets sort last.
     sets.sort(key=lambda s: s["released"] or "0000", reverse=True)
-    _ppt_sets_cache["pokemon"] = (time.time(), list(sets))
-    logger.info("PokemonPriceTracker: %d set(s) cached", len(sets))
+    _ppt_sets_cache[cache_key] = (time.time(), list(sets))
+    logger.info("PokemonPriceTracker: %d %s set(s) cached", len(sets), language)
     return sets
 
 
-async def fetch_ppt_set_cards(client: httpx.AsyncClient, set_name: str) -> list:
+async def fetch_ppt_set_cards(client: httpx.AsyncClient, set_name: str,
+                              language: str = PPT_DEFAULT_LANGUAGE) -> list:
     """Every card in a PPT set: [{name, card_number, variant, tcgplayer_id}].
 
-    BILLED PER CARD RETURNED, so this is cached for a day and the credit spend
-    is logged. Carrying tcgPlayerId is what lets later price lookups skip the
-    search entirely.
+    BILLED PER CARD RETURNED, so this is cached for a day (per language) and
+    the credit spend is logged. Carrying tcgPlayerId is what lets later price
+    lookups skip the search entirely.
     """
     global _ppt_logged_card_shape
-    cache_key = _ppt_canon(set_name)
+    language = ppt_language(language)
+    cache_key = f"{language}:{_ppt_canon(set_name)}"
     hit = _ppt_set_cards_cache.get(cache_key)
     if hit and (time.time() - hit[0]) < PPT_CATALOG_TTL_SECONDS:
-        logger.info("PokemonPriceTracker set-cards cache hit for %r (%d card(s), "
-                    "no credits spent)", set_name, len(hit[1]))
+        logger.info("PokemonPriceTracker set-cards cache hit for %r [%s] (%d card(s), "
+                    "no credits spent)", set_name, language, len(hit[1]))
         return list(hit[1])
 
     rows, resp = await _ppt_get(client, "/cards",
                                 {"set": set_name, "fetchAllInSet": "true",
-                                 "limit": 1000},
-                                f"set-cards({set_name})")
+                                 "limit": 1000, "language": language},
+                                f"set-cards({set_name}/{language})")
     if not rows:
         return []
     if not _ppt_logged_card_shape:
@@ -529,7 +550,13 @@ def _ppt_search_name(name: str) -> str:
 
 
 def _ppt_canon(value: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", (value or "").lower())
+    """Lowercase, with punctuation and whitespace removed.
+
+    Uses \\W rather than [^a-z0-9] so Japanese (and any other non-Latin) card
+    and set names survive canonicalisation instead of collapsing to an empty
+    string — an empty name would otherwise match anything.
+    """
+    return re.sub(r"[\W_]+", "", (value or "").lower(), flags=re.UNICODE)
 
 
 def _ppt_set_candidates(set_name: str) -> set:
@@ -584,7 +611,10 @@ def _ppt_pick_card(rows: list, card: CardRef) -> dict | None:
             _ppt_strip_name_suffix(str(row.get("name") or ""))))
 
     def by_name(row) -> bool:
-        return _row_name(row) == want_name
+        # want_name is empty when the name is entirely non-ASCII (Japanese
+        # cards): canon() strips it to "". Without this guard "" == "" would
+        # match the first row in the set, i.e. an arbitrary card.
+        return bool(want_name) and _row_name(row) == want_name
 
     def by_name_prefix(row) -> bool:
         """"Gardevoir EX" matches "Gardevoir EX (Full Art)" but NOT
@@ -642,6 +672,7 @@ async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
         return list(hit[1])
 
     search = _ppt_search_name(card.name)
+    language = ppt_language(card.language)
     headers = {"Authorization": f"Bearer {key}"}
 
     async def _search(params: dict):
@@ -687,7 +718,8 @@ async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
         # The search runs WITHOUT includeEbay: that flag bills an extra credit for
         # every card returned, and only the one card we actually pick needs graded
         # data. It's re-requested for that card alone below.
-        base_params = {"search": search, "limit": PPT_SEARCH_LIMIT}
+        base_params = {"search": search, "limit": PPT_SEARCH_LIMIT,
+                       "language": language}
         attempts = []
         if card.set_name.strip():
             attempts.append({**base_params, "set": card.set_name.strip()})
@@ -731,7 +763,7 @@ async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
     if tcg_id:
         detail_rows, detail_resp = await _search(
             {"tcgPlayerId": str(tcg_id), "limit": 1, "includeEbay": "true",
-             "days": PPT_EBAY_DAYS})
+             "days": PPT_EBAY_DAYS, "language": language})
         if detail_rows:
             row = detail_rows[0]
             if detail_resp is not None:

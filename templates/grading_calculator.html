@@ -178,11 +178,18 @@
         </div>
         <div class="card-body">
           <div class="row">
-            <div style="flex:0 0 130px">
+            <div style="flex:0 0 120px">
               <label class="label" for="game">Game</label>
               <select id="game" onchange="onGameChange()">
                 <option value="pokemon">Pok&eacute;mon</option>
                 <option value="one_piece">One Piece</option>
+              </select>
+            </div>
+            <div style="flex:0 0 120px" id="langWrap">
+              <label class="label" for="language">Language</label>
+              <select id="language" onchange="onLanguageChange()">
+                <option value="english">English</option>
+                <option value="japanese">Japanese</option>
               </select>
             </div>
             <div style="flex:1">
@@ -355,19 +362,41 @@ function renderSetOptions(list){
     `<option value="${String(s.id).replace(/"/g,'&quot;')}">${s.name}${s.year ? ' (' + s.year + ')' : ''}</option>`).join('');
 }
 
+// Language only applies to Pokemon (PPT's parameter); hidden for One Piece.
+function currentLanguage(){
+  const game = document.getElementById('game').value;
+  if (game !== 'pokemon') return 'english';
+  return document.getElementById('language').value || 'english';
+}
+
 async function buildSetOptions(){
   const game = document.getElementById('game').value;
-  if (setListCache[game]){ renderSetOptions(setListCache[game]); return; }
+  const lang = currentLanguage();
+  const key = game + ':' + lang;
+  document.getElementById('langWrap').style.display = (game === 'pokemon') ? '' : 'none';
+  if (setListCache[key]){ renderSetOptions(setListCache[key]); return; }
   renderSetOptions(SETS[game] || []);        // show something immediately
   try {
-    const resp = await fetch('/api/grading-calculator/sets?game=' + encodeURIComponent(game));
+    const resp = await fetch('/api/grading-calculator/sets?game=' + encodeURIComponent(game)
+                             + '&language=' + encodeURIComponent(lang));
     if (!resp.ok) return;
     const d = await resp.json();
     if (d.sets && d.sets.length){
-      setListCache[game] = d.sets;
+      setListCache[key] = d.sets;
       renderSetOptions(d.sets);
+      const status = document.getElementById('lookupStatus');
+      // Say so when a Japanese request could only be served the English list.
+      if (lang === 'japanese' && d.language !== 'japanese')
+        status.textContent = 'Japanese sets unavailable — showing English sets.';
+      else if (status.textContent.startsWith('Japanese sets unavailable'))
+        status.textContent = '';
     }
   } catch(e){ /* baked list already rendered */ }
+}
+
+function onLanguageChange(){
+  buildSetOptions();
+  resetCardSelect('Choose a set first');
 }
 
 function resetCardSelect(msg){
@@ -391,7 +420,8 @@ async function onSetChange(){
   resetCardSelect('Loading cards…');
   status.textContent = 'Loading set…';
   try {
-    const resp = await fetch(`/api/grading-calculator/set-cards?game=${encodeURIComponent(game)}&set_id=${encodeURIComponent(setId)}`);
+    const resp = await fetch(`/api/grading-calculator/set-cards?game=${encodeURIComponent(game)}`
+      + `&set_id=${encodeURIComponent(setId)}&language=${encodeURIComponent(currentLanguage())}`);
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const d = await resp.json();
     setCards = d.cards || [];
@@ -620,7 +650,8 @@ async function lookup(){
       card_number: document.getElementById('cardNumber').value.trim(),
       // Present when the card came from the PPT-backed picker: pins the exact
       // printing, so the server skips name/set matching altogether.
-      tcgplayer_id: selectedTcgId || ''
+      tcgplayer_id: selectedTcgId || '',
+      language: currentLanguage()
     });
     const resp = await fetch('/api/grading-calculator/quotes?' + params);
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
