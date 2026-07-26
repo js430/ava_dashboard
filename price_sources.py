@@ -279,6 +279,8 @@ PPT_EBAY_DAYS = 90
 
 # Canonical-key -> our grade. Keys are matched after stripping non-alphanumerics
 # and lowercasing, so "psa10", "PSA 10" and "psa_10" all land on the same entry.
+# PPT tracks far more grades than the calculator models (ace/tag/psa1/half
+# grades); anything not listed here is ignored.
 PPT_GRADE_FIELDS = {
     "psa8":  "psa_8",
     "psa9":  "psa_9",
@@ -289,8 +291,21 @@ PPT_GRADE_FIELDS = {
     "sgc10": "sgc_10",
 }
 
-# Value keys tried inside a grade entry, in order.
-PPT_VALUE_KEYS = ("avg", "average", "mean", "market", "price", "value", "median")
+# Per-grade price, best first. smartMarketPrice is PPT's own filtered+weighted
+# estimate and carries a confidence rating, so it beats the alternatives:
+# averagePrice spans the WHOLE sales history (dateRangeStart is ~a year back),
+# which badly lags a moving card — 856 PSA 10 sales averaged $1,342 while the
+# card was actually trading at ~$1,199.
+def _ppt_grade_price(entry: dict):
+    smart = entry.get("smartMarketPrice")
+    if isinstance(smart, dict):
+        price = smart.get("price")
+        if price:
+            return price, smart.get("confidence"), smart.get("daysUsed")
+    for key in ("marketPrice7Day", "marketPriceMedian7Day", "medianPrice", "averagePrice"):
+        if entry.get(key):
+            return entry[key], None, None
+    return None, None, None
 
 
 def pokemonpricetracker_available() -> bool:
@@ -495,12 +510,13 @@ async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
         logger.info("PokemonPriceTracker: row has no tcgPlayerId (keys: %s)",
                     sorted(row.keys()))
 
-    # The graded block is the whole point of this vendor, so log what actually
-    # arrived. An empty/absent block means includeEbay isn't returning data —
-    # a plan limitation or a key name that differs from the docs — and that is
-    # invisible otherwise because the raw price still populates.
-    logger.info("PokemonPriceTracker row keys: %s | ebay block: %r",
-                sorted(row.keys()), row.get("ebay"))
+    # Summarise the graded block rather than dumping it — priceHistory alone
+    # runs to thousands of lines per card.
+    _ebay = row.get("ebay") or {}
+    logger.info("PokemonPriceTracker graded block: %d grade(s) tracked, "
+                "%s total sales, range %s..%s",
+                len(_ebay.get("salesByGrade") or {}), _ebay.get("totalSales", "?"),
+                str(_ebay.get("dateRangeStart"))[:10], str(_ebay.get("dateRangeEnd"))[:10])
 
     def _dollars(value):
         try:
@@ -519,30 +535,46 @@ async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
             note=f"{row.get('setName') or ''} {row.get('cardNumber') or ''}".strip() or None,
         ))
 
+    # Graded sales live under ebay.salesByGrade, NOT at the top of the ebay
+    # block (which holds scrape timestamps, priceHistory and totals).
     ebay_block = row.get("ebay") or {}
-    if isinstance(ebay_block, dict):
-        for key, entry in ebay_block.items():
-            grade = PPT_GRADE_FIELDS.get(re.sub(r"[^a-z0-9]", "", str(key).lower()))
-            if not grade:
-                continue
-            if isinstance(entry, dict):
-                price = next((p for p in (_dollars(entry.get(k))
-                                          for k in PPT_VALUE_KEYS) if p), None)
-                count = entry.get("count") or entry.get("sales") or entry.get("n")
-            else:
-                price, count = _dollars(entry), None
+    sales_by_grade = (ebay_block or {}).get("salesByGrade") or {}
+    for key, entry in sales_by_grade.items():
+        grade = PPT_GRADE_FIELDS.get(_ppt_canon(key))
+        if not grade or not isinstance(entry, dict):
+            continue
+        value, confidence, days_used = _ppt_grade_price(entry)
+        price = _dollars(value)
+        if not price:
+            continue
+        count = entry.get("count")
+        detail = [f"{days_used}d" if days_used else f"{PPT_EBAY_DAYS}d"]
+        if confidence:
+            detail.append(f"{confidence} confidence")
+        quotes.append(GradedQuote(
+            grade=grade, price=price, basis=PPT_BASIS,
+            source="pokemonpricetracker", as_of=_now(),
+            sample_size=int(count) if isinstance(count, (int, float)) else None,
+            note="eBay sold, " + ", ".join(detail),
+        ))
+
+    # Fall back to eBay's ungraded sold figure only if no market price was found.
+    if not any(q.grade == "raw" for q in quotes):
+        ungraded = sales_by_grade.get("ungraded")
+        if isinstance(ungraded, dict):
+            value, confidence, days_used = _ppt_grade_price(ungraded)
+            price = _dollars(value)
             if price:
                 quotes.append(GradedQuote(
-                    grade=grade, price=price, basis=PPT_BASIS,
+                    grade="raw", price=price, basis=PPT_BASIS,
                     source="pokemonpricetracker", as_of=_now(),
-                    sample_size=int(count) if isinstance(count, (int, float)) else None,
-                    note=f"eBay graded avg, {PPT_EBAY_DAYS}d",
+                    sample_size=ungraded.get("count"),
+                    note="eBay sold, ungraded",
                 ))
 
-    graded = [q for q in quotes if q.grade != "raw"]
-    if not graded:
-        logger.info("PokemonPriceTracker: no graded prices for %r over %dd "
-                    "(ebay block: %r)", row.get("name"), PPT_EBAY_DAYS, ebay_block)
+    if not any(q.grade != "raw" for q in quotes):
+        logger.info("PokemonPriceTracker: no graded prices for %r — "
+                    "salesByGrade keys: %s", row.get("name"), list(sales_by_grade))
     if quotes:
         _ppt_cache[cache_key] = (time.time(), list(quotes))
     return quotes
