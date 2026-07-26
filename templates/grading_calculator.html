@@ -56,6 +56,8 @@
   .basis-ask { background: #fef9c3; color: #854d0e; }
   .basis-manual { background: #f3f4f6; color: #6b7280; }
   .src { font-size: 11px; color: #aaa; }
+  .src.recent { color: #5865F2; cursor: pointer; }
+  .src.recent:hover { text-decoration: underline; }
 
   .odds-wrap { display: flex; align-items: center; gap: 10px; margin: 4px 0 2px; }
   .odds-wrap input[type=range] { flex: 1; accent-color: #5865F2; }
@@ -526,16 +528,29 @@ function buildRows(){
       ? `<span class="basis basis-${basis}">${basis}</span>`
       : '<span class="src">&mdash;</span>';
     const src = q ? `<div class="src">${q.source.replace('_',' ')}${q.sample_size ? ' &middot; ' + q.sample_size : ''}</div>` : '';
+    // Average of the most recent sales — click to use it as the price.
+    const recent = (q && q.recent_avg)
+      ? `<div class="src recent" title="Average of the last ${q.recent_n} sale(s)${q.recent_since ? ', back to ' + q.recent_since : ''} — click to use"
+              onclick="useRecent('${g}', ${q.recent_avg})">last ${q.recent_n}: $${Math.round(q.recent_avg).toLocaleString()}</div>`
+      : '';
     const oddsCell = OUTCOME_GRADES.includes(g)
       ? `<input class="odds" type="number" id="odds_${g}" min="0" max="100" step="1" value="${defaultOdds(g)}" oninput="onOddsEdit()">`
       : '<span class="src">&mdash;</span>';
     return `<tr>
       <td class="left">${LABELS[g] || g}</td>
       <td><input type="number" id="price_${g}" min="0" step="1" value="${price}" oninput="onPriceInput()"></td>
-      <td>${badge}${src}</td>
+      <td>${badge}${src}${recent}</td>
       <td>${oddsCell}</td>
     </tr>`;
   }).join('');
+}
+
+// Swap a grade's price for its recent-sales average.
+function useRecent(grade, value){
+  const el = document.getElementById('price_' + grade);
+  if (!el) return;
+  el.value = Math.round(value * 100) / 100;
+  onPriceInput();
 }
 
 function defaultOdds(g){

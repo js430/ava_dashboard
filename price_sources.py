@@ -73,6 +73,9 @@ class GradedQuote:
     sample_size: int | None = None
     low: float | None = None     # lowest ask, when basis == 'ask'
     note: str | None = None
+    recent_avg: float | None = None    # average of the most recent N sales
+    recent_n: int | None = None        # how many sales that average covers
+    recent_since: str | None = None    # date of the oldest sale in it
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -296,6 +299,48 @@ PPT_GRADE_FIELDS = {
 # averagePrice spans the WHOLE sales history (dateRangeStart is ~a year back),
 # which badly lags a moving card — 856 PSA 10 sales averaged $1,342 while the
 # card was actually trading at ~$1,199.
+# How many recent sales the "last N sales" average covers.
+PPT_RECENT_SALES = 5
+
+
+def _ppt_recent_average(history: dict, want: int = PPT_RECENT_SALES):
+    """Average of the most recent `want` sales, from PPT's daily history.
+
+    priceHistory is keyed by date -> {average, count, totalValue}. Individual
+    sale prices aren't exposed, so a day is consumed whole where possible and
+    the day's own average is used for a partial day. That makes this an
+    approximation: exact when each day's sales fit evenly, and within a day's
+    spread otherwise.
+
+    Returns (average, sales_counted, oldest_date_used) or (None, 0, None).
+    """
+    if not isinstance(history, dict) or not history:
+        return None, 0, None
+    total_value = 0.0
+    counted = 0
+    oldest = None
+    for date in sorted(history, reverse=True):        # ISO dates sort correctly
+        day = history.get(date)
+        if not isinstance(day, dict):
+            continue
+        try:
+            day_count = int(day.get("count") or 0)
+            day_avg = float(day.get("average") or 0)
+        except (TypeError, ValueError):
+            continue
+        if day_count <= 0 or day_avg <= 0:
+            continue
+        take = min(day_count, want - counted)
+        total_value += day_avg * take
+        counted += take
+        oldest = date
+        if counted >= want:
+            break
+    if not counted:
+        return None, 0, None
+    return round(total_value / counted, 2), counted, oldest
+
+
 def _ppt_grade_price(entry: dict):
     smart = entry.get("smartMarketPrice")
     if isinstance(smart, dict):
@@ -539,6 +584,7 @@ async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
     # block (which holds scrape timestamps, priceHistory and totals).
     ebay_block = row.get("ebay") or {}
     sales_by_grade = (ebay_block or {}).get("salesByGrade") or {}
+    price_history = (ebay_block or {}).get("priceHistory") or {}
     for key, entry in sales_by_grade.items():
         grade = PPT_GRADE_FIELDS.get(_ppt_canon(key))
         if not grade or not isinstance(entry, dict):
@@ -551,11 +597,13 @@ async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
         detail = [f"{days_used}d" if days_used else f"{PPT_EBAY_DAYS}d"]
         if confidence:
             detail.append(f"{confidence} confidence")
+        recent_avg, recent_n, recent_since = _ppt_recent_average(price_history.get(key))
         quotes.append(GradedQuote(
             grade=grade, price=price, basis=PPT_BASIS,
             source="pokemonpricetracker", as_of=_now(),
             sample_size=int(count) if isinstance(count, (int, float)) else None,
             note="eBay sold, " + ", ".join(detail),
+            recent_avg=recent_avg, recent_n=recent_n, recent_since=recent_since,
         ))
 
     # Fall back to eBay's ungraded sold figure only if no market price was found.
