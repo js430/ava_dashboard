@@ -113,6 +113,19 @@
   .scan-status-line { text-align: center; font-size: 12px; color: #888; margin-top: 10px; }
   #scannerPanel .warn { max-width: 320px; margin: 10px auto 0; }
 
+  /* Scanned-card info shown alongside its prices/net-out, so both panels are
+     traceable back to the actual photo that produced them. */
+  .scanned-strip { display: flex; gap: 10px; align-items: center; padding-bottom: 12px; margin-bottom: 10px; border-bottom: 1px solid #f0f0f0; }
+  .scanned-strip img { width: 50px; height: 70px; object-fit: cover; border-radius: 6px; background: #eee; flex-shrink: 0; border: 1px solid #e4e4e7; }
+  .scanned-strip-info { min-width: 0; flex: 1; }
+  .scanned-strip-name { font-size: 13px; font-weight: 700; color: #111; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .scanned-strip-meta { font-size: 12px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+  .scanned-strip-badges { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+  .scan-badge { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 8px; background: #eef0ff; color: #4752d4; white-space: nowrap; }
+
+  .net-scan-photo { display: flex; justify-content: center; margin-bottom: 12px; }
+  .net-scan-photo img { width: 66px; height: 92px; object-fit: cover; border-radius: 8px; border: 1px solid #e4e4e7; }
+
   @media (max-width: 860px) {
     .grid { grid-template-columns: 1fr; }
     .main { padding: 12px; }
@@ -150,6 +163,10 @@
   html[data-theme="dark"] .scan-icon-btn:hover { background: #2e2e32; }
   html[data-theme="dark"] .scan-zoom-row { color: #71717a; }
   html[data-theme="dark"] .scan-status-line { color: #a1a1aa; }
+  html[data-theme="dark"] .scanned-strip { border-bottom-color: #303033; }
+  html[data-theme="dark"] .scanned-strip img, html[data-theme="dark"] .net-scan-photo img { border-color: #383838; background: #252528; }
+  html[data-theme="dark"] .scanned-strip-name { color: #f0f0f0; }
+  html[data-theme="dark"] .scan-badge { background: #2a2a4a; color: #a5b4fc; }
 </style>
 </head>
 <body>
@@ -312,6 +329,14 @@
           <span class="status">Edit any number to override</span>
         </div>
         <div class="card-body">
+          <div class="scanned-strip" id="scannedStrip" style="display:none">
+            <img id="scannedStripImg" alt="Scanned card">
+            <div class="scanned-strip-info">
+              <div class="scanned-strip-name" id="scannedStripName"></div>
+              <div class="scanned-strip-meta" id="scannedStripMeta"></div>
+              <div class="scanned-strip-badges" id="scannedStripBadges"></div>
+            </div>
+          </div>
           <table class="grades">
             <thead>
               <tr>
@@ -364,6 +389,9 @@
           <span class="status">At the market prices shown</span>
         </div>
         <div class="card-body">
+          <div class="net-scan-photo" id="netScanPhoto" style="display:none">
+            <img id="netScanPhotoImg" alt="Scanned card">
+          </div>
           <div id="netCards"><div class="sub">Pick a card to start.</div></div>
 
           <div class="block">
@@ -402,6 +430,14 @@ let quotes = {};
 let calcTimer = null;
 let setCards = [];        // cards for the currently selected set (from the API)
 let selectedTcgId = '';   // PPT id of the picked card, when it came from PPT
+
+// The scanned photo + Claude's raw read, kept around so Market prices and
+// What you'd net can show what was actually scanned. scanPopulating guards
+// the picker-clearing handlers below so applyScanResult() driving the same
+// selects a scan uses doesn't wipe the display it just set.
+let lastScannedImage = null;
+let lastScannedMeta = null;
+let scanPopulating = false;
 
 // Set lists are fetched per game (PPT for Pokemon, so the names match its
 // price API exactly) and cached client-side. SETS is the baked fallback.
@@ -459,11 +495,13 @@ function resetCardSelect(msg){
 }
 
 function onGameChange(){
+  if (!scanPopulating) clearScannedDisplay();
   buildSetOptions();
   resetCardSelect('Choose a set first');
 }
 
 async function onSetChange(){
+  if (!scanPopulating) clearScannedDisplay();
   const game = document.getElementById('game').value;
   const setId = document.getElementById('setSelect').value;
   const status = document.getElementById('lookupStatus');
@@ -497,6 +535,7 @@ async function onSetChange(){
 }
 
 function onCardChange(){
+  if (!scanPopulating) clearScannedDisplay();
   const i = document.getElementById('cardSelect').value;
   if (i === '') return;
   const card = setCards[+i];
@@ -512,6 +551,7 @@ function onCardChange(){
 // can't silently disagree — and drops the pinned id, since the text no longer
 // necessarily describes that card.
 function onManualEntry(){
+  if (!scanPopulating) clearScannedDisplay();
   const c = document.getElementById('cardSelect');
   if (c.value !== ''){ c.value = ''; }
   selectedTcgId = '';
@@ -1074,8 +1114,63 @@ async function identifyScannedCard(){
   }
   hideScanStatus();
   btn.disabled = false;
+  // Captured before toggleScanner() clears scanCapturedDataUrl on close — the
+  // photo is what Market prices and What you'd net display next to the numbers.
+  lastScannedImage = scanCapturedDataUrl;
+  lastScannedMeta = data;
   toggleScanner();          // collapse the panel, revealing the populated pickers
-  await applyScanResult(data);
+  scanPopulating = true;
+  try {
+    await applyScanResult(data);
+  } finally {
+    scanPopulating = false;
+  }
+  renderScannedDisplays();
+}
+
+// Shows the scanned photo + Claude's raw read (name/set/number/badges) next
+// to Market prices and What you'd net, so both stay traceable to the actual
+// card that was scanned. Hidden entirely once the user overrides the pick.
+function renderScannedDisplays(){
+  const strip = document.getElementById('scannedStrip');
+  const netPhoto = document.getElementById('netScanPhoto');
+  if (!lastScannedImage || !lastScannedMeta){
+    strip.style.display = 'none';
+    netPhoto.style.display = 'none';
+    return;
+  }
+  document.getElementById('scannedStripImg').src = lastScannedImage;
+  document.getElementById('scannedStripName').textContent = lastScannedMeta.name || 'Unknown card';
+  const metaParts = [lastScannedMeta.set, lastScannedMeta.number].filter(Boolean);
+  document.getElementById('scannedStripMeta').textContent = metaParts.length
+    ? metaParts.join(' · ') : 'Scanned card';
+
+  // promo_stamp is free text from Claude Vision's read of the photo, so it
+  // goes through the DOM (not a template string) rather than innerHTML.
+  const badges = document.getElementById('scannedStripBadges');
+  badges.innerHTML = '';
+  const chips = [];
+  if (lastScannedMeta.promo_stamp) chips.push(lastScannedMeta.promo_stamp + ' Promo');
+  if (lastScannedMeta.is_sp) chips.push('SP');
+  if (lastScannedMeta.is_alt_art) chips.push('Alt Art');
+  if (lastScannedMeta.is_manga) chips.push('Manga Art');
+  chips.forEach(text => {
+    const span = document.createElement('span');
+    span.className = 'scan-badge';
+    span.textContent = text;
+    badges.appendChild(span);
+  });
+  strip.style.display = 'flex';
+
+  document.getElementById('netScanPhotoImg').src = lastScannedImage;
+  netPhoto.style.display = 'flex';
+}
+
+function clearScannedDisplay(){
+  lastScannedImage = null;
+  lastScannedMeta = null;
+  document.getElementById('scannedStrip').style.display = 'none';
+  document.getElementById('netScanPhoto').style.display = 'none';
 }
 
 // Normalizes for fuzzy matching — lowercase, letters/digits only (mirrors
