@@ -14,14 +14,24 @@ Shape consumed by templates/grading_calculator.html (passed as JSON):
                   'capped'    -> coverage is a hard cap but the fee doesn't change
                   'none'      -> no declared-value limit
   fee_pct_fmv     optional %; fee = fee + pct * fair-market-value (CGC Unlimited)
-  report_grades   the company's own top two grade keys (price_sources.GRADE_KEYS)
-                  — what "What you'd net" reports on when this company is picked.
+  report_grades   the company's top two grade keys (price_sources.GRADE_KEYS) —
+                  used for messaging (e.g. the empty-state hint), not the
+                  net-proceeds computation itself.
+  all_grades      every grade key this company has modeled, best first. What
+                  you'd net reports on whichever of these are at or above the
+                  Market Prices "lowest grade shown" slider, so the two panels
+                  always agree on which grades are in view. For PSA that's
+                  the full 1-10 scale; BGS/CGC/TAG only have their top tier(s)
+                  modeled today, so the slider has no visible effect on them
+                  yet — that's a data gap, not a bug in the filter.
 """
 
 GRADING_COMPANIES = {
     "psa": {
         "label": "PSA",
         "report_grades": ["psa_10", "psa_9"],
+        "all_grades": ["psa_10", "psa_9", "psa_8", "psa_7", "psa_6",
+                       "psa_5", "psa_4", "psa_3", "psa_2", "psa_1"],
         "coverage_rule": "upcharge",
         "note": "PSA upcharges you to the correct tier if a card's value exceeds "
                 "the tier's coverage. You can mix tiers in one submission.",
@@ -35,6 +45,7 @@ GRADING_COMPANIES = {
     "bgs": {
         "label": "BGS / Beckett",
         "report_grades": ["bgs_10", "bgs_9_5"],
+        "all_grades": ["bgs_10", "bgs_9_5"],
         "coverage_rule": "none",
         "note": "Turnaround-based, no declared-value limit. Whole batch is one "
                 "tier (can't mix). Base tiers grade only or add all 4 subgrades.",
@@ -49,6 +60,7 @@ GRADING_COMPANIES = {
     "cgc": {
         "label": "CGC",
         "report_grades": ["cgc_10", "cgc_9"],
+        "all_grades": ["cgc_10", "cgc_9"],
         "coverage_rule": "upcharge",
         "note": "CGC upcharges to a higher tier if value exceeds the cap — except "
                 "Unlimited Value, which has no cap (fee is $300 + 1% of value).",
@@ -63,6 +75,7 @@ GRADING_COMPANIES = {
     "tag": {
         "label": "TAG",
         "report_grades": ["tag_10", "tag_9"],
+        "all_grades": ["tag_10", "tag_9"],
         "coverage_rule": "capped",
         "note": "TAG does NOT upcharge for card value — coverage is simply a hard "
                 "cap. Lower tiers are currently paused; only these two are active.",

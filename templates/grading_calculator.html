@@ -706,6 +706,9 @@ function applyGradeFilter(){
     const show = level === '' || level === undefined || +level === 0 || +level >= min;
     tr.style.display = show ? '' : 'none';
   });
+  // Keep What you'd net in step with the same threshold — both panels
+  // should always agree on which grades are in view.
+  scheduleCalc();
 }
 
 // Swap a grade's price for its recent-sales average.
@@ -767,9 +770,12 @@ async function calc(){
   const body = {
     raw_price: gradePrices.raw || 0,
     grade_prices: gradePrices,
-    // Which company's top-two grades "What you'd net" reports on — empty
-    // means Custom/other, which the server falls back to PSA 10/9 for.
+    // Which company's grades "What you'd net" reports on — empty means
+    // Custom/other, which the server falls back to PSA's full range for.
     company: document.getElementById('gradeCompany').value,
+    // Same "lowest grade shown" threshold as the Market Prices slider, so the
+    // two panels always agree on which grades are in view.
+    min_grade: +document.getElementById('minGradeSlider').value,
     costs: {
       grading_fee: +document.getElementById('gradingFee').value || 0,
       ship_to: +document.getElementById('shipTo').value || 0,

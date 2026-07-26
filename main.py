@@ -1534,11 +1534,17 @@ async def api_grading_calc(request: Request, user=Depends(get_current_user)):
         sale_ship=_num(c.get("sale_ship"), 0.0),
     )
     # "What you'd net" reports on whichever grading company is picked in Your
-    # costs — each company's own top-two grade keys, from grading_tiers.py.
-    # Falls back to PSA 10/9 when no company is selected ("Custom / other").
+    # costs, filtered to the SAME "lowest grade shown" threshold as the Market
+    # Prices slider — so the two panels always agree on which grades are in
+    # view instead of the net cards being frozen at a fixed top-two. Falls
+    # back to PSA's full range when no company is selected ("Custom / other"),
+    # matching PSA 10/9's existing role as the no-company default.
     company = (body.get("company") or "").strip().lower()
-    report_grades = grading_tiers.GRADING_COMPANIES.get(company, {}).get(
-        "report_grades") or grading_roi.REPORTED_GRADES
+    min_grade = _num(body.get("min_grade"), 8.0)
+    min_grade = min(max(min_grade, 1.0), 8.0)
+    all_grades = (grading_tiers.GRADING_COMPANIES.get(company, {}).get("all_grades")
+                 or grading_tiers.GRADING_COMPANIES["psa"]["all_grades"])
+    report_grades = [g for g in all_grades if price_sources.GRADE_LEVEL.get(g, 0) >= min_grade]
     try:
         r = grading_roi.evaluate(raw_price, grade_prices, costs, grades=report_grades)
     except ValueError as exc:
