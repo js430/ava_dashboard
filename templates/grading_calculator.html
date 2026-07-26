@@ -155,6 +155,9 @@
 
 <div class="main">
   <div class="srcbar">
+    <span class="srcchip {% if sources.pokemonpricetracker %}on{% else %}off{% endif %}">
+      PokemonPriceTracker {% if sources.pokemonpricetracker %}connected{% else %}no API key set{% endif %}
+    </span>
     <span class="srcchip {% if sources.pricecharting %}on{% else %}off{% endif %}">
       PriceCharting {% if sources.pricecharting %}connected{% else %}no API token set{% endif %}
     </span>

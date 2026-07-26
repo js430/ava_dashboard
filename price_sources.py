@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 import base64
 import logging
 from dataclasses import dataclass, asdict
@@ -242,6 +243,166 @@ async def fetch_pricecharting(client: httpx.AsyncClient, card: CardRef) -> list[
     return quotes
 
 
+# ───────────────────────── PokemonPriceTracker ─────────────────────────
+# POKEMON ONLY — no One Piece coverage, so One Piece still falls through to
+# PriceCharting + eBay. Documented shapes (v2 API reference):
+#   GET /api/v2/cards?search=&set=&limit=&includeEbay=true
+#   -> {"data": [{tcgPlayerId, name, setName, cardNumber, rarity,
+#                 prices: {market, low},
+#                 ebay: {psa8: {avg}, psa9: {avg}, psa10: {avg}}}]}
+# Values are DOLLARS here (not pennies like PriceCharting).
+#
+# BILLED IN CREDITS, PER CARD RETURNED: 1 credit per card + 1 more per card
+# for the eBay/PSA block. A careless `limit` multiplies the cost of every
+# lookup, so the search is kept deliberately narrow and results are cached.
+PPT_BASE = os.getenv("POKEMONPRICETRACKER_API_BASE",
+                     "https://www.pokemonpricetracker.com/api/v2")
+# Small on purpose: each returned card costs credits. Enough to pick the right
+# printing from a name collision, not enough to bill for a whole set.
+PPT_SEARCH_LIMIT = 5
+# Graded prices move slowly; re-billing credits for the same card within the
+# window is pure waste. {card_key: (fetched_at, [quotes])}
+PPT_CACHE_TTL_SECONDS = 6 * 3600
+_ppt_cache: dict[str, tuple[float, list]] = {}
+
+# The `ebay` block is PokemonPriceTracker's aggregation of eBay graded sales,
+# so it is treated as sold-derived rather than asking prices. NOT confirmed
+# against their support — if it turns out to include live listings, change
+# this one constant and every quote is relabelled.
+PPT_BASIS = "sold"
+
+PPT_GRADE_FIELDS = {
+    "psa8":  "psa_8",
+    "psa9":  "psa_9",
+    "psa10": "psa_10",
+}
+
+
+def pokemonpricetracker_available() -> bool:
+    return bool(os.getenv("POKEMONPRICETRACKER_API_KEY"))
+
+
+def _ppt_pick_card(rows: list, card: CardRef) -> dict | None:
+    """Best row for the card we asked about.
+
+    Prefers an exact card-number match (comparing only the numerator, since
+    "215/203" and "215" both occur), then an exact name match, then the first
+    row. Returning the wrong printing would quietly price a different card.
+    """
+    if not rows:
+        return None
+    want_num = (card.card_number or "").split("/")[0].strip().lstrip("0").lower()
+    want_name = re.sub(r"[^a-z0-9]", "", card.name.lower())
+    if want_num:
+        for row in rows:
+            got = str(row.get("cardNumber") or "").split("/")[0].strip().lstrip("0").lower()
+            if got and got == want_num:
+                return row
+    for row in rows:
+        if re.sub(r"[^a-z0-9]", "", str(row.get("name") or "").lower()) == want_name:
+            return row
+    return rows[0]
+
+
+async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
+                                    card: CardRef) -> list[GradedQuote]:
+    """Graded (PSA 8/9/10) + market prices for one Pokemon card.
+
+    Returns [] for non-Pokemon games, a missing key, or any failure — never
+    raises, so one vendor being down can't take the calculator with it.
+    """
+    key = os.getenv("POKEMONPRICETRACKER_API_KEY")
+    if not key or card.game != "pokemon":
+        return []
+
+    cache_key = card.key()
+    hit = _ppt_cache.get(cache_key)
+    if hit and (time.time() - hit[0]) < PPT_CACHE_TTL_SECONDS:
+        logger.info("PokemonPriceTracker cache hit for %r (no credits spent)", cache_key)
+        return list(hit[1])
+
+    params = {
+        "search": card.name.strip(),
+        "limit": PPT_SEARCH_LIMIT,
+        "includeEbay": "true",
+    }
+    if card.set_name.strip():
+        params["set"] = card.set_name.strip()
+
+    try:
+        resp = await client.get(f"{PPT_BASE}/cards",
+                                headers={"Authorization": f"Bearer {key}"},
+                                params=params)
+    except Exception:
+        logger.exception("PokemonPriceTracker request failed for %r", card.name)
+        return []
+
+    if resp.status_code == 401:
+        logger.warning("PokemonPriceTracker rejected the API key (401)")
+        return []
+    if resp.status_code == 429:
+        logger.warning("PokemonPriceTracker rate/credit limit hit (429)")
+        return []
+    if resp.status_code != 200:
+        logger.warning("PokemonPriceTracker HTTP %s for %r: %s",
+                       resp.status_code, card.name, resp.text[:300])
+        return []
+    try:
+        payload = resp.json()
+    except Exception:
+        logger.warning("PokemonPriceTracker returned non-JSON for %r", card.name)
+        return []
+
+    rows = (payload or {}).get("data") or []
+    row = _ppt_pick_card(rows, card)
+    if not row:
+        logger.info("PokemonPriceTracker: no match for %r (%s)", card.name, card.set_name)
+        return []
+
+    # Credit accounting is in the response headers — log it so budget burn is
+    # visible before the monthly quota runs out, not after.
+    logger.info("PokemonPriceTracker %r -> matched %r %s (%s) | credits used=%s "
+                "daily remaining=%s",
+                card.name, row.get("name"), row.get("cardNumber"), row.get("setName"),
+                resp.headers.get("X-API-Calls-Consumed", "?"),
+                resp.headers.get("X-RateLimit-Daily-Remaining", "?"))
+
+    def _dollars(value):
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            return None
+        return round(out, 2) if out > 0 else None
+
+    quotes = []
+    prices = row.get("prices") or {}
+    raw_price = _dollars(prices.get("market")) or _dollars(prices.get("low"))
+    if raw_price:
+        quotes.append(GradedQuote(
+            grade="raw", price=raw_price, basis="sold",
+            source="pokemonpricetracker", as_of=_now(),
+            note=f"{row.get('setName') or ''} {row.get('cardNumber') or ''}".strip() or None,
+        ))
+
+    ebay_block = row.get("ebay") or {}
+    for field, grade in PPT_GRADE_FIELDS.items():
+        entry = ebay_block.get(field) or {}
+        price = _dollars(entry.get("avg") if isinstance(entry, dict) else entry)
+        if price:
+            quotes.append(GradedQuote(
+                grade=grade, price=price, basis=PPT_BASIS,
+                source="pokemonpricetracker", as_of=_now(),
+                note="eBay graded average",
+            ))
+
+    if not quotes:
+        logger.info("PokemonPriceTracker matched %r but returned no usable prices "
+                    "(ebay block keys: %s)", row.get("name"), list(ebay_block))
+    else:
+        _ppt_cache[cache_key] = (time.time(), list(quotes))
+    return quotes
+
+
 # ────────────────────────────── eBay Browse ──────────────────────────────
 # Browse returns ACTIVE listings only — sold comps live behind Marketplace
 # Insights, which is a Limited Release API requiring eBay Partner Network
@@ -401,8 +562,15 @@ async def fetch_ebay(client: httpx.AsyncClient, card: CardRef) -> list[GradedQuo
 
 
 # ─────────────────────────────── Merging ───────────────────────────────
-# Lower number wins when two sources quote the same grade.
-SOURCE_PRIORITY = {"manual": 0, "pricecharting": 1, "ebay_browse": 2}
+# Lower number wins when two sources quote the same grade. PokemonPriceTracker
+# outranks PriceCharting for the grades it covers because it actually returns
+# graded values; eBay stays last since it's the only ask-based source.
+SOURCE_PRIORITY = {
+    "manual": 0,
+    "pokemonpricetracker": 1,
+    "pricecharting": 2,
+    "ebay_browse": 3,
+}
 
 
 def merge_quotes(*groups: list[GradedQuote]) -> dict[str, GradedQuote]:
@@ -431,6 +599,11 @@ async def fetch_all(card: CardRef, manual: list[GradedQuote] | None = None,
     used = ["manual"] if manual else []
 
     async with httpx.AsyncClient(timeout=timeout) as client:
+        if pokemonpricetracker_available() and card.game == "pokemon":
+            ppt = await fetch_pokemonpricetracker(client, card)
+            if ppt:
+                used.append("pokemonpricetracker")
+            groups.append(ppt)
         if pricecharting_available():
             pc = await fetch_pricecharting(client, card)
             if pc:
@@ -451,6 +624,7 @@ def configured_sources() -> dict:
     """What's actually wired up — surfaced on the page so a missing key is
     visible instead of looking like 'no data for this card'."""
     return {
+        "pokemonpricetracker": pokemonpricetracker_available(),
         "pricecharting": pricecharting_available(),
         "ebay_browse": ebay_available(),
     }
