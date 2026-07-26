@@ -50,7 +50,6 @@
   table.grades td.left { text-align: left; }
   table.grades tr:last-child td { border-bottom: none; }
   table.grades input { width: 84px; text-align: right; height: 26px; }
-  table.grades input.odds { width: 60px; }
   .basis { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 8px; }
   .basis-sold { background: #dcfce7; color: #166534; }
   .basis-ask { background: #fef9c3; color: #854d0e; }
@@ -59,29 +58,25 @@
   .src.recent { color: #5865F2; cursor: pointer; }
   .src.recent:hover { text-decoration: underline; }
 
-  .odds-wrap { display: flex; align-items: center; gap: 10px; margin: 4px 0 2px; }
-  .odds-wrap input[type=range] { flex: 1; accent-color: #5865F2; }
-  .odds-out { font-size: 15px; font-weight: 600; min-width: 46px; text-align: right; }
   .hint { font-size: 11px; color: #aaa; margin-bottom: 12px; }
-
-  .headline { font-size: 32px; font-weight: 700; letter-spacing: -.02em; }
-  .headline.pos { color: #16a34a; }
-  .headline.neg { color: #dc2626; }
-  .verdict { display: inline-block; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 10px; margin-left: 8px; vertical-align: 4px; }
-  .v-grade { background: #dcfce7; color: #166534; }
-  .v-marginal { background: #fef9c3; color: #854d0e; }
-  .v-sell_raw { background: #fee2e2; color: #991b1b; }
   .sub { font-size: 12px; color: #888; }
   .block { border-top: 1px solid #f0f0f0; padding-top: 12px; margin-top: 12px; }
-  .be-num { font-size: 22px; font-weight: 700; }
-  .be-bar { height: 7px; background: #f0f0f0; border-radius: 4px; margin: 8px 0 6px; position: relative; overflow: hidden; }
-  .be-fill { position: absolute; left: 0; top: 0; bottom: 0; background: #5865F2; }
-  .sens { display: flex; gap: 6px; align-items: flex-end; height: 74px; }
-  .sens-col { flex: 1; text-align: center; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
-  .sens-bar { border-radius: 3px 3px 0 0; min-height: 2px; }
-  .sens-lab { font-size: 11px; color: #aaa; margin-top: 4px; }
-  .sens-val { font-size: 11px; color: #888; margin-bottom: 3px; }
   .warn { font-size: 12px; color: #9a3412; background: #ffedd5; border-radius: 8px; padding: 7px 10px; margin-top: 10px; line-height: 1.5; }
+
+  .net-card { border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+  .net-card:last-child { margin-bottom: 0; }
+  .net-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+  .net-grade { font-size: 14px; font-weight: 700; color: #111; }
+  .net-sells { font-size: 12px; color: #999; }
+  table.net-lines td { padding: 3px 0; border-bottom: none; font-size: 12px; }
+  table.net-lines td.neg { color: #dc2626; }
+  .net-total { display: flex; justify-content: space-between; align-items: baseline; border-top: 1px solid #f0f0f0; margin-top: 6px; padding-top: 8px; }
+  .net-value { font-size: 20px; font-weight: 700; }
+  .net-value.pos { color: #16a34a; }
+  .net-value.neg { color: #dc2626; }
+  .net-vs { font-size: 12px; margin-top: 4px; text-align: right; }
+  .net-vs.pos { color: #16a34a; }
+  .net-vs.neg { color: #dc2626; }
   .note { font-size: 11px; color: #999; line-height: 1.6; margin-top: 12px; border-top: 1px solid #f0f0f0; padding-top: 10px; }
   .status { font-size: 12px; color: #999; margin-left: auto; }
   .srcbar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -116,9 +111,11 @@
   html[data-theme="dark"] table.grades th { border-bottom-color: #303033; }
   html[data-theme="dark"] table.grades td { border-bottom-color: #242427; }
   html[data-theme="dark"] .block, html[data-theme="dark"] .note { border-top-color: #303033; }
-  html[data-theme="dark"] .be-bar { background: #2a2a2d; }
   html[data-theme="dark"] .srcchip { background: #252528; color: #bbbbc5; }
   html[data-theme="dark"] .basis-manual { background: #2a2a2d; color: #bbbbc5; }
+  html[data-theme="dark"] .net-card { border-color: #303033; }
+  html[data-theme="dark"] .net-grade { color: #f0f0f0; }
+  html[data-theme="dark"] .net-total { border-top-color: #303033; }
 </style>
 </head>
 <body>
@@ -126,7 +123,7 @@
 <div class="header">
   <div>
     <div class="header-title">Grading Calculator</div>
-    <div class="header-sub">Is it worth grading? &mdash; admin only, trial</div>
+    <div class="header-sub">What grading nets you, at market prices</div>
   </div>
   <div class="nav">
     <a href="/">Dashboard</a>
@@ -230,7 +227,7 @@
 
       <div class="card">
         <div class="card-head">
-          <span class="card-title">Prices and odds</span>
+          <span class="card-title">Market prices</span>
           <span class="status">Edit any number to override</span>
         </div>
         <div class="card-body">
@@ -240,20 +237,10 @@
                 <th class="left">Grade</th>
                 <th>Price</th>
                 <th>Where from</th>
-                <th>Odds</th>
               </tr>
             </thead>
             <tbody id="gradeRows"></tbody>
           </table>
-
-          <div class="block">
-            <label class="label" for="gem">Odds it comes back a PSA 10</label>
-            <div class="odds-wrap">
-              <input type="range" id="gem" min="0" max="100" step="1" value="30" oninput="onGem()">
-              <span class="odds-out" id="gemOut">30%</span>
-            </div>
-            <div class="hint">Moving this rebalances the other grades proportionally. Nobody knows this number &mdash; that's why you set it yourself.</div>
-          </div>
         </div>
       </div>
 
@@ -291,40 +278,25 @@
 
     <div>
       <div class="card">
-        <div class="card-head"><span class="card-title">Result</span></div>
+        <div class="card-head">
+          <span class="card-title">What you'd net</span>
+          <span class="status">At the market prices shown</span>
+        </div>
         <div class="card-body">
-          <div class="sub">Compared with selling it raw today</div>
-          <div style="margin:3px 0 2px">
-            <span class="headline" id="delta">&mdash;</span>
-            <span class="verdict" id="verdict" style="display:none"></span>
-          </div>
-          <div class="sub" id="deltaSub">Enter a card and prices to start.</div>
+          <div id="netCards"><div class="sub">Pick a card to start.</div></div>
 
           <div class="block">
-            <div class="label" style="margin-bottom:3px">Break-even gem rate</div>
-            <div class="be-num" id="beNum">&mdash;</div>
-            <div class="be-bar"><div class="be-fill" id="beFill" style="width:0%"></div></div>
-            <div class="sub" id="beText">&nbsp;</div>
-          </div>
-
-          <div class="block">
-            <div class="label" style="margin-bottom:8px">If your real gem rate is&hellip;</div>
-            <div class="sens" id="sens"></div>
-          </div>
-
-          <div class="block">
-            <div class="label" style="margin-bottom:6px">Where the money goes</div>
-            <table class="grades">
-              <tbody id="breakdown"></tbody>
-            </table>
+            <div class="label" style="margin-bottom:6px">If you sell it raw instead</div>
+            <table class="grades"><tbody id="rawBreakdown"></tbody></table>
           </div>
 
           <div id="warnings"></div>
 
           <div class="note">
-            This is an estimate, not a guarantee. It assumes you can actually sell at the
-            prices shown, that your card grades the way you guessed, and that the fees above
-            are current. Grading is a bet &mdash; treat the number as one opinion, not a plan.
+            These are the market prices for each grade, minus the costs you entered.
+            This does <strong>not</strong> predict what grade your card will get &mdash; it
+            shows what each outcome would be worth. It assumes you can actually sell at
+            these prices, and that the fees above are current.
           </div>
         </div>
       </div>
@@ -335,11 +307,9 @@
 <script>
 const GRADES = ['raw','psa_8','psa_9','psa_10','bgs_9_5','bgs_10','cgc_10','sgc_10'];
 const LABELS = {{ grade_labels | tojson }};
-// Grades that participate in the outcome distribution. `raw` is the baseline
-// you're compared against, so it never gets odds.
-const OUTCOME_GRADES = ['psa_10','psa_9','psa_8'];
-// Default split of the non-10 remainder between a 9 and an 8-or-below.
-const NON_GEM_SPLIT = { psa_9: 0.78, psa_8: 0.22 };
+// Grades the result panel reports on. Everything else is still shown in the
+// price table for reference, but PSA 10 and 9 carry the sale volume.
+const REPORTED_GRADES = ['psa_10','psa_9'];
 // Grading company / tier reference (fee, turnaround, coverage). Single source
 // of truth lives in grading_tiers.py; the fee is a default and stays editable.
 const GRADERS = {{ grading_companies | tojson }};
@@ -567,11 +537,6 @@ function onPriceInput(){
   scheduleCalc();
 }
 
-function money(v){
-  const sign = v < 0 ? '-' : '';
-  return sign + '$' + Math.abs(v).toLocaleString('en-US', {maximumFractionDigits: 0});
-}
-
 function buildRows(){
   const tbody = document.getElementById('gradeRows');
   tbody.innerHTML = GRADES.map(g => {
@@ -587,14 +552,10 @@ function buildRows(){
       ? `<div class="src recent" title="Average of the last ${q.recent_n} sale(s)${q.recent_since ? ', back to ' + q.recent_since : ''} — click to use"
               onclick="useRecent('${g}', ${q.recent_avg})">last ${q.recent_n}: $${Math.round(q.recent_avg).toLocaleString()}</div>`
       : '';
-    const oddsCell = OUTCOME_GRADES.includes(g)
-      ? `<input class="odds" type="number" id="odds_${g}" min="0" max="100" step="1" value="${defaultOdds(g)}" oninput="onOddsEdit()">`
-      : '<span class="src">&mdash;</span>';
     return `<tr>
       <td class="left">${LABELS[g] || g}</td>
       <td><input type="number" id="price_${g}" min="0" step="1" value="${price}" oninput="onPriceInput()"></td>
       <td>${badge}${src}${recent}</td>
-      <td>${oddsCell}</td>
     </tr>`;
   }).join('');
 }
@@ -605,34 +566,6 @@ function useRecent(grade, value){
   if (!el) return;
   el.value = Math.round(value * 100) / 100;
   onPriceInput();
-}
-
-function defaultOdds(g){
-  const gem = +document.getElementById('gem').value / 100;
-  if (g === 'psa_10') return Math.round(gem * 100);
-  return Math.round((1 - gem) * NON_GEM_SPLIT[g] * 100);
-}
-
-function onGem(){
-  const gem = +document.getElementById('gem').value;
-  document.getElementById('gemOut').textContent = gem + '%';
-  OUTCOME_GRADES.forEach(g => {
-    const el = document.getElementById('odds_' + g);
-    if (el) el.value = defaultOdds(g);
-  });
-  scheduleCalc();
-}
-
-function onOddsEdit(){
-  // Hand-edited odds win — keep the slider in sync with the PSA 10 field so
-  // the two controls never disagree on screen.
-  const el = document.getElementById('odds_psa_10');
-  if (el){
-    const v = Math.min(100, Math.max(0, +el.value || 0));
-    document.getElementById('gem').value = v;
-    document.getElementById('gemOut').textContent = v + '%';
-  }
-  scheduleCalc();
 }
 
 async function lookup(){
@@ -677,21 +610,15 @@ function scheduleCalc(){
 }
 
 async function calc(){
-  const gradePrices = {}, odds = {};
+  const gradePrices = {};
   GRADES.forEach(g => {
     const el = document.getElementById('price_' + g);
     if (el && el.value !== '') gradePrices[g] = +el.value;
   });
-  OUTCOME_GRADES.forEach(g => {
-    const el = document.getElementById('odds_' + g);
-    if (el && el.value !== '') odds[g] = (+el.value) / 100;
-  });
-  if (!Object.values(odds).some(v => v > 0)) return;
 
   const body = {
     raw_price: gradePrices.raw || 0,
     grade_prices: gradePrices,
-    odds: odds,
     costs: {
       grading_fee: +document.getElementById('gradingFee').value || 0,
       ship_to: +document.getElementById('shipTo').value || 0,
@@ -711,60 +638,52 @@ async function calc(){
   } catch(e){}
 }
 
+function money(v){
+  const sign = v < 0 ? '-' : '';
+  return sign + '$' + Math.abs(v).toLocaleString('en-US',
+    {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+
 function render(d){
-  const deltaEl = document.getElementById('delta');
-  deltaEl.textContent = (d.delta >= 0 ? '+' : '') + money(d.delta);
-  deltaEl.className = 'headline ' + (d.delta >= 0 ? 'pos' : 'neg');
-
-  const v = document.getElementById('verdict');
-  v.style.display = 'inline-block';
-  v.className = 'verdict v-' + d.verdict;
-  v.textContent = { grade: 'Worth grading', marginal: 'Too close to call', sell_raw: 'Sell it raw' }[d.verdict];
-
-  document.getElementById('deltaSub').textContent =
-    `Graded nets ${money(d.ev_net)} on average · raw nets ${money(d.raw_net)} · ${money(d.submission_total)} to submit`;
-
-  const be = d.break_even_gem_rate;
-  const beNum = document.getElementById('beNum');
-  const beFill = document.getElementById('beFill');
-  const beText = document.getElementById('beText');
-  if (be === null){
-    beNum.textContent = 'n/a';
-    beFill.style.width = '0%';
-    beText.textContent = 'A PSA 9 already beats selling raw here, so there is no gem rate you need to hit.';
+  const wrap = document.getElementById('netCards');
+  if (!d.grades.length){
+    wrap.innerHTML = '<div class="sub">No PSA 10 or PSA 9 price yet — look up a card, '
+                   + 'or type the prices in on the left.</div>';
   } else {
-    beNum.textContent = Math.round(be * 100) + '%';
-    beFill.style.width = Math.min(100, be * 100) + '%';
-    const oneIn = Math.max(1, Math.round(1 / be));
-    const yours = +document.getElementById('gem').value / 100;
-    beText.textContent = `Roughly 1 in ${oneIn} needs to come back a 10 just to cover costs. `
-      + (yours >= be ? 'You set a higher rate than that, so there is room.'
-                     : 'You set a lower rate than that, so this loses money on average.');
-  }
-
-  const sens = document.getElementById('sens');
-  if (!d.sensitivity.length){
-    sens.innerHTML = '<div class="sub">Needs both a PSA 9 and a PSA 10 price.</div>';
-  } else {
-    const max = Math.max(...d.sensitivity.map(s => Math.abs(s.delta)), 1);
-    sens.innerHTML = d.sensitivity.map(s => {
-      const h = Math.max(2, Math.round(Math.abs(s.delta) / max * 42));
-      const colour = s.delta >= 0 ? '#16a34a' : '#dc2626';
-      return `<div class="sens-col">
-        <div class="sens-val">${(s.delta >= 0 ? '+' : '') + money(s.delta)}</div>
-        <div class="sens-bar" style="height:${h}px;background:${colour}"></div>
-        <div class="sens-lab">${Math.round(s.gem_rate * 100)}%</div>
+    wrap.innerHTML = d.grades.map(g => {
+      const better = g.vs_raw >= 0;
+      return `<div class="net-card">
+        <div class="net-head">
+          <span class="net-grade">${g.label}</span>
+          <span class="net-sells">sells for ${money(g.price)}</span>
+        </div>
+        <table class="grades net-lines">
+          <tr><td class="left">Sale price</td><td>${money(g.price)}</td></tr>
+          ${g.sale_fee ? `<tr><td class="left">Sale fees</td><td class="neg">-${money(g.sale_fee)}</td></tr>` : ''}
+          ${g.sale_ship ? `<tr><td class="left">Ship to buyer</td><td class="neg">-${money(g.sale_ship)}</td></tr>` : ''}
+          <tr><td class="left">Grading &amp; shipping</td><td class="neg">-${money(g.submission_total)}</td></tr>
+        </table>
+        <div class="net-total">
+          <span>You net</span>
+          <span class="net-value ${g.net >= 0 ? 'pos' : 'neg'}">${money(g.net)}</span>
+        </div>
+        <div class="net-vs ${better ? 'pos' : 'neg'}">
+          ${better ? '+' : ''}${money(g.vs_raw)} versus selling it raw
+        </div>
       </div>`;
     }).join('');
   }
 
-  document.getElementById('breakdown').innerHTML = d.outcomes.map(o =>
-    `<tr>
-      <td class="left">${o.label} <span class="src">${Math.round(o.probability * 100)}%</span></td>
-      <td>${money(o.price)}</td>
-      <td>nets ${money(o.net)}</td>
-      <td>${money(o.contribution)}</td>
-    </tr>`).join('');
+  const raw = document.getElementById('rawBreakdown');
+  if (d.raw_price > 0){
+    raw.innerHTML =
+      `<tr><td class="left">Sale price</td><td>${money(d.raw_price)}</td></tr>`
+      + (d.raw_sale_fee ? `<tr><td class="left">Sale fees</td><td class="neg">-${money(d.raw_sale_fee)}</td></tr>` : '')
+      + (d.raw_sale_ship ? `<tr><td class="left">Ship to buyer</td><td class="neg">-${money(d.raw_sale_ship)}</td></tr>` : '')
+      + `<tr><td class="left"><strong>You net</strong></td><td><strong>${money(d.raw_net)}</strong></td></tr>`;
+  } else {
+    raw.innerHTML = '<tr><td class="left sub">No raw price available.</td><td></td></tr>';
+  }
 
   document.getElementById('warnings').innerHTML = d.warnings.length
     ? '<div class="warn">' + d.warnings.join('<br>') + '</div>' : '';

@@ -1894,8 +1894,8 @@ async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
 @app.post("/api/grading-calculator/calc")
 @limiter.limit("120/minute")
 async def api_grading_calc(request: Request, user=Depends(get_current_user)):
-    """Pure ROI math — no network, no DB. Split from the quotes route so the
-    calculator stays instant and free while the user drags the odds slider."""
+    """Net proceeds per grade — no network, no DB. Split from the quotes route
+    so editing a price or a cost recalculates instantly and spends no quota."""
     body = await request.json()
 
     def _num(value, default=0.0):
@@ -1908,8 +1908,6 @@ async def api_grading_calc(request: Request, user=Depends(get_current_user)):
     raw_price = _num(body.get("raw_price"))
     grade_prices = {g: _num(v) for g, v in (body.get("grade_prices") or {}).items()
                     if g in price_sources.GRADE_KEYS}
-    odds = {g: _num(v) for g, v in (body.get("odds") or {}).items()
-            if g in price_sources.GRADE_KEYS}
     c = body.get("costs") or {}
     costs = grading_roi.Costs(
         grading_fee=_num(c.get("grading_fee"), 25.0),
@@ -1920,25 +1918,23 @@ async def api_grading_calc(request: Request, user=Depends(get_current_user)):
         sale_ship=_num(c.get("sale_ship"), 0.0),
     )
     try:
-        r = grading_roi.evaluate(raw_price, grade_prices, odds, costs)
+        r = grading_roi.evaluate(raw_price, grade_prices, costs)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     return JSONResponse({
-        "raw_net": round(r.raw_net, 2),
-        "ev_gross": round(r.ev_gross, 2),
-        "ev_net": round(r.ev_net, 2),
-        "delta": round(r.delta, 2),
-        "submission_total": round(costs.submission_total, 2),
-        "break_even_gem_rate": (round(r.break_even_gem_rate, 4)
-                                if r.break_even_gem_rate is not None else None),
-        "verdict": r.verdict,
-        "outcomes": [{"grade": o.grade, "label": price_sources.GRADE_LABELS.get(o.grade, o.grade),
-                      "probability": round(o.probability, 4), "price": round(o.price, 2),
-                      "net": round(o.net, 2), "contribution": round(o.contribution, 2)}
-                     for o in r.outcomes],
-        "sensitivity": [{"gem_rate": s["gem_rate"], "delta": round(s["delta"], 2)}
-                        for s in r.sensitivity],
+        "raw_price": r.raw_price,
+        "raw_sale_fee": r.raw_sale_fee,
+        "raw_sale_ship": r.raw_sale_ship,
+        "raw_net": r.raw_net,
+        "submission_total": r.submission_total,
+        "grades": [{"grade": g.grade,
+                    "label": price_sources.GRADE_LABELS.get(g.grade, g.grade),
+                    "price": g.price, "sale_fee": g.sale_fee,
+                    "sale_ship": g.sale_ship,
+                    "submission_total": g.submission_total,
+                    "net": g.net, "vs_raw": g.vs_raw}
+                   for g in r.grades],
         "warnings": r.warnings,
     }, headers={"Cache-Control": "no-store"})
 
