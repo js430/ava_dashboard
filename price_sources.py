@@ -271,11 +271,26 @@ _ppt_cache: dict[str, tuple[float, list]] = {}
 # this one constant and every quote is relabelled.
 PPT_BASIS = "sold"
 
+# Window for the graded-sales lookup. Their API defaults to 30 days, which is
+# routinely empty for a single printing — a card can easily go a month with no
+# PSA 10 sale — and an empty block looks identical to "this vendor has no
+# graded data". Their own quick-start example uses days=90.
+PPT_EBAY_DAYS = 90
+
+# Canonical-key -> our grade. Keys are matched after stripping non-alphanumerics
+# and lowercasing, so "psa10", "PSA 10" and "psa_10" all land on the same entry.
 PPT_GRADE_FIELDS = {
     "psa8":  "psa_8",
     "psa9":  "psa_9",
     "psa10": "psa_10",
+    "bgs95": "bgs_9_5",
+    "bgs10": "bgs_10",
+    "cgc10": "cgc_10",
+    "sgc10": "sgc_10",
 }
+
+# Value keys tried inside a grade entry, in order.
+PPT_VALUE_KEYS = ("avg", "average", "mean", "market", "price", "value", "median")
 
 
 def pokemonpricetracker_available() -> bool:
@@ -414,7 +429,10 @@ async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
             return None, None
         return ((payload or {}).get("data") or []), resp
 
-    base_params = {"search": search, "limit": PPT_SEARCH_LIMIT, "includeEbay": "true"}
+    # The search runs WITHOUT includeEbay: that flag bills an extra credit for
+    # every card returned, and only the one card we actually pick needs graded
+    # data. It's re-requested for that card alone below.
+    base_params = {"search": search, "limit": PPT_SEARCH_LIMIT}
     attempts = []
     if card.set_name.strip():
         attempts.append({**base_params, "set": card.set_name.strip()})
@@ -451,6 +469,32 @@ async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
                 resp.headers.get("X-API-Calls-Consumed", "?"),
                 resp.headers.get("X-RateLimit-Daily-Remaining", "?"))
 
+    # Re-request JUST this card with the graded block. Billing is per card
+    # returned, so asking for one card costs a fraction of flagging the whole
+    # search — and tcgPlayerId pins the exact printing rather than re-searching.
+    tcg_id = row.get("tcgPlayerId") or row.get("tcgplayerId")
+    if tcg_id:
+        detail_rows, detail_resp = await _search(
+            {"tcgPlayerId": str(tcg_id), "limit": 1, "includeEbay": "true",
+             "days": PPT_EBAY_DAYS})
+        if detail_rows:
+            row = detail_rows[0]
+            if detail_resp is not None:
+                logger.info("PokemonPriceTracker graded fetch (tcgPlayerId=%s) | "
+                            "credits used=%s daily remaining=%s", tcg_id,
+                            detail_resp.headers.get("X-API-Calls-Consumed", "?"),
+                            detail_resp.headers.get("X-RateLimit-Daily-Remaining", "?"))
+    else:
+        logger.info("PokemonPriceTracker: row has no tcgPlayerId (keys: %s)",
+                    sorted(row.keys()))
+
+    # The graded block is the whole point of this vendor, so log what actually
+    # arrived. An empty/absent block means includeEbay isn't returning data —
+    # a plan limitation or a key name that differs from the docs — and that is
+    # invisible otherwise because the raw price still populates.
+    logger.info("PokemonPriceTracker row keys: %s | ebay block: %r",
+                sorted(row.keys()), row.get("ebay"))
+
     def _dollars(value):
         try:
             out = float(value)
@@ -469,20 +513,30 @@ async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
         ))
 
     ebay_block = row.get("ebay") or {}
-    for field, grade in PPT_GRADE_FIELDS.items():
-        entry = ebay_block.get(field) or {}
-        price = _dollars(entry.get("avg") if isinstance(entry, dict) else entry)
-        if price:
-            quotes.append(GradedQuote(
-                grade=grade, price=price, basis=PPT_BASIS,
-                source="pokemonpricetracker", as_of=_now(),
-                note="eBay graded average",
-            ))
+    if isinstance(ebay_block, dict):
+        for key, entry in ebay_block.items():
+            grade = PPT_GRADE_FIELDS.get(re.sub(r"[^a-z0-9]", "", str(key).lower()))
+            if not grade:
+                continue
+            if isinstance(entry, dict):
+                price = next((p for p in (_dollars(entry.get(k))
+                                          for k in PPT_VALUE_KEYS) if p), None)
+                count = entry.get("count") or entry.get("sales") or entry.get("n")
+            else:
+                price, count = _dollars(entry), None
+            if price:
+                quotes.append(GradedQuote(
+                    grade=grade, price=price, basis=PPT_BASIS,
+                    source="pokemonpricetracker", as_of=_now(),
+                    sample_size=int(count) if isinstance(count, (int, float)) else None,
+                    note=f"eBay graded avg, {PPT_EBAY_DAYS}d",
+                ))
 
-    if not quotes:
-        logger.info("PokemonPriceTracker matched %r but returned no usable prices "
-                    "(ebay block keys: %s)", row.get("name"), list(ebay_block))
-    else:
+    graded = [q for q in quotes if q.grade != "raw"]
+    if not graded:
+        logger.info("PokemonPriceTracker: no graded prices for %r over %dd "
+                    "(ebay block: %r)", row.get("name"), PPT_EBAY_DAYS, ebay_block)
+    if quotes:
         _ppt_cache[cache_key] = (time.time(), list(quotes))
     return quotes
 
