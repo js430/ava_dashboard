@@ -6,16 +6,14 @@ and tags each quote with a `basis` — 'sold' (a real completed-sale figure) or
 an unsold $900 listing is not a comp and the UI must never imply it is.
 
 Sources, in priority order:
-  1. manual         admin override, supplied by the caller (never fetched here)
-  2. pricecharting  sold-derived, per grade, covers Pokemon AND One Piece
-  3. ebay_browse    ask-side only — live listings, also gives supply depth
+  1. manual              admin override, supplied by the caller (never fetched here)
+  2. pokemonpricetracker sold-derived, per grade, POKEMON ONLY — see below
+  3. ebay_browse         ask-side only — live listings, also gives supply depth;
+                         the only source for One Piece
 
-WRITTEN WITHOUT LIVE KEYS. Like justtcg.py before it, the exact response
-shapes here are unverified against a real account, so extraction scans for
-expected field names instead of assuming one shape, and the first response
-from each vendor logs its keys so the mappings can be corrected after the
-first real run. Treat every mapping table below as a hypothesis until a live
-call confirms it.
+PriceCharting was removed as a source: it never returned graded prices for
+this account (their API returns only the columns in the subscribed price
+guide), and PPT covers the same ground with real graded sales data.
 """
 
 from __future__ import annotations
@@ -36,13 +34,36 @@ logger = logging.getLogger("dashboard.price_sources")
 # cgc_9/tag_10/tag_9 exist so each grading company's own top-two grades (see
 # grading_tiers.GRADING_COMPANIES["report_grades"]) are representable — PPT's
 # salesByGrade already returns cgc9/tag10/tag9, they just weren't read before.
-GRADE_KEYS = ("raw", "psa_8", "psa_9", "psa_10", "bgs_9_5", "bgs_10",
+# psa_1..psa_7 exist for the Market Prices "lowest grade shown" slider — PSA
+# is whole-number only (no half grades), and PPT's salesByGrade carries these
+# when a card has any sales at that grade (sparse below ~7 for most cards,
+# which is fine: no data just means no price for that row, same as any grade).
+GRADE_KEYS = ("raw", "psa_1", "psa_2", "psa_3", "psa_4", "psa_5", "psa_6", "psa_7",
+              "psa_8", "psa_9", "psa_10", "bgs_9_5", "bgs_10",
               "cgc_9", "cgc_10", "sgc_10", "tag_9", "tag_10")
 
 GRADE_LABELS = {
-    "raw": "Raw", "psa_8": "PSA 8", "psa_9": "PSA 9", "psa_10": "PSA 10",
+    "raw": "Raw",
+    "psa_1": "PSA 1", "psa_2": "PSA 2", "psa_3": "PSA 3", "psa_4": "PSA 4",
+    "psa_5": "PSA 5", "psa_6": "PSA 6", "psa_7": "PSA 7",
+    "psa_8": "PSA 8", "psa_9": "PSA 9", "psa_10": "PSA 10",
     "bgs_9_5": "BGS 9.5", "bgs_10": "BGS 10", "cgc_9": "CGC 9", "cgc_10": "CGC 10",
     "sgc_10": "SGC 10", "tag_9": "TAG 9", "tag_10": "TAG 10",
+}
+
+# Numeric rank per grade, used only to filter the Market Prices table by the
+# "lowest grade shown" slider (0 = always shown, i.e. raw). A row is shown
+# when its level >= the slider's minimum. Grades sharing a number (psa_9,
+# cgc_9, tag_9) share a level so the slider treats every company's "9" the
+# same way; BGS's 9.5 sits between 9 and 10 as its own level.
+GRADE_LEVEL = {
+    "raw": 0,
+    "psa_1": 1, "psa_2": 2, "psa_3": 3, "psa_4": 4, "psa_5": 5, "psa_6": 6, "psa_7": 7,
+    "psa_8": 8, "psa_9": 9, "psa_10": 10,
+    "bgs_9_5": 9.5, "bgs_10": 10,
+    "cgc_9": 9, "cgc_10": 10,
+    "sgc_10": 10,
+    "tag_9": 9, "tag_10": 10,
 }
 
 
@@ -95,175 +116,14 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# ───────────────────────────── PriceCharting ─────────────────────────────
-# PriceCharting reuses its old video-game price-guide field names for cards
-# (loose/cib/new/box-only/manual-only), so the field -> grade mapping is NOT
-# self-describing. VERIFIED against PriceCharting's "Prices API: Description
-# of Keys" documentation — the comments below quote the card meanings.
-#
-# cib-price (cards: graded 7 or 7.5) is deliberately unmapped: the calculator
-# models 8/9/10, and a 7 doesn't inform the grade-or-sell decision.
-#
-# Values arrive in PENNIES.
-PRICECHARTING_FIELD_MAP = {
-    "loose-price":        "raw",       # Ungraded card
-    "new-price":          "psa_8",     # Graded 8 or 8.5
-    "graded-price":       "psa_9",     # Graded 9
-    "box-only-price":     "bgs_9_5",   # Graded 9.5
-    "manual-only-price":  "psa_10",    # Graded 10 by PSA
-    "bgs-10-price":       "bgs_10",    # BGS 10
-    "condition-17-price": "cgc_10",    # CGC 10
-    "condition-18-price": "sgc_10",    # SGC 10
-}
-
-# Priced fields we knowingly drop — keeps the "unmapped field" warning meaningful
-# instead of firing on every lookup for a grade we've chosen not to model.
-PRICECHARTING_IGNORED_FIELDS = {
-    "cib-price",           # cards: graded 7 or 7.5
-    "retail-cib-buy", "retail-cib-sell", "retail-loose-buy", "retail-loose-sell",
-    "retail-new-buy", "retail-new-sell",   # retailer buy/sell guidance, not comps
-    "gamestop-price",      # video-game only
-}
-
-PRICECHARTING_BASE = os.getenv("PRICECHARTING_API_BASE",
-                               "https://www.pricecharting.com/api")
-
-
-def _pc_query(card: CardRef) -> str:
-    """PriceCharting-specific search string.
-
-    Their products are named like "Mew ex #232" under a console named
-    "Pokemon Paldean Fates". Two things differ from the generic query():
-      - card_number arrives from pokemontcg.io as "232/091" (number/printedTotal);
-        PriceCharting only knows the bare "232", and the "/091" is a token that
-        matches nothing, which sinks the search.
-      - the console is prefixed with the game ("Pokemon <set>"), so we prefix it
-        too rather than sending the bare set name.
-    """
-    number = (card.card_number or "").split("/")[0].strip()
-    game_word = {"pokemon": "Pokemon", "one_piece": "One Piece"}.get(card.game, "")
-    parts = [card.name.strip()]
-    if number:
-        parts.append(number)
-    if card.set_name.strip():
-        parts.append(f"{game_word} {card.set_name}".strip())
-    return " ".join(p for p in parts if p)
-
-
-def pricecharting_available() -> bool:
-    return bool(os.getenv("PRICECHARTING_API_TOKEN"))
-
-
-def _log_price_fields(payload: dict) -> None:
-    """Dump every price field WITH ITS VALUE on every lookup.
-
-    Deliberately not once-per-process: the field->grade mapping is unverified,
-    and the only way to check it is to compare a real response against that
-    card's page on pricecharting.com. Dollar values (not pennies) so they can
-    be read straight across against the site's columns. Unmapped fields are
-    flagged separately — a populated field we ignore is a grade the calculator
-    silently isn't showing.
-    """
-    priced, empty = [], []
-    for key in sorted(k for k in payload if k.endswith("-price")):
-        dollars = _pennies(payload.get(key))
-        target = PRICECHARTING_FIELD_MAP.get(key, "UNMAPPED")
-        if dollars is None:
-            empty.append(key)
-        else:
-            priced.append(f"{key}={dollars} -> {target}")
-    logger.info("PriceCharting fields with values: %s", "; ".join(priced) or "(none)")
-    if empty:
-        logger.info("PriceCharting fields empty/zero: %s", ", ".join(empty))
-    unmapped = [k for k in payload
-                if k.endswith("-price") and k not in PRICECHARTING_FIELD_MAP
-                and k not in PRICECHARTING_IGNORED_FIELDS
-                and _pennies(payload.get(k)) is not None]
-    if unmapped:
-        logger.warning("PriceCharting returned PRICED but UNMAPPED fields: %s — "
-                       "these grades are being dropped; fix PRICECHARTING_FIELD_MAP",
-                       unmapped)
-    # Every remaining key, so a grade arriving under a name that doesn't end in
-    # "-price" can't hide from the scan above. This is the whole payload minus
-    # the price fields already reported — set PRICECHARTING_DEBUG=1 to also dump
-    # the raw JSON.
-    others = sorted(k for k in payload if not k.endswith("-price"))
-    if others:
-        logger.info("PriceCharting other keys: %s",
-                    ", ".join(f"{k}={payload[k]!r}" for k in others))
-    if os.getenv("PRICECHARTING_DEBUG", "").strip() not in ("", "0", "false"):
-        logger.info("PriceCharting RAW payload: %s", payload)
-
-
-def _pennies(value) -> float | None:
-    try:
-        cents = float(value)
-    except (TypeError, ValueError):
-        return None
-    if cents <= 0:
-        return None
-    return round(cents / 100.0, 2)
-
-
-async def fetch_pricecharting(client: httpx.AsyncClient, card: CardRef) -> list[GradedQuote]:
-    """Per-grade sold-derived prices. Returns [] on any failure — never raises."""
-    token = os.getenv("PRICECHARTING_API_TOKEN")
-    if not token:
-        return []
-    query = _pc_query(card)
-    try:
-        resp = await client.get(f"{PRICECHARTING_BASE}/product",
-                                params={"t": token, "q": query})
-    except Exception:
-        logger.exception("PriceCharting request failed for %r", query)
-        return []
-
-    if resp.status_code != 200:
-        logger.warning("PriceCharting HTTP %s for %r", resp.status_code, query)
-        return []
-    try:
-        payload = resp.json()
-    except Exception:
-        logger.warning("PriceCharting returned non-JSON for %r", query)
-        return []
-    if not isinstance(payload, dict):
-        return []
-    if str(payload.get("status", "success")).lower() not in ("success", "ok", ""):
-        logger.info("PriceCharting no match for %r: %s", query, payload.get("status"))
-        return []
-
-    _log_price_fields(payload)
-    product = payload.get("product-name") or ""
-    console = payload.get("console-name") or ""
-    matched_name = " — ".join(p for p in (product, console) if p)
-    # Logged every lookup (not once per process): a wrong-but-plausible match is
-    # the failure mode that silently produces confident garbage, so the matched
-    # product must always be checkable against what was asked for.
-    logger.info("PriceCharting %r -> matched %r (id=%s)",
-                query, matched_name or "?", payload.get("id"))
-
-    quotes = []
-    for field_name, grade in PRICECHARTING_FIELD_MAP.items():
-        price = _pennies(payload.get(field_name))
-        if price is None:
-            continue
-        quotes.append(GradedQuote(
-            grade=grade, price=price, basis="sold", source="pricecharting",
-            as_of=_now(), note=matched_name or None,
-        ))
-    if not quotes:
-        logger.info("PriceCharting matched %r but returned no usable prices", query)
-    return quotes
-
-
 # ───────────────────────── PokemonPriceTracker ─────────────────────────
-# POKEMON ONLY — no One Piece coverage, so One Piece still falls through to
-# PriceCharting + eBay. Documented shapes (v2 API reference):
+# POKEMON ONLY — no One Piece coverage, so One Piece falls through to eBay
+# only. Documented shapes (v2 API reference):
 #   GET /api/v2/cards?search=&set=&limit=&includeEbay=true
 #   -> {"data": [{tcgPlayerId, name, setName, cardNumber, rarity,
 #                 prices: {market, low},
 #                 ebay: {psa8: {avg}, psa9: {avg}, psa10: {avg}}}]}
-# Values are DOLLARS here (not pennies like PriceCharting).
+# Values are DOLLARS here (unlike PriceCharting's pennies, back when that was a source).
 #
 # BILLED IN CREDITS, PER CARD RETURNED: 1 credit per card + 1 more per card
 # for the eBay/PSA block. A careless `limit` multiplies the cost of every
@@ -295,6 +155,13 @@ PPT_EBAY_DAYS = 90
 # PPT tracks far more grades than the calculator models (ace/tag/psa1/half
 # grades); anything not listed here is ignored.
 PPT_GRADE_FIELDS = {
+    "psa1":  "psa_1",
+    "psa2":  "psa_2",
+    "psa3":  "psa_3",
+    "psa4":  "psa_4",
+    "psa5":  "psa_5",
+    "psa6":  "psa_6",
+    "psa7":  "psa_7",
     "psa8":  "psa_8",
     "psa9":  "psa_9",
     "psa10": "psa_10",
@@ -1022,13 +889,11 @@ async def fetch_ebay(client: httpx.AsyncClient, card: CardRef) -> list[GradedQuo
 
 # ─────────────────────────────── Merging ───────────────────────────────
 # Lower number wins when two sources quote the same grade. PokemonPriceTracker
-# outranks PriceCharting for the grades it covers because it actually returns
-# graded values; eBay stays last since it's the only ask-based source.
+# outranks eBay since it returns real graded sales, not asking prices.
 SOURCE_PRIORITY = {
     "manual": 0,
     "pokemonpricetracker": 1,
-    "pricecharting": 2,
-    "ebay_browse": 3,
+    "ebay_browse": 2,
 }
 
 
@@ -1073,8 +938,6 @@ async def fetch_all(card: CardRef, manual: list[GradedQuote] | None = None,
 
         if pokemonpricetracker_available() and card.game == "pokemon":
             await _run("pokemonpricetracker", fetch_pokemonpricetracker)
-        if pricecharting_available():
-            await _run("pricecharting", fetch_pricecharting)
         if ebay_available():
             await _run("ebay_browse", fetch_ebay)
 
@@ -1088,6 +951,5 @@ def configured_sources() -> dict:
     visible instead of looking like 'no data for this card'."""
     return {
         "pokemonpricetracker": pokemonpricetracker_available(),
-        "pricecharting": pricecharting_available(),
         "ebay_browse": ebay_available(),
     }

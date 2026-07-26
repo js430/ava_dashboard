@@ -47,9 +47,11 @@ logging.basicConfig(
 class _RedactSecretsFilter(logging.Filter):
     """Strip API keys out of logged URLs.
 
-    httpx logs every request line at INFO including the full query string, so a
-    vendor that authenticates via a query param (PriceCharting's ?t=<token>)
-    would otherwise write its own credential into the logs on every call.
+    httpx logs every request line at INFO including the full query string, so
+    a vendor that authenticates via a query param (?t=<token>, ?key=<key>)
+    would otherwise write its own credential into the logs on every call. No
+    currently-wired vendor does this (PPT and eBay both use an Authorization
+    header), but it's cheap insurance against the next one that does.
     """
     _PATTERN = re.compile(r"([?&](?:t|token|key|api_key|apikey)=)[^&\s\"']+",
                           re.IGNORECASE)
@@ -1462,6 +1464,7 @@ async def grading_calculator_page(request: Request):
         "is_mod": request.session.get("mod", False),
         "sources": price_sources.configured_sources(),
         "grade_labels": price_sources.GRADE_LABELS,
+        "grade_levels": price_sources.GRADE_LEVEL,
         "grading_companies": grading_tiers.GRADING_COMPANIES,
         "grading_sets": grading_sets.GRADING_SETS,
     })
@@ -1474,9 +1477,9 @@ async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
                              tcgplayer_id: str = "", language: str = "english",
                              user=Depends(get_current_user)):
     """Live graded prices for one card, merged across configured vendors.
-    Open to members (like the rest of the grading calculator). Spends paid
-    PriceCharting quota and eBay's daily budget, so it keeps the per-IP rate
-    limit above — watch aggregate usage if member traffic grows."""
+    Open to members (like the rest of the grading calculator). Spends
+    PokemonPriceTracker credits and eBay's daily budget, so it keeps the
+    per-IP rate limit above — watch aggregate usage if member traffic grows."""
     name = (name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="A card name is required")

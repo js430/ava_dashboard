@@ -126,6 +126,11 @@
   .net-scan-photo { display: flex; justify-content: center; margin-bottom: 12px; }
   .net-scan-photo img { width: 66px; height: 92px; object-fit: cover; border-radius: 8px; border: 1px solid #e4e4e7; }
 
+  .grade-filter-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .grade-filter-row label { font-size: 12px; color: #888; white-space: nowrap; }
+  .grade-filter-row input[type=range] { flex: 1; accent-color: #5865F2; }
+  .grade-filter-value { font-size: 12px; font-weight: 700; color: #111; min-width: 16px; text-align: right; }
+
   @media (max-width: 860px) {
     .grid { grid-template-columns: 1fr; }
     .main { padding: 12px; }
@@ -167,6 +172,8 @@
   html[data-theme="dark"] .scanned-strip img, html[data-theme="dark"] .net-scan-photo img { border-color: #383838; background: #252528; }
   html[data-theme="dark"] .scanned-strip-name { color: #f0f0f0; }
   html[data-theme="dark"] .scan-badge { background: #2a2a4a; color: #a5b4fc; }
+  html[data-theme="dark"] .grade-filter-row label { color: #a1a1aa; }
+  html[data-theme="dark"] .grade-filter-value { color: #f0f0f0; }
 </style>
 </head>
 <body>
@@ -206,9 +213,6 @@
   <div class="srcbar">
     <span class="srcchip {% if sources.pokemonpricetracker %}on{% else %}off{% endif %}">
       PokemonPriceTracker {% if sources.pokemonpricetracker %}connected{% else %}no API key set{% endif %}
-    </span>
-    <span class="srcchip {% if sources.pricecharting %}on{% else %}off{% endif %}">
-      PriceCharting {% if sources.pricecharting %}connected{% else %}no API token set{% endif %}
     </span>
     <span class="srcchip {% if sources.ebay_browse %}on{% else %}off{% endif %}">
       eBay {% if sources.ebay_browse %}connected{% else %}no API keys set{% endif %}
@@ -337,6 +341,11 @@
               <div class="scanned-strip-badges" id="scannedStripBadges"></div>
             </div>
           </div>
+          <div class="grade-filter-row">
+            <label for="minGradeSlider">Lowest grade shown</label>
+            <input type="range" id="minGradeSlider" min="1" max="8" step="1" value="8" oninput="applyGradeFilter()">
+            <span class="grade-filter-value" id="minGradeLabel">8</span>
+          </div>
           <table class="grades">
             <thead>
               <tr>
@@ -414,8 +423,12 @@
 </div>
 
 <script>
-const GRADES = ['raw','psa_8','psa_9','psa_10','bgs_9_5','bgs_10','cgc_9','cgc_10','sgc_10','tag_9','tag_10'];
+const GRADES = ['raw','psa_1','psa_2','psa_3','psa_4','psa_5','psa_6','psa_7',
+  'psa_8','psa_9','psa_10','bgs_9_5','bgs_10','cgc_9','cgc_10','sgc_10','tag_9','tag_10'];
 const LABELS = {{ grade_labels | tojson }};
+// Numeric rank per grade, for the "lowest grade shown" slider — a row stays
+// visible when its level >= the slider value (raw's level is 0, always shown).
+const GRADE_LEVEL = {{ grade_levels | tojson }};
 // Grades the result panel reports on. Everything else is still shown in the
 // price table for reference, but PSA 10 and 9 carry the sale volume.
 const REPORTED_GRADES = ['psa_10','psa_9'];
@@ -674,12 +687,25 @@ function buildRows(){
       ? `<div class="src recent" title="Average of the last ${q.recent_n} sale(s)${q.recent_since ? ', back to ' + q.recent_since : ''} — click to use"
               onclick="useRecent('${g}', ${q.recent_avg})">last ${q.recent_n}: $${Math.round(q.recent_avg).toLocaleString()}</div>`
       : '';
-    return `<tr>
+    return `<tr data-level="${g in GRADE_LEVEL ? GRADE_LEVEL[g] : ''}">
       <td class="left">${LABELS[g] || g}</td>
       <td><input type="number" id="price_${g}" min="0" step="1" value="${price}" oninput="onPriceInput()"></td>
       <td>${badge}${src}${recent}</td>
     </tr>`;
   }).join('');
+  applyGradeFilter();   // re-apply the current slider position to the fresh rows
+}
+
+// Hides grade rows below the slider's minimum. Toggles visibility only — never
+// rebuilds the table — so prices the user typed in stay put while sliding.
+function applyGradeFilter(){
+  const min = +document.getElementById('minGradeSlider').value;
+  document.getElementById('minGradeLabel').textContent = min;
+  document.querySelectorAll('#gradeRows tr').forEach(tr => {
+    const level = tr.dataset.level;
+    const show = level === '' || level === undefined || +level === 0 || +level >= min;
+    tr.style.display = show ? '' : 'none';
+  });
 }
 
 // Swap a grade's price for its recent-sales average.
