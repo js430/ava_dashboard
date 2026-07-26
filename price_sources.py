@@ -50,6 +50,9 @@ class CardRef:
     set_name: str = ""
     card_number: str = ""
     variant: str | None = None
+    # PokemonPriceTracker's own id, when the card came from their catalog. Pins
+    # the exact printing, so no name/set matching is needed at all.
+    tcgplayer_id: str | None = None
 
     def query(self) -> str:
         """Free-text search string shared by both vendors."""
@@ -357,6 +360,164 @@ def pokemonpricetracker_available() -> bool:
     return bool(os.getenv("POKEMONPRICETRACKER_API_KEY"))
 
 
+# ── PPT as the CATALOG, not just a price source ──────────────────────────
+# Driving the set and card pickers from PPT means the names in the dropdown are
+# PPT's own, so a price lookup can pass tcgPlayerId and skip name/set matching
+# entirely — that whole class of mismatch bug disappears.
+#
+# Sets and card lists barely change, and a card list bills per card returned,
+# so both are cached for a day. {key: (fetched_at, payload)}
+PPT_CATALOG_TTL_SECONDS = 24 * 3600
+_ppt_sets_cache: dict[str, tuple[float, list]] = {}
+_ppt_set_cards_cache: dict[str, tuple[float, list]] = {}
+
+_ppt_logged_set_shape = False
+_ppt_logged_card_shape = False
+
+
+def _first(payload: dict, *keys):
+    """First present, non-empty value among `keys`. Response field names are
+    unverified for these endpoints, so read a few plausible spellings."""
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+async def _ppt_get(client: httpx.AsyncClient, path: str, params: dict,
+                   label: str) -> tuple[list, object]:
+    """GET a PPT endpoint and return (rows, response). ([], None) on failure."""
+    key = os.getenv("POKEMONPRICETRACKER_API_KEY")
+    if not key:
+        return [], None
+    try:
+        resp = await client.get(f"{PPT_BASE}{path}",
+                                headers={"Authorization": f"Bearer {key}"},
+                                params=params)
+    except Exception:
+        logger.exception("PokemonPriceTracker %s request failed", label)
+        return [], None
+    if resp.status_code != 200:
+        logger.warning("PokemonPriceTracker %s HTTP %s: %s",
+                       label, resp.status_code, resp.text[:300])
+        return [], None
+    try:
+        payload = resp.json()
+    except Exception:
+        logger.warning("PokemonPriceTracker %s returned non-JSON", label)
+        return [], None
+    data = (payload or {}).get("data")
+    if isinstance(data, dict):
+        data = [data]
+    elif not isinstance(data, list):
+        data = []
+    return data, resp
+
+
+async def fetch_ppt_sets(client: httpx.AsyncClient) -> list:
+    """[{id, name, year}] of every Pokemon set PPT knows, newest first.
+
+    Cheap (one call) and cached for a day. Names are PPT's own, which is the
+    point: the set string in the dropdown is exactly what its price lookups
+    expect.
+    """
+    global _ppt_logged_set_shape
+    hit = _ppt_sets_cache.get("pokemon")
+    if hit and (time.time() - hit[0]) < PPT_CATALOG_TTL_SECONDS:
+        return list(hit[1])
+
+    rows, resp = await _ppt_get(client, "/sets", {"limit": 500}, "sets")
+    if not rows:
+        return []
+    if not _ppt_logged_set_shape:
+        _ppt_logged_set_shape = True
+        logger.info("PokemonPriceTracker /sets: %d row(s), first keys: %s",
+                    len(rows), sorted(rows[0].keys()) if isinstance(rows[0], dict) else "?")
+        if resp is not None:
+            logger.info("PokemonPriceTracker /sets credits used=%s daily remaining=%s",
+                        resp.headers.get("X-API-Calls-Consumed", "?"),
+                        resp.headers.get("X-RateLimit-Daily-Remaining", "?"))
+
+    sets = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = _first(row, "name", "setName", "set_name")
+        if not name:
+            continue
+        released = str(_first(row, "releaseDate", "release_date", "releasedAt") or "")
+        sets.append({
+            # The name IS the id here: PPT's /cards endpoint filters by set name.
+            "id": str(name),
+            "name": str(name),
+            "year": released[:4] if released[:4].isdigit() else "",
+            "released": released[:10],
+        })
+    # Newest first where dates exist; undated sets sort last.
+    sets.sort(key=lambda s: s["released"] or "0000", reverse=True)
+    _ppt_sets_cache["pokemon"] = (time.time(), list(sets))
+    logger.info("PokemonPriceTracker: %d set(s) cached", len(sets))
+    return sets
+
+
+async def fetch_ppt_set_cards(client: httpx.AsyncClient, set_name: str) -> list:
+    """Every card in a PPT set: [{name, card_number, variant, tcgplayer_id}].
+
+    BILLED PER CARD RETURNED, so this is cached for a day and the credit spend
+    is logged. Carrying tcgPlayerId is what lets later price lookups skip the
+    search entirely.
+    """
+    global _ppt_logged_card_shape
+    cache_key = _ppt_canon(set_name)
+    hit = _ppt_set_cards_cache.get(cache_key)
+    if hit and (time.time() - hit[0]) < PPT_CATALOG_TTL_SECONDS:
+        logger.info("PokemonPriceTracker set-cards cache hit for %r (%d card(s), "
+                    "no credits spent)", set_name, len(hit[1]))
+        return list(hit[1])
+
+    rows, resp = await _ppt_get(client, "/cards",
+                                {"set": set_name, "fetchAllInSet": "true",
+                                 "limit": 1000},
+                                f"set-cards({set_name})")
+    if not rows:
+        return []
+    if not _ppt_logged_card_shape:
+        _ppt_logged_card_shape = True
+        logger.info("PokemonPriceTracker set-cards first row keys: %s",
+                    sorted(rows[0].keys()) if isinstance(rows[0], dict) else "?")
+    if resp is not None:
+        logger.info("PokemonPriceTracker set-cards %r: %d card(s), credits used=%s, "
+                    "daily remaining=%s", set_name, len(rows),
+                    resp.headers.get("X-API-Calls-Consumed", "?"),
+                    resp.headers.get("X-RateLimit-Daily-Remaining", "?"))
+
+    cards = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = _first(row, "name", "cardName")
+        if not name:
+            continue
+        cards.append({
+            "name": str(name),
+            "card_number": str(_first(row, "cardNumber", "number", "card_number") or ""),
+            "variant": str(_first(row, "rarity", "variant") or ""),
+            "tcgplayer_id": str(_first(row, "tcgPlayerId", "tcgplayerId", "id") or ""),
+            "set_name": str(_first(row, "setName", "set_name") or set_name),
+        })
+
+    def _sort_key(card):
+        """Numeric card numbers in numeric order; promos/RC numbers after."""
+        match = re.match(r"^(\d+)", card["card_number"])
+        return (0, int(match.group(1))) if match else (1, 0)
+
+    cards.sort(key=_sort_key)
+    if cards:
+        _ppt_set_cards_cache[cache_key] = (time.time(), list(cards))
+    return cards
+
+
 def _ppt_search_name(name: str) -> str:
     """Normalize a card name for PPT's text search.
 
@@ -371,15 +532,23 @@ def _ppt_canon(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (value or "").lower())
 
 
-def _ppt_strip_set_code(set_name: str) -> str:
-    """'SV10: Destined Rivals' -> 'Destined Rivals'.
+def _ppt_set_candidates(set_name: str) -> set:
+    """Every name a PPT set could reasonably be known by.
 
-    PPT prefixes set names with the release code ('SV10:', 'ME:', 'SV:'),
-    which the catalog APIs don't use. Everything before the first colon is
-    that code, not part of the set's name.
+    PPT uses a colon for two different things:
+      "SV10: Destined Rivals"        release code : set name
+      "Generations: Radiant Collection"  parent set : subset
+    Both sides are therefore valid names to match against — the catalog calls
+    the second one just "Generations", and its RC-numbered cards ship in that
+    set. Matching stays exact against these candidates; no substring logic,
+    which is what would wrongly equate "Base Set" with "Base Set 2".
     """
-    raw = set_name or ""
-    return raw.split(":", 1)[1].strip() if ":" in raw else raw.strip()
+    raw = (set_name or "").strip()
+    names = {raw}
+    if ":" in raw:
+        before, after = raw.split(":", 1)
+        names.update({before.strip(), after.strip()})
+    return {_ppt_canon(n) for n in names if n}
 
 
 def _ppt_strip_name_suffix(name: str) -> str:
@@ -394,11 +563,11 @@ def _ppt_strip_name_suffix(name: str) -> str:
 def _ppt_pick_card(rows: list, card: CardRef) -> dict | None:
     """Best row for the card we asked about.
 
-    Prefers an exact card-number match (comparing only the numerator, since
-    "215/203" and "215" both occur), then an exact name match, then the first
-    row. When the set is known, rows from that set win within each tier —
-    a same-number card from another set is a different card. Returning the
-    wrong printing would quietly price something else.
+    A known set is a hard filter; within it, tiers are tried in order:
+    card number (numerator only, since "215/203" and "215" both occur), exact
+    name, then name-as-prefix for PPT's variant suffixes. Returning the wrong
+    printing would quietly price a different card, so an ambiguous result
+    returns None rather than a guess.
     """
     if not rows:
         return None
@@ -410,12 +579,21 @@ def _ppt_pick_card(rows: list, card: CardRef) -> dict | None:
         got = str(row.get("cardNumber") or "").split("/")[0].strip().lstrip("0").lower()
         return bool(want_num) and bool(got) and got == want_num
 
+    def _row_name(row) -> str:
+        return _ppt_canon(_ppt_search_name(
+            _ppt_strip_name_suffix(str(row.get("name") or ""))))
+
     def by_name(row) -> bool:
-        got = _ppt_strip_name_suffix(str(row.get("name") or ""))
-        return _ppt_canon(_ppt_search_name(got)) == want_name
+        return _row_name(row) == want_name
+
+    def by_name_prefix(row) -> bool:
+        """"Gardevoir EX" matches "Gardevoir EX (Full Art)" but NOT
+        "M Gardevoir EX (Full Art)" — a Mega is a different card. Anchoring at
+        the start is what keeps the prefixed variants out."""
+        return bool(want_name) and _row_name(row).startswith(want_name)
 
     def same_set(row) -> bool:
-        """Exact match, after stripping PPT's release-code prefix.
+        """Exact match against any name the set goes by (see _ppt_set_candidates).
 
         Deliberately NOT substring matching: "Base Set" is contained in
         "Base Set 2", which is a different set with a different Charizard at a
@@ -424,8 +602,7 @@ def _ppt_pick_card(rows: list, card: CardRef) -> dict | None:
         """
         if not want_set:
             return True
-        return want_set in (_ppt_canon(row.get("setName")),
-                            _ppt_canon(_ppt_strip_set_code(row.get("setName"))))
+        return want_set in _ppt_set_candidates(row.get("setName"))
 
     # A known set is a HARD filter, never a preference: card numbers repeat
     # across sets (78/73 in Shining Legends vs 78/68 in Hidden Fates), so a
@@ -436,13 +613,15 @@ def _ppt_pick_card(rows: list, card: CardRef) -> dict | None:
         if not rows:
             return None
 
-    for test in (by_number, by_name):
+    for test in (by_number, by_name, by_name_prefix):
         for row in rows:
             if test(row):
                 return row
-    # Set matched but neither number nor name did — trust that only when the
-    # candidate list was already constrained to the requested set.
-    return rows[0] if want_set else None
+    # Nothing matched on number or name. Falling back to the first row is only
+    # safe when the set filter left exactly ONE candidate — with several, the
+    # first is as likely to be a Mega or a different printing as the card asked
+    # for, and a confident wrong price is worse than no price.
+    return rows[0] if (want_set and len(rows) == 1) else None
 
 
 async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
@@ -496,50 +675,59 @@ async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
             data = []
         return data, resp
 
-    # The search runs WITHOUT includeEbay: that flag bills an extra credit for
-    # every card returned, and only the one card we actually pick needs graded
-    # data. It's re-requested for that card alone below.
-    base_params = {"search": search, "limit": PPT_SEARCH_LIMIT}
-    attempts = []
-    if card.set_name.strip():
-        attempts.append({**base_params, "set": card.set_name.strip()})
-    attempts.append(base_params)      # set filter dropped; matched client-side
+    row, resp = None, None
+    # When the card came from PPT's own catalog (the set/card pickers) its id is
+    # already known: skip the search entirely. That saves the search credits AND
+    # removes every name/set matching step, which is where the mismatches were.
+    tcg_id = (card.tcgplayer_id or "").strip() or None
+    if tcg_id:
+        logger.info("PokemonPriceTracker: using tcgPlayerId=%s directly (no search)",
+                    tcg_id)
+    else:
+        # The search runs WITHOUT includeEbay: that flag bills an extra credit for
+        # every card returned, and only the one card we actually pick needs graded
+        # data. It's re-requested for that card alone below.
+        base_params = {"search": search, "limit": PPT_SEARCH_LIMIT}
+        attempts = []
+        if card.set_name.strip():
+            attempts.append({**base_params, "set": card.set_name.strip()})
+        attempts.append(base_params)      # set filter dropped; matched client-side
 
-    rows, resp, row = [], None, None
-    for i, params in enumerate(attempts):
-        rows, resp = await _search(params)
-        if rows is None:
+        rows = []
+        for i, params in enumerate(attempts):
+            rows, resp = await _search(params)
+            if rows is None:
+                return []
+            row = _ppt_pick_card(rows, card)
+            if row:
+                break
+            # An empty result costs no per-card credits, so retrying without the
+            # set filter is cheap. Their own docs use a lowercase slug
+            # ("celebrations"), so a title-cased set name may not match the filter.
+            if i < len(attempts) - 1:
+                logger.info("PokemonPriceTracker: %d row(s) for %r with set=%r — "
+                            "retrying without the set filter",
+                            len(rows), search, card.set_name)
+
+        if not row:
+            logger.info("PokemonPriceTracker: no match for %r (%s); %d row(s) seen: %s",
+                        search, card.set_name, len(rows),
+                        [(r.get("name"), r.get("cardNumber"), r.get("setName"))
+                         for r in rows[:5]])
             return []
-        row = _ppt_pick_card(rows, card)
-        if row:
-            break
-        # An empty result costs no per-card credits, so retrying without the
-        # set filter is cheap. Their own docs use a lowercase slug ("celebrations"),
-        # so a title-cased multi-word set name may simply not match the filter.
-        if i < len(attempts) - 1:
-            logger.info("PokemonPriceTracker: %d row(s) for %r with set=%r — "
-                        "retrying without the set filter",
-                        len(rows), search, card.set_name)
 
-    if not row:
-        logger.info("PokemonPriceTracker: no match for %r (%s); %d row(s) seen: %s",
-                    search, card.set_name, len(rows),
-                    [(r.get("name"), r.get("cardNumber"), r.get("setName"))
-                     for r in rows[:5]])
-        return []
+        # Credit accounting is in the response headers — log it so budget burn is
+        # visible before the monthly quota runs out, not after.
+        logger.info("PokemonPriceTracker %r -> matched %r %s (%s) | credits used=%s "
+                    "daily remaining=%s",
+                    card.name, row.get("name"), row.get("cardNumber"),
+                    row.get("setName"),
+                    resp.headers.get("X-API-Calls-Consumed", "?"),
+                    resp.headers.get("X-RateLimit-Daily-Remaining", "?"))
+        tcg_id = row.get("tcgPlayerId") or row.get("tcgplayerId")
 
-    # Credit accounting is in the response headers — log it so budget burn is
-    # visible before the monthly quota runs out, not after.
-    logger.info("PokemonPriceTracker %r -> matched %r %s (%s) | credits used=%s "
-                "daily remaining=%s",
-                card.name, row.get("name"), row.get("cardNumber"), row.get("setName"),
-                resp.headers.get("X-API-Calls-Consumed", "?"),
-                resp.headers.get("X-RateLimit-Daily-Remaining", "?"))
-
-    # Re-request JUST this card with the graded block. Billing is per card
-    # returned, so asking for one card costs a fraction of flagging the whole
-    # search — and tcgPlayerId pins the exact printing rather than re-searching.
-    tcg_id = row.get("tcgPlayerId") or row.get("tcgplayerId")
+    # Fetch the graded block for exactly this card. Billing is per card returned,
+    # so one card costs a fraction of flagging a whole search.
     if tcg_id:
         detail_rows, detail_resp = await _search(
             {"tcgPlayerId": str(tcg_id), "limit": 1, "includeEbay": "true",
@@ -551,9 +739,14 @@ async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
                             "credits used=%s daily remaining=%s", tcg_id,
                             detail_resp.headers.get("X-API-Calls-Consumed", "?"),
                             detail_resp.headers.get("X-RateLimit-Daily-Remaining", "?"))
-    else:
+    elif row is not None:
         logger.info("PokemonPriceTracker: row has no tcgPlayerId (keys: %s)",
                     sorted(row.keys()))
+
+    # No row at all: an id was supplied but the detail lookup returned nothing.
+    if row is None:
+        logger.info("PokemonPriceTracker: tcgPlayerId=%s returned no card", tcg_id)
+        return []
 
     # Summarise the graded block rather than dumping it — priceHistory alone
     # runs to thousands of lines per card.

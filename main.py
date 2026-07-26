@@ -1641,8 +1641,14 @@ def _require_tracker_admin(request: Request) -> dict:
 # plus a single retry on timeout.
 _CATALOG_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 
-async def _fetch_set_candidates(game: str, set_id: str, rarity: str) -> tuple:
+async def _fetch_set_candidates(game: str, set_id: str, rarity: str,
+                                limit: int | None = None) -> tuple:
     """(set_name, cards) from the free catalog APIs, rarity-filtered.
+
+    `limit` caps how many cards come back and defaults to the tracker's import
+    cap. The grading calculator passes None: that cap exists to protect the
+    JustTCG budget when mass-adding a set, and silently truncating a large set
+    would drop cards out of its picker.
 
     Retries transient failures: pokemontcg.io throws intermittent HTTP 500s,
     and both APIs occasionally time out. 5xx and timeouts are retried with a
@@ -1675,7 +1681,9 @@ async def _fetch_set_candidates(game: str, set_id: str, rarity: str) -> tuple:
                            "errors) — try again in a minute.") from last_exc
     if rarity:
         cards = [c for c in cards if rarity.lower() in (c["variant"] or "").lower()]
-    return set_name, cards[: set_import.MAX_CARDS_PER_IMPORT]
+    if limit is None:
+        return set_name, cards
+    return set_name, cards[:limit]
 
 async def _existing_card_keys(conn) -> tuple:
     """Sets used for duplicate detection: exact identity and (game|set|number)."""
@@ -1720,7 +1728,8 @@ async def api_import_preview(request: Request):
     rarity = (body.get("rarity") or "").strip()
     _validate_import_params(game, set_id, rarity)
     try:
-        set_name, cards = await _fetch_set_candidates(game, set_id, rarity)
+        set_name, cards = await _fetch_set_candidates(game, set_id, rarity,
+                                                      limit=set_import.MAX_CARDS_PER_IMPORT)
     except (ValueError, RuntimeError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -1764,7 +1773,8 @@ async def api_import_run(request: Request):
     # Server-side re-fetch — the client only says WHAT set/rarity to import
     # and which numbers to leave out; it can't inject card rows.
     try:
-        set_name, cards = await _fetch_set_candidates(game, set_id, rarity)
+        set_name, cards = await _fetch_set_candidates(game, set_id, rarity,
+                                                      limit=set_import.MAX_CARDS_PER_IMPORT)
     except (ValueError, RuntimeError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -1848,6 +1858,7 @@ async def grading_calculator_page(request: Request):
 @limiter.limit("20/minute")
 async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
                              set_name: str = "", card_number: str = "",
+                             tcgplayer_id: str = "",
                              user=Depends(get_current_user)):
     """Live graded prices for one card, merged across configured vendors.
     Open to members (like the rest of the grading calculator). Spends paid
@@ -1861,7 +1872,8 @@ async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
 
     card = price_sources.CardRef(game=game, name=name[:120],
                                  set_name=(set_name or "").strip()[:120],
-                                 card_number=(card_number or "").strip()[:40])
+                                 card_number=(card_number or "").strip()[:40],
+                                 tcgplayer_id=(tcgplayer_id or "").strip()[:32] or None)
     try:
         result = await price_sources.fetch_all(card)
     except Exception:
@@ -1937,6 +1949,35 @@ async def api_grading_calc(request: Request, user=Depends(get_current_user)):
 _grading_set_cache: dict[tuple[str, str], list] = {}
 
 
+@app.get("/api/grading-calculator/sets")
+@limiter.limit("120/hour")
+async def api_grading_sets(request: Request, game: str = "pokemon",
+                           user=Depends(get_current_user)):
+    """Set list for the picker.
+
+    For Pokemon this comes from PokemonPriceTracker, so the set string sent
+    back on a lookup is byte-identical to what their price API expects — that
+    removes the set-name matching that caused every missed lookup. Falls back
+    to the baked catalog list if PPT isn't configured or errors.
+    """
+    if game not in ("pokemon", "one_piece"):
+        raise HTTPException(status_code=400, detail="Unknown game")
+
+    if game == "pokemon" and price_sources.pokemonpricetracker_available():
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                sets = await price_sources.fetch_ppt_sets(client)
+            if sets:
+                return JSONResponse({"source": "pokemonpricetracker", "sets": sets},
+                                    headers={"Cache-Control": "no-store"})
+        except Exception:
+            logger.exception("PPT set list failed — falling back to the baked list")
+
+    return JSONResponse(
+        {"source": "catalog", "sets": grading_sets.GRADING_SETS.get(game, [])},
+        headers={"Cache-Control": "no-store"})
+
+
 @app.get("/api/grading-calculator/set-cards")
 @limiter.limit("60/hour")
 async def api_grading_set_cards(request: Request, game: str, set_id: str,
@@ -1944,12 +1985,30 @@ async def api_grading_set_cards(request: Request, game: str, set_id: str,
     if game not in ("pokemon", "one_piece"):
         raise HTTPException(status_code=400, detail="Unknown game")
     set_id = (set_id or "").strip()
-    if not set_id or len(set_id) > 40:
+    # PPT set ids ARE set names, so this is longer than a catalog set code.
+    if not set_id or len(set_id) > 120:
         raise HTTPException(status_code=400, detail="Invalid set")
+
+    # Pokemon: take the card list from PPT so each card carries its
+    # tcgPlayerId. A lookup can then pin the exact printing instead of
+    # matching on name and set.
+    if game == "pokemon" and price_sources.pokemonpricetracker_available():
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                cards = await price_sources.fetch_ppt_set_cards(client, set_id)
+            if cards:
+                return JSONResponse({"set_id": set_id, "source": "pokemonpricetracker",
+                                     "cards": cards},
+                                    headers={"Cache-Control": "no-store"})
+            logger.info("PPT returned no cards for set %r — falling back to catalog", set_id)
+        except Exception:
+            logger.exception("PPT set-cards failed for %r — falling back to catalog", set_id)
 
     cache_key = (game, set_id)
     if cache_key not in _grading_set_cache:
         try:
+            # No limit: the importer's 250-card cap protects the JustTCG budget
+            # and has no business truncating a picker.
             set_name, cards = await _fetch_set_candidates(game, set_id, "")
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc))
@@ -1958,10 +2017,11 @@ async def api_grading_set_cards(request: Request, game: str, set_id: str,
             raise HTTPException(status_code=502, detail="Couldn't fetch that set's cards")
         _grading_set_cache[cache_key] = [
             {"name": c["name"], "card_number": c["card_number"],
-             "variant": c["variant"], "set_name": set_name}
+             "variant": c["variant"], "set_name": set_name, "tcgplayer_id": ""}
             for c in cards
         ]
-    return JSONResponse({"set_id": set_id, "cards": _grading_set_cache[cache_key]},
+    return JSONResponse({"set_id": set_id, "source": "catalog",
+                         "cards": _grading_set_cache[cache_key]},
                         headers={"Cache-Control": "no-store"})
 
 

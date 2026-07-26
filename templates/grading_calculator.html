@@ -342,14 +342,32 @@ const SETS = {{ grading_sets | tojson }};
 
 let quotes = {};
 let calcTimer = null;
-let setCards = [];   // cards for the currently selected set (from the API)
+let setCards = [];        // cards for the currently selected set (from the API)
+let selectedTcgId = '';   // PPT id of the picked card, when it came from PPT
 
-function buildSetOptions(){
-  const game = document.getElementById('game').value;
+// Set lists are fetched per game (PPT for Pokemon, so the names match its
+// price API exactly) and cached client-side. SETS is the baked fallback.
+const setListCache = {};
+
+function renderSetOptions(list){
   const sel = document.getElementById('setSelect');
-  const list = SETS[game] || [];
   sel.innerHTML = '<option value="">Choose a set&hellip;</option>' + list.map(s =>
-    `<option value="${s.id}">${s.name}${s.year ? ' (' + s.year + ')' : ''}</option>`).join('');
+    `<option value="${String(s.id).replace(/"/g,'&quot;')}">${s.name}${s.year ? ' (' + s.year + ')' : ''}</option>`).join('');
+}
+
+async function buildSetOptions(){
+  const game = document.getElementById('game').value;
+  if (setListCache[game]){ renderSetOptions(setListCache[game]); return; }
+  renderSetOptions(SETS[game] || []);        // show something immediately
+  try {
+    const resp = await fetch('/api/grading-calculator/sets?game=' + encodeURIComponent(game));
+    if (!resp.ok) return;
+    const d = await resp.json();
+    if (d.sets && d.sets.length){
+      setListCache[game] = d.sets;
+      renderSetOptions(d.sets);
+    }
+  } catch(e){ /* baked list already rendered */ }
 }
 
 function resetCardSelect(msg){
@@ -357,6 +375,7 @@ function resetCardSelect(msg){
   c.innerHTML = `<option value="">${msg}</option>`;
   c.disabled = true;
   setCards = [];
+  selectedTcgId = '';
 }
 
 function onGameChange(){
@@ -387,7 +406,9 @@ async function onSetChange(){
       return `<option value="${i}">${card.name}${meta ? '  —  ' + meta : ''}</option>`;
     }).join('');
     c.disabled = false;
-    status.textContent = `${setCards.length} cards loaded — pick one.`;
+    status.textContent = `${setCards.length} cards loaded`
+      + (d.source === 'pokemonpricetracker' ? ' from PokemonPriceTracker' : '')
+      + ' — pick one.';
   } catch(e){
     resetCardSelect('Couldn’t load cards — enter manually');
     status.textContent = 'Set lookup failed. Enter the card manually below.';
@@ -402,14 +423,17 @@ function onCardChange(){
   document.getElementById('cardName').value = card.name || '';
   document.getElementById('setName').value = card.set_name || '';
   document.getElementById('cardNumber').value = card.card_number || '';
+  selectedTcgId = card.tcgplayer_id || '';
   lookup();
 }
 
 // Typing in the manual fields detaches from the dropdown selection so the two
-// can't silently disagree.
+// can't silently disagree — and drops the pinned id, since the text no longer
+// necessarily describes that card.
 function onManualEntry(){
   const c = document.getElementById('cardSelect');
   if (c.value !== ''){ c.value = ''; }
+  selectedTcgId = '';
 }
 let feeIsManual = false;   // true once the user types a fee by hand
 
@@ -593,7 +617,10 @@ async function lookup(){
       name: name,
       game: document.getElementById('game').value,
       set_name: document.getElementById('setName').value.trim(),
-      card_number: document.getElementById('cardNumber').value.trim()
+      card_number: document.getElementById('cardNumber').value.trim(),
+      // Present when the card came from the PPT-backed picker: pins the exact
+      // printing, so the server skips name/set matching altogether.
+      tcgplayer_id: selectedTcgId || ''
     });
     const resp = await fetch('/api/grading-calculator/quotes?' + params);
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
