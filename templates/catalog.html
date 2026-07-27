@@ -45,20 +45,34 @@
   .btn-plain { background: #fff; color: #333; border: 1px solid #ddd; font-weight: 400; }
   .btn-sm { height: 24px; padding: 0 8px; font-size: 11px; }
 
-  .catalog-grid { display: grid; grid-template-columns: 270px minmax(0,1fr); gap: 16px; align-items: start; }
-  .filters { position: sticky; top: 16px; }
-  .frow { margin-bottom: 12px; }
-  .frow:last-child { margin-bottom: 0; }
-  .price-row { display: flex; gap: 8px; align-items: center; }
-  .price-row span { font-size: 12px; color: #aaa; }
-  .checklist { max-height: 210px; overflow-y: auto; border: 1px solid #eee; border-radius: 8px; padding: 6px 8px; }
-  .checklist label { display: flex; align-items: center; gap: 7px; font-size: 12px; color: #333; padding: 3px 0; cursor: pointer; }
-  .checklist input[type=checkbox] { width: auto; height: auto; margin: 0; accent-color: #5865F2; flex-shrink: 0; }
-  .checklist .ck-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .checklist .ck-count { margin-left: auto; font-size: 11px; color: #bbb; flex-shrink: 0; }
-  .filter-search { margin-bottom: 6px; }
+  .catalog-grid { display: block; }
   .chk-toggle { font-size: 11px; color: #5865F2; cursor: pointer; background: none; border: none; padding: 0; font-family: inherit; }
   .chk-toggle:hover { text-decoration: underline; }
+  .head-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #888; cursor: pointer; white-space: nowrap; }
+  .head-check input { width: auto; height: auto; margin: 0; accent-color: #5865F2; }
+
+  /* ── Filters, in the table header ── */
+  .filter-row th { padding: 0 8px 8px; border-bottom: 1px solid #e4e4e7; vertical-align: top; }
+  .th-input { width: 100%; height: 28px; font-size: 12px; padding: 0 7px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #111; font-family: inherit; font-weight: 400; }
+  .th-picker { width: 100%; height: 28px; font-size: 12px; padding: 0 7px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #111; font-family: inherit; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 6px; text-align: left; font-weight: 400; }
+  .th-picker:hover { background: #fafafa; }
+  .th-picker.on { border-color: #5865F2; color: #5865F2; }
+  .th-picker span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .th-caret { font-size: 9px; flex-shrink: 0; }
+  .th-price { display: flex; align-items: center; gap: 5px; }
+  .th-price .th-input { width: 100%; min-width: 54px; text-align: right; }
+  .th-price span { font-size: 11px; color: #bbb; }
+
+  /* ── Shared multi-select popover ── */
+  .picker { position: fixed; z-index: 500; width: 250px; max-width: calc(100vw - 20px); background: #fff; border: 1px solid #ddd; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.14); padding: 8px; }
+  .picker-search { width: 100%; height: 28px; font-size: 12px; padding: 0 7px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #111; font-family: inherit; margin-bottom: 6px; }
+  .picker-list { max-height: 240px; overflow-y: auto; }
+  .picker-list label { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #333; padding: 6px 4px; cursor: pointer; border-radius: 5px; }
+  .picker-list label:hover { background: #f4f4f5; }
+  .picker-list input[type=checkbox] { width: auto; height: auto; margin: 0; accent-color: #5865F2; flex-shrink: 0; }
+  .picker-list .ck-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .picker-list .ck-count { margin-left: auto; font-size: 11px; color: #bbb; flex-shrink: 0; }
+  .picker-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid #f0f0f0; margin-top: 6px; padding-top: 8px; }
 
   table.rows { border-collapse: collapse; width: 100%; font-size: 12px; }
   table.rows th { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: .05em; padding: 7px 10px; text-align: left; border-bottom: 1px solid #e4e4e7; white-space: nowrap; }
@@ -92,10 +106,38 @@
   .note { font-size: 11px; color: #999; line-height: 1.6; margin-top: 12px; border-top: 1px solid #f0f0f0; padding-top: 10px; }
 
   @media (max-width: 900px) {
-    .catalog-grid { grid-template-columns: 1fr; }
-    .filters { position: static; }
     .main { padding: 12px; }
     .nav-menu { left: 0; right: auto; }
+    .card-head { gap: 8px; }
+    .card-head .status { margin-left: 0; }
+  }
+
+  /* Phones: make all four filters fit without scrolling the table sideways —
+     a filter you have to swipe to find is barely better than one in a
+     sidebar. Min/max stack, and the columns tighten to pay for it. */
+  @media (max-width: 560px) {
+    /* Fixed layout, so a long rarity name can't widen a column and push the
+       price filter off-screen — the columns divide the available width
+       instead of being sized by their contents. */
+    table.rows { table-layout: fixed; width: 100%; }
+    table.rows th:nth-child(1), table.rows td:nth-child(1) { width: 33%; }
+    table.rows th:nth-child(2), table.rows td:nth-child(2) { width: 24%; }
+    table.rows th:nth-child(3), table.rows td:nth-child(3) { width: 22%; }
+    table.rows th:nth-child(4), table.rows td:nth-child(4) { width: 21%; }
+    table.rows th, table.rows td { padding-left: 5px; padding-right: 5px; }
+    table.rows th { font-size: 11px; letter-spacing: 0; }
+    /* Wrap rather than ellipsis: truncating a card name hides the thing the
+       row is about. */
+    table.rows td { word-break: break-word; }
+    .cset { white-space: normal; }
+    .filter-row th { padding-left: 5px; padding-right: 5px; }
+    .th-price { flex-direction: column; align-items: stretch; gap: 3px; }
+    .th-price span { display: none; }
+    .th-price .th-input { min-width: 0; height: 26px; text-align: left; }
+    .th-input, .th-picker { font-size: 11px; padding: 0 5px; }
+    .cnum { display: block; margin-left: 0; }
+    .rarity-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+    .price { white-space: normal; }
   }
 
   html[data-theme="dark"] { color-scheme: dark; }
@@ -116,8 +158,16 @@
   html[data-theme="dark"] .card-title { color: #f0f0f0; }
   html[data-theme="dark"] input[type=text], html[data-theme="dark"] input[type=number], html[data-theme="dark"] select { background: #252528; border-color: #383838; color: #f0f0f0; }
   html[data-theme="dark"] .btn-plain { background: #252528; border-color: #383838; color: #e0e0e0; }
-  html[data-theme="dark"] .checklist { border-color: #303033; }
-  html[data-theme="dark"] .checklist label { color: #d4d4d8; }
+  html[data-theme="dark"] .th-input, html[data-theme="dark"] .picker-search { background: #252528; border-color: #383838; color: #f0f0f0; }
+  html[data-theme="dark"] .th-picker { background: #252528; border-color: #383838; color: #f0f0f0; }
+  html[data-theme="dark"] .th-picker:hover { background: #2e2e32; }
+  html[data-theme="dark"] .th-picker.on { border-color: #5865F2; color: #a5b4fc; }
+  html[data-theme="dark"] .filter-row th { border-bottom-color: #303033; }
+  html[data-theme="dark"] .head-check { color: #a1a1aa; }
+  html[data-theme="dark"] .picker { background: #1c1c1f; border-color: #383838; box-shadow: 0 8px 28px rgba(0,0,0,.5); }
+  html[data-theme="dark"] .picker-list label { color: #d4d4d8; }
+  html[data-theme="dark"] .picker-list label:hover { background: #2e2e32; }
+  html[data-theme="dark"] .picker-foot { border-top-color: #303033; }
   html[data-theme="dark"] table.rows th { border-bottom-color: #303033; }
   html[data-theme="dark"] table.rows td { border-bottom-color: #242427; }
   html[data-theme="dark"] table.rows tbody tr:hover { background: #232326; }
@@ -165,63 +215,22 @@
 <div class="main">
   <div class="catalog-grid">
 
-    <aside class="filters">
-      <div class="card">
-        <div class="card-head">
-          <span class="card-title">Filters</span>
-          <button class="chk-toggle" style="margin-left:auto" onclick="clearFilters()">Reset</button>
-        </div>
-        <div class="card-body">
-          <div class="frow">
-            <label class="label" for="qSearch">Card name or number</label>
-            <input type="text" id="qSearch" placeholder="Umbreon, or 215">
-          </div>
-
-          <div class="frow">
-            <label class="label">Raw price</label>
-            <div class="price-row">
-              <input type="number" id="qMin" placeholder="Min" min="0" step="1">
-              <span>to</span>
-              <input type="number" id="qMax" placeholder="Max" min="0" step="1">
-            </div>
-            <label style="display:flex; align-items:center; gap:7px; font-size:12px; color:#888; margin-top:8px; cursor:pointer">
-              <input type="checkbox" id="qPriced" style="width:auto; height:auto; accent-color:#5865F2">
-              Only cards with a price
-            </label>
-          </div>
-
-          <div class="frow">
-            <label class="label">
-              Sets
-              <button class="chk-toggle" style="float:right" onclick="clearGroup('set')">clear</button>
-            </label>
-            <input type="text" class="filter-search" id="setFilter" placeholder="Find a set&hellip;">
-            <div class="checklist" id="setList"><div class="hint">Loading&hellip;</div></div>
-          </div>
-
-          <div class="frow">
-            <label class="label">
-              Rarity
-              <button class="chk-toggle" style="float:right" onclick="clearGroup('rarity')">clear</button>
-            </label>
-            <div class="checklist" id="rarityList"><div class="hint">Loading&hellip;</div></div>
-          </div>
-        </div>
-      </div>
-    </aside>
-
     <section>
       <div class="card">
         <div class="card-head">
           <span class="card-title">Cards</span>
           <span class="status" id="resultCount"></span>
-          <select id="qSort" style="width:auto; margin-left:8px">
+          <label class="head-check" title="Hide cards with no price on record">
+            <input type="checkbox" id="qPriced"> Priced only
+          </label>
+          <select id="qSort" style="width:auto">
             <option value="price_desc">Price: high to low</option>
             <option value="price_asc">Price: low to high</option>
             <option value="name_asc">Name A&ndash;Z</option>
             <option value="number_asc">Card number</option>
             <option value="set_newest">Recently stocked</option>
           </select>
+          <button class="btn btn-plain btn-sm" id="resetBtn" onclick="clearFilters()">Reset</button>
         </div>
         <div class="table-wrap">
           <table class="rows">
@@ -231,6 +240,39 @@
                 <th>Set</th>
                 <th>Rarity</th>
                 <th class="right">Raw price</th>
+              </tr>
+              <!-- Filters live in the header rather than a sidebar: each one
+                   sits under the column it acts on, and on a phone that's one
+                   column of controls instead of a panel pushed off-screen. -->
+              <tr class="filter-row">
+                <th>
+                  <input type="text" id="qSearch" class="th-input"
+                         placeholder="Search name or number&hellip;"
+                         autocomplete="off" aria-label="Search card name or number">
+                </th>
+                <th>
+                  <button type="button" class="th-picker" id="setPickerBtn"
+                          onclick="openPicker('set', this)" aria-haspopup="true"
+                          aria-expanded="false">
+                    <span id="setPickerLabel">All sets</span><span class="th-caret">&#9662;</span>
+                  </button>
+                </th>
+                <th>
+                  <button type="button" class="th-picker" id="rarityPickerBtn"
+                          onclick="openPicker('rarity', this)" aria-haspopup="true"
+                          aria-expanded="false">
+                    <span id="rarityPickerLabel">All rarities</span><span class="th-caret">&#9662;</span>
+                  </button>
+                </th>
+                <th>
+                  <div class="th-price">
+                    <input type="number" id="qMin" class="th-input" placeholder="Min"
+                           min="0" step="1" aria-label="Minimum price">
+                    <span>&ndash;</span>
+                    <input type="number" id="qMax" class="th-input" placeholder="Max"
+                           min="0" step="1" aria-label="Maximum price">
+                  </div>
+                </th>
               </tr>
             </thead>
             <tbody id="cardRows"></tbody>
@@ -294,6 +336,19 @@
   </div>
 </div>
 
+<!-- One shared picker, at body level and position:fixed on purpose: the table
+     scrolls horizontally (.table-wrap has overflow-x), which would clip a
+     panel anchored inside a <th>. -->
+<div class="picker" id="picker" style="display:none" role="dialog" aria-modal="false">
+  <input type="text" id="pickerSearch" class="picker-search" placeholder="Find&hellip;"
+         autocomplete="off" aria-label="Filter this list">
+  <div class="picker-list" id="pickerList"></div>
+  <div class="picker-foot">
+    <button type="button" class="chk-toggle" onclick="clearPicker()">Clear</button>
+    <button type="button" class="btn btn-sm" onclick="closePicker()">Done</button>
+  </div>
+</div>
+
 <script>
 const PAGE_SIZE = 50;
 let offset = 0;
@@ -311,20 +366,42 @@ function money(v){
     {minimumFractionDigits: 2, maximumFractionDigits: 2});
 }
 
-// Checked values for a checkbox group, in DOM order.
-function checkedValues(group){
-  return Array.from(document.querySelectorAll(`input[data-group="${group}"]:checked`))
-    .map(el => el.value);
+// Selection lives here, not in the DOM: the picker is built on open and torn
+// down on close, so checkbox state can't be the source of truth.
+const selected = { set: new Set(), rarity: new Set() };
+
+// Options for each picker, refreshed by loadFacets().
+const pickerData = {
+  set:    { options: [], label: 'sets',     btn: 'setPickerBtn',    lbl: 'setPickerLabel' },
+  rarity: { options: [], label: 'rarities', btn: 'rarityPickerBtn', lbl: 'rarityPickerLabel' },
+};
+
+function updatePickerLabel(key){
+  const meta = pickerData[key];
+  const chosen = selected[key];
+  const btn = document.getElementById(meta.btn);
+  const lbl = document.getElementById(meta.lbl);
+  if (!btn || !lbl) return;
+  if (chosen.size === 0){
+    lbl.textContent = 'All ' + meta.label;
+  } else if (chosen.size === 1){
+    const only = [...chosen][0];
+    const hit = meta.options.find(o => o.value === only);
+    lbl.textContent = hit ? hit.name : only;
+  } else {
+    lbl.textContent = `${chosen.size} ${meta.label}`;
+  }
+  btn.classList.toggle('on', chosen.size > 0);
 }
-function clearGroup(group){
-  document.querySelectorAll(`input[data-group="${group}"]:checked`)
-    .forEach(el => { el.checked = false; });
-  resetAndLoad();
-}
+
 function clearFilters(){
   ['qSearch','qMin','qMax'].forEach(id => { document.getElementById(id).value = ''; });
   document.getElementById('qPriced').checked = false;
-  document.querySelectorAll('input[data-group]:checked').forEach(el => { el.checked = false; });
+  selected.set.clear();
+  selected.rarity.clear();
+  updatePickerLabel('set');
+  updatePickerLabel('rarity');
+  closePicker();
   resetAndLoad();
 }
 
@@ -348,15 +425,107 @@ function currentParams(){
   if (min !== '') p.set('min_price', min);
   if (max !== '') p.set('max_price', max);
   if (document.getElementById('qPriced').checked) p.set('priced_only', '1');
-  const sets = checkedValues('set');
-  const rarities = checkedValues('rarity');
-  if (sets.length) p.set('sets', sets.join(','));
-  if (rarities.length) p.set('rarities', rarities.join(','));
+  if (selected.set.size) p.set('sets', [...selected.set].join(','));
+  if (selected.rarity.size) p.set('rarities', [...selected.rarity].join(','));
   p.set('sort', document.getElementById('qSort').value);
   p.set('limit', PAGE_SIZE);
   p.set('offset', offset);
   return p;
 }
+
+// ── Multi-select popover ──────────────────────────────────────────────
+let openPickerKey = null;
+
+function openPicker(key, btn){
+  if (openPickerKey === key){ closePicker(); return; }
+  closePicker();
+  openPickerKey = key;
+  btn.setAttribute('aria-expanded', 'true');
+  const panel = document.getElementById('picker');
+  const search = document.getElementById('pickerSearch');
+  search.value = '';
+  search.placeholder = 'Find a ' + (key === 'set' ? 'set' : 'rarity') + '…';
+  renderPickerList('');
+  panel.style.display = 'block';
+  positionPicker(btn);
+  // Only worth auto-focusing on a real keyboard — on a phone it throws up the
+  // on-screen keyboard and hides the list the user came to tap.
+  if (window.matchMedia('(min-width: 900px)').matches) search.focus();
+}
+
+function positionPicker(btn){
+  const panel = document.getElementById('picker');
+  const r = btn.getBoundingClientRect();
+  const w = panel.offsetWidth, h = panel.offsetHeight;
+  // Clamp inside the viewport — a header cell near the right edge (or a narrow
+  // phone) would otherwise push the panel off-screen.
+  let left = Math.min(r.left, window.innerWidth - w - 8);
+  left = Math.max(8, left);
+  // Flip above the control when there isn't room below.
+  const top = (r.bottom + h + 8 > window.innerHeight && r.top - h - 4 > 0)
+    ? r.top - h - 4 : r.bottom + 4;
+  panel.style.left = left + 'px';
+  panel.style.top = top + 'px';
+}
+
+function renderPickerList(filter){
+  const key = openPickerKey;
+  if (!key) return;
+  const q = (filter || '').trim().toLowerCase();
+  const opts = pickerData[key].options.filter(o => !q || o.name.toLowerCase().includes(q));
+  const list = document.getElementById('pickerList');
+  if (!opts.length){
+    list.innerHTML = '<div class="hint" style="padding:6px 4px">Nothing matches.</div>';
+    return;
+  }
+  list.innerHTML = opts.map(o => `<label>
+      <input type="checkbox" value="${esc(o.value)}"${selected[key].has(o.value) ? ' checked' : ''}
+             onchange="togglePick('${esc(key)}', this)">
+      <span class="ck-name">${esc(o.name)}</span>
+      <span class="ck-count">${o.count}</span>
+    </label>`).join('');
+}
+
+// Applies immediately rather than on "Done" — the table updating as boxes are
+// ticked is the whole point of moving the filters into it.
+function togglePick(key, el){
+  if (el.checked) selected[key].add(el.value);
+  else selected[key].delete(el.value);
+  updatePickerLabel(key);
+  resetAndLoad();
+}
+
+function clearPicker(){
+  if (!openPickerKey) return;
+  selected[openPickerKey].clear();
+  updatePickerLabel(openPickerKey);
+  renderPickerList(document.getElementById('pickerSearch').value);
+  resetAndLoad();
+}
+
+function closePicker(){
+  if (!openPickerKey) return;
+  const meta = pickerData[openPickerKey];
+  const btn = document.getElementById(meta.btn);
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+  document.getElementById('picker').style.display = 'none';
+  openPickerKey = null;
+}
+
+document.getElementById('pickerSearch').addEventListener('input', function(){
+  renderPickerList(this.value);
+});
+// Outside-click / Escape close. The picker and its trigger are excluded so a
+// click inside doesn't immediately dismiss it.
+document.addEventListener('click', (ev) => {
+  if (!openPickerKey) return;
+  if (ev.target.closest('#picker') || ev.target.closest('.th-picker')) return;
+  closePicker();
+});
+document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closePicker(); });
+// Fixed positioning doesn't follow the page, so close instead of drifting.
+window.addEventListener('resize', closePicker);
+window.addEventListener('scroll', closePicker, true);
 
 async function loadCards(){
   const countEl = document.getElementById('resultCount');
@@ -396,8 +565,14 @@ async function loadCards(){
 
   if (!d.cards.length){
     empty.style.display = 'block';
-    empty.textContent = total === 0 && !document.querySelector('input[data-group]:checked')
-        && !document.getElementById('qSearch').value.trim()
+    // "Nothing stocked" vs "nothing matches" — only claim the catalog is empty
+    // when no filter is actually narrowing it.
+    const filtering = selected.set.size || selected.rarity.size
+      || document.getElementById('qSearch').value.trim()
+      || document.getElementById('qMin').value.trim()
+      || document.getElementById('qMax').value.trim()
+      || document.getElementById('qPriced').checked;
+    empty.textContent = total === 0 && !filtering
       ? 'Nothing stocked yet. Open a set in the Grading Calculator and it’ll show up here.'
       : 'No cards match those filters.';
   } else {
@@ -428,27 +603,26 @@ async function loadFacets(){
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     d = await resp.json();
   } catch(e){
-    document.getElementById('setList').innerHTML = '<div class="hint">Couldn’t load filters.</div>';
+    document.getElementById('setPickerLabel').textContent = 'Sets unavailable';
     return;
   }
   allSets = d.sets || [];
   availableSets = d.available_sets || [];
 
-  document.getElementById('setList').innerHTML = allSets.length
-    ? allSets.map(s => `<label>
-        <input type="checkbox" data-group="set" value="${esc(s.set_id)}" onchange="resetAndLoad()">
-        <span class="ck-name">${esc(s.set_name)}</span>
-        <span class="ck-count">${s.cards}</span>
-      </label>`).join('')
-    : '<div class="hint">No sets stocked yet.</div>';
+  pickerData.set.options = allSets.map(s => ({
+    value: s.set_id, name: s.set_name, count: s.cards }));
+  pickerData.rarity.options = (d.rarities || []).map(r => ({
+    value: r.rarity, name: r.rarity, count: r.count }));
 
-  document.getElementById('rarityList').innerHTML = (d.rarities || []).length
-    ? d.rarities.map(r => `<label>
-        <input type="checkbox" data-group="rarity" value="${esc(r.rarity)}" onchange="resetAndLoad()">
-        <span class="ck-name">${esc(r.rarity)}</span>
-        <span class="ck-count">${r.count}</span>
-      </label>`).join('')
-    : '<div class="hint">No rarities yet.</div>';
+  // A set can stop existing between refreshes (nothing removes rows today, but
+  // don't rely on that) — drop any selection that no longer has an option, or
+  // it would filter to zero results with no visible cause.
+  ['set', 'rarity'].forEach(key => {
+    const valid = new Set(pickerData[key].options.map(o => o.value));
+    [...selected[key]].forEach(v => { if (!valid.has(v)) selected[key].delete(v); });
+    updatePickerLabel(key);
+  });
+  if (openPickerKey) renderPickerList(document.getElementById('pickerSearch').value);
 
   renderBackfill(d.backfill || {});
 
@@ -586,17 +760,6 @@ async function stockSet(){
     btn.disabled = false;
   }
 }
-
-// Filter the set checklist itself — long lists are unusable otherwise. Hides
-// rows only, so a checked set stays checked (and still filtered on) even when
-// the search text hides it.
-document.getElementById('setFilter').addEventListener('input', function(){
-  const q = this.value.trim().toLowerCase();
-  document.querySelectorAll('#setList label').forEach(el => {
-    const name = (el.querySelector('.ck-name') || {}).textContent || '';
-    el.style.display = (!q || name.toLowerCase().includes(q)) ? '' : 'none';
-  });
-});
 
 ['qSearch','qMin','qMax'].forEach(id =>
   document.getElementById(id).addEventListener('input', resetAndLoad));
