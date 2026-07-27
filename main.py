@@ -1738,10 +1738,16 @@ async def _catalog_stock_set(pool, set_id: str, language: str) -> dict:
         raise HTTPException(status_code=503,
                             detail="PokemonPriceTracker isn't configured, so sets can't be stocked.")
     async with httpx.AsyncClient(timeout=60.0) as client:
-        cards = await price_sources.fetch_ppt_set_cards(client, set_id, language=language)
+        cards, status = await price_sources.fetch_ppt_set_cards_detailed(
+            client, set_id, language=language)
     if not cards:
-        return {"cards": 0, "priced": 0}
-    return await catalog.upsert_set_cards(pool, CATALOG_GAME, language, set_id, cards)
+        # 'empty' = PPT has no data for this set yet (normal for brand-new
+        # releases); 'error' = the request failed. Passed up so the backfill
+        # can tell a healthy run from a broken one.
+        return {"cards": 0, "priced": 0, "status": status}
+    stats = await catalog.upsert_set_cards(pool, CATALOG_GAME, language, set_id, cards)
+    stats["status"] = "ok"
+    return stats
 
 
 # ---- Catalog backfill ----
@@ -1762,24 +1768,56 @@ CATALOG_BACKFILL_SETS = int(os.getenv("CATALOG_BACKFILL_SETS", "20"))
 CATALOG_BACKFILL_DELAY_S = float(os.getenv("CATALOG_BACKFILL_DELAY_S", "2"))
 # Let the app finish booting and start serving before spending any quota.
 CATALOG_BACKFILL_START_DELAY_S = float(os.getenv("CATALOG_BACKFILL_START_DELAY_S", "15"))
-# fetch_ppt_set_cards returns [] for a credit/rate limit exactly as it does for
-# a genuinely empty set, so consecutive empties are the only signal available
-# that the budget ran out. Stop rather than grind through 20 futile sets.
-CATALOG_BACKFILL_MAX_EMPTY = 3
+# Consecutive FAILED requests (HTTP error, transport error) that abort the run.
+# Deliberately NOT triggered by empty sets: the newest sets are exactly the
+# ones PokemonPriceTracker most often has no data for yet, so a brand-new
+# release returning nothing is the normal case, not a fault. Those are skipped
+# and the run continues. An empty result costs no per-card credits, and the
+# set stays outside `catalog_cards`, so it's simply retried on a later run —
+# self-healing once PPT publishes the data.
+CATALOG_BACKFILL_MAX_ERRORS = 3
+# How many additional sets the admin "Stock 5 more sets" button takes per
+# click. Unlike the startup seed this walks the whole catalog rather than a
+# fixed window — safe precisely because a person triggers each batch.
+CATALOG_NEXT_BATCH_SETS = int(os.getenv("CATALOG_NEXT_BATCH_SETS", "5"))
+
+
+def _catalog_known_empty(app) -> set:
+    """Set ids PPT had no data for this process run.
+
+    Empty sets are never written to `catalog_cards`, so without remembering
+    them "the next 5 unstocked sets" would return the same empty ones on
+    every click and never advance. Deliberately in-process, not persisted: a
+    redeploy clears it, so a set that was empty last week gets one more try —
+    which is exactly what should happen once PPT publishes it.
+    """
+    known = getattr(app.state, "catalog_empty_sets", None)
+    if known is None:
+        known = set()
+        app.state.catalog_empty_sets = known
+    return known
 
 
 def _catalog_backfill_state(app) -> dict:
     st = getattr(app.state, "catalog_backfill", None)
     if st is None:
         st = {"running": False, "started_at": None, "finished_at": None,
-              "planned": 0, "done": 0, "cards": 0, "current": None,
-              "error": None, "last_result": None}
+              "planned": 0, "done": 0, "stocked": 0, "empty": 0, "cards": 0,
+              "current": None, "error": None, "last_result": None}
         app.state.catalog_backfill = st
     return st
 
 
-async def _run_catalog_backfill(app, limit: int | None = None) -> None:
-    """Stock the newest `limit` sets that aren't cached yet. Never raises."""
+async def _run_catalog_backfill(app, limit: int | None = None,
+                                mode: str = "window") -> None:
+    """Stock sets into the catalog. Never raises.
+
+    mode='window' — the newest `limit` sets, minus what's cached. Idempotent
+    across redeploys; this is what the startup seed uses.
+    mode='next'   — the next `limit` uncached sets, walking the whole catalog.
+    Advances further back on each call, so it is only ever driven by an admin
+    pressing the button.
+    """
     st = _catalog_backfill_state(app)
     if st["running"]:
         logger.info("Catalog backfill: already running — skipping this trigger")
@@ -1793,7 +1831,8 @@ async def _run_catalog_backfill(app, limit: int | None = None) -> None:
         return
 
     st.update(running=True, started_at=datetime.utcnow().isoformat() + "Z",
-              finished_at=None, planned=0, done=0, cards=0, current=None, error=None)
+              finished_at=None, planned=0, done=0, stocked=0, empty=0, cards=0,
+              current=None, error=None)
     pool = app.state.db
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1804,37 +1843,66 @@ async def _run_catalog_backfill(app, limit: int | None = None) -> None:
             return
 
         have = await catalog.cached_set_ids(pool, CATALOG_GAME, "english")
-        todo = catalog.select_backfill_window(sets, have, limit)
+        if mode == "next":
+            todo = catalog.select_next_unstocked(
+                sets, have, limit, skip=_catalog_known_empty(app))
+            logger.info("Catalog backfill [next]: %d set(s) stocked so far, "
+                        "%d known empty — taking the next %d",
+                        len(have), len(_catalog_known_empty(app)), len(todo))
+        else:
+            todo = catalog.select_backfill_window(sets, have, limit)
+            logger.info("Catalog backfill [window]: newest %d set(s), %d already "
+                        "stocked, %d to fetch", min(limit, len(sets)),
+                        min(limit, len(sets)) - len(todo), len(todo))
         st["planned"] = len(todo)
-        logger.info("Catalog backfill: newest %d set(s), %d already stocked, "
-                    "%d to fetch", min(limit, len(sets)),
-                    min(limit, len(sets)) - len(todo), len(todo))
         if not todo:
-            st["last_result"] = "Already stocked — nothing to fetch."
+            st["last_result"] = ("Every set is already stocked."
+                                 if mode == "next"
+                                 else "Already stocked — nothing to fetch.")
             return
 
-        empty_streak = 0
+        error_streak = 0
         for entry in todo:
             st["current"] = entry.get("name") or entry["id"]
             try:
                 stats = await _catalog_stock_set(pool, entry["id"], "english")
             except Exception:
                 logger.exception("Catalog backfill: %r failed", entry["id"])
-                stats = {"cards": 0, "priced": 0}
+                stats = {"cards": 0, "priced": 0, "status": "error"}
             st["done"] += 1
+
             if stats["cards"]:
-                empty_streak = 0
+                error_streak = 0
+                st["stocked"] += 1
                 st["cards"] += stats["cards"]
+            elif stats.get("status") == "empty":
+                # PPT has nothing for this set yet — expected for unreleased
+                # and just-released sets. Skip it and carry on; it'll be
+                # retried on a later run, for free, until data appears.
+                error_streak = 0
+                st["empty"] += 1
+                # Remembered so the "stock 5 more" button steps past it next
+                # click instead of re-offering the same empty set forever.
+                _catalog_known_empty(app).add(entry["id"])
+                logger.info("Catalog backfill: %r has no data yet — skipping",
+                            entry["id"])
             else:
-                empty_streak += 1
-                if empty_streak >= CATALOG_BACKFILL_MAX_EMPTY:
-                    st["error"] = (f"Stopped after {empty_streak} sets returned nothing — "
-                                   "PokemonPriceTracker credits may be exhausted.")
+                error_streak += 1
+                logger.warning("Catalog backfill: %r failed (%d in a row)",
+                               entry["id"], error_streak)
+                if error_streak >= CATALOG_BACKFILL_MAX_ERRORS:
+                    st["error"] = (f"Stopped after {error_streak} failed requests in a "
+                                   "row — PokemonPriceTracker looks unreachable. Sets "
+                                   "with no data yet are skipped, not counted here.")
                     logger.warning("Catalog backfill: %s", st["error"])
                     break
             await asyncio.sleep(CATALOG_BACKFILL_DELAY_S)
 
-        st["last_result"] = f"Stocked {st['cards']} card(s) across {st['done']} set(s)."
+        st["last_result"] = (f"Stocked {st['cards']:,} card(s) across "
+                             f"{st['stocked']} set(s).")
+        if st["empty"]:
+            st["last_result"] += (f" {st['empty']} set(s) had no data yet — "
+                                  "they'll be picked up automatically once they do.")
         logger.info("Catalog backfill: done — %s", st["last_result"])
     except Exception:
         logger.exception("Catalog backfill failed")
@@ -1957,38 +2025,53 @@ async def api_catalog_stock(request: Request, user=Depends(require_admin)):
         logger.exception("Catalog stock failed for %r", set_id)
         raise HTTPException(status_code=502, detail="Couldn't stock that set")
     if not stats["cards"]:
-        raise HTTPException(status_code=404,
-                            detail=f"PokemonPriceTracker returned no cards for {set_id}")
+        if stats.get("status") == "empty":
+            raise HTTPException(
+                status_code=404,
+                detail=f"PokemonPriceTracker has no cards for {set_id} yet. Brand-new "
+                       "sets often aren't published for a while — try again later.")
+        raise HTTPException(status_code=502,
+                            detail=f"The request for {set_id} failed — see logs.")
     return JSONResponse({"set_id": set_id, "language": language, **stats},
                         headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/catalog/backfill")
-@limiter.limit("6/hour")
+@limiter.limit("30/hour")
 async def api_catalog_backfill(request: Request, user=Depends(require_admin)):
-    """Admin: re-run the newest-N seed by hand.
+    """Admin: stock more sets by hand.
 
-    Runs in the background and returns immediately — stocking 20 sets takes
-    minutes. Poll /api/catalog/facets for progress. Sets already cached are
-    skipped, so re-running costs nothing.
+    mode='next' (default) takes the next N sets that aren't cached yet,
+    walking steadily back through older sets on each press — one click, one
+    batch, a person choosing to spend the credits. mode='window' re-runs the
+    startup seed's newest-N pass instead.
+
+    Runs in the background and returns immediately; poll
+    /api/catalog/facets for progress.
     """
     try:
         body = await request.json()
     except Exception:
         body = {}
+
+    mode = str(body.get("mode") or "next").strip().lower()
+    if mode not in ("next", "window"):
+        raise HTTPException(status_code=400, detail="mode must be 'next' or 'window'")
+
     limit = body.get("sets")
+    default = CATALOG_NEXT_BATCH_SETS if mode == "next" else CATALOG_BACKFILL_SETS
     try:
-        limit = CATALOG_BACKFILL_SETS if limit is None else int(limit)
+        limit = default if limit is None else int(limit)
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="'sets' must be a number")
-    # Bounded so a typo can't queue up the entire ~180-set catalog.
+    # Bounded so a typo can't queue the entire ~180-set catalog in one press.
     limit = max(0, min(limit, 50))
 
     st = _catalog_backfill_state(request.app)
     if st["running"]:
         raise HTTPException(status_code=409, detail="A backfill is already running.")
-    asyncio.create_task(_run_catalog_backfill(request.app, limit=limit))
-    return JSONResponse({"started": True, "sets": limit},
+    asyncio.create_task(_run_catalog_backfill(request.app, limit=limit, mode=mode))
+    return JSONResponse({"started": True, "sets": limit, "mode": mode},
                         headers={"Cache-Control": "no-store"})
 
 

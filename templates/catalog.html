@@ -269,10 +269,11 @@
             </div>
             <div style="margin-top:10px">
               <button class="btn btn-plain btn-sm" id="backfillBtn" onclick="runBackfill()">
-                Re-run newest-sets seed
+                Stock 5 more sets
               </button>
               <span class="hint" style="margin-left:6px">
-                Skips sets already stocked, so it's free to re-run.
+                Takes the next 5 sets that aren't stocked yet, newest first.
+                Press it again for the 5 after that.
               </span>
             </div>
             <div class="warn" id="stockMsg" style="display:none"></div>
@@ -473,8 +474,11 @@ function renderBackfill(bf){
 
   if (bf.running){
     const of = bf.planned ? ` of ${bf.planned}` : '';
+    // Sets with no data yet are reported separately — otherwise "12 done, 4000
+    // cards" next to a half-empty set list reads like something failed.
+    const skipped = bf.empty ? `, ${bf.empty} with no data yet` : '';
     el.className = 'backfill';
-    el.textContent = `Stocking the newest sets — ${bf.done}${of} done`
+    el.textContent = `Stocking the newest sets — ${bf.done}${of} done${skipped}`
       + (bf.current ? ` (currently ${bf.current})` : '')
       + `. ${(bf.cards || 0).toLocaleString()} cards so far.`;
     el.style.display = 'block';
@@ -490,8 +494,10 @@ function renderBackfill(bf){
     return;
   }
   // Only worth reporting a finished run while the page was open to see it —
-  // a stale "done" banner on every later visit is noise.
-  if (bf.finished_at && bf.cards){
+  // a stale "done" banner on every later visit is noise. Shown when sets were
+  // skipped for having no data too, so a run that stocked nothing explains
+  // itself rather than looking like it never happened.
+  if (bf.finished_at && (bf.cards || bf.empty)){
     el.className = 'backfill done';
     el.textContent = bf.last_result || 'Seeding finished.';
     el.style.display = 'block';
@@ -503,17 +509,17 @@ function renderBackfill(bf){
 async function runBackfill(){
   const btn = document.getElementById('backfillBtn');
   btn.disabled = true;
-  showStockMsg('Starting the newest-sets seed… this runs in the background.');
+  showStockMsg('Starting… this runs in the background.');
   try {
     const resp = await fetch('/api/catalog/backfill', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({})
+      body: JSON.stringify({ mode: 'next', sets: 5 })
     });
     const d = await resp.json();
     if (!resp.ok){
-      showStockMsg(d.detail || 'Couldn’t start the seed.');
+      showStockMsg(d.detail || 'Couldn’t start stocking.');
     } else {
-      showStockMsg(`Seeding the newest ${d.sets} set(s) — progress shows above.`);
+      showStockMsg(`Stocking the next ${d.sets} set(s) — progress shows above.`);
       loadFacets();
     }
   } catch(e){

@@ -374,13 +374,17 @@ async def fetch_ppt_sets(client: httpx.AsyncClient,
     return sets
 
 
-async def fetch_ppt_set_cards(client: httpx.AsyncClient, set_name: str,
-                              language: str = PPT_DEFAULT_LANGUAGE) -> list:
-    """Every card in a PPT set: [{name, card_number, variant, tcgplayer_id}].
+async def fetch_ppt_set_cards_detailed(client: httpx.AsyncClient, set_name: str,
+                                       language: str = PPT_DEFAULT_LANGUAGE) -> tuple:
+    """(cards, status) for a PPT set. status is 'ok' | 'empty' | 'error'.
 
-    BILLED PER CARD RETURNED, so this is cached for a day (per language) and
-    the credit spend is logged. Carrying tcgPlayerId is what lets later price
-    lookups skip the search entirely.
+    Same work as fetch_ppt_set_cards, but it keeps the reason an empty list
+    came back. `_ppt_get` already knows the difference — it hands back a
+    response object for a successful call that simply had no rows, and None
+    when the request itself failed — and callers that batch over many sets
+    need it: a set PPT has no data for yet (brand-new releases, routinely)
+    looks nothing like the API being down, and treating them the same either
+    aborts a healthy run or grinds through a broken one.
     """
     global _ppt_logged_card_shape
     language = ppt_language(language)
@@ -389,14 +393,21 @@ async def fetch_ppt_set_cards(client: httpx.AsyncClient, set_name: str,
     if hit and (time.time() - hit[0]) < PPT_CATALOG_TTL_SECONDS:
         logger.info("PokemonPriceTracker set-cards cache hit for %r [%s] (%d card(s), "
                     "no credits spent)", set_name, language, len(hit[1]))
-        return list(hit[1])
+        return list(hit[1]), "ok"
 
     rows, resp = await _ppt_get(client, "/cards",
                                 {"set": set_name, "fetchAllInSet": "true",
                                  "limit": 1000, "language": language},
                                 f"set-cards({set_name}/{language})")
     if not rows:
-        return []
+        # resp is None only when the request itself failed (HTTP != 200,
+        # transport error, missing key). A 200 carrying no rows means PPT
+        # genuinely has nothing for this set — and costs no per-card credits,
+        # so retrying it on a later run is nearly free.
+        status = "empty" if resp is not None else "error"
+        logger.info("PokemonPriceTracker set-cards %r [%s]: no cards (%s)",
+                    set_name, language, status)
+        return [], status
     if not _ppt_logged_card_shape:
         _ppt_logged_card_shape = True
         logger.info("PokemonPriceTracker set-cards first row keys: %s",
@@ -435,6 +446,27 @@ async def fetch_ppt_set_cards(client: httpx.AsyncClient, set_name: str,
     cards.sort(key=_sort_key)
     if cards:
         _ppt_set_cards_cache[cache_key] = (time.time(), list(cards))
+    # Rows came back but none survived normalisation (every row missing a
+    # name): the call worked, there's just nothing usable — 'empty', not
+    # 'error'.
+    return cards, ("ok" if cards else "empty")
+
+
+async def fetch_ppt_set_cards(client: httpx.AsyncClient, set_name: str,
+                              language: str = PPT_DEFAULT_LANGUAGE) -> list:
+    """Every card in a PPT set: [{name, card_number, variant, tcgplayer_id,
+    set_name, raw_price}].
+
+    BILLED PER CARD RETURNED, so this is cached for a day (per language) and
+    the credit spend is logged. Carrying tcgPlayerId is what lets later price
+    lookups skip the search entirely.
+
+    Thin wrapper over fetch_ppt_set_cards_detailed for the callers that only
+    care whether they got cards — the set/card pickers, which fall back to the
+    baked catalog list either way.
+    """
+    cards, _status = await fetch_ppt_set_cards_detailed(client, set_name,
+                                                        language=language)
     return cards
 
 

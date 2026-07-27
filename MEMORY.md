@@ -44,11 +44,45 @@ by tests (the redeploy no-op, the new-release case, and that a set pushed out
 of the bottom of the window is never re-fetched) — if you change that
 function, keep those properties.
 
-**The seed stops after 3 consecutive empty sets.** `fetch_ppt_set_cards`
-returns `[]` for a credit/rate limit exactly as it does for a genuinely empty
-set, so consecutive empties are the only available signal that the budget ran
-out. Better to stop than grind through 20 futile sets. If PPT ever
-distinguishes these, prefer the real signal.
+**The seed stops after 3 consecutive FAILED REQUESTS — not 3 empty sets.**
+The first version aborted on empties, and it tripped immediately in
+production against a perfectly healthy API. The newest sets are exactly the
+ones PPT most often has no data for yet, so "the newest 20" is the window
+most likely to contain empty sets — the abort condition and the window
+selection were in direct conflict.
+
+`_ppt_get` already knew the difference (it returns a response object for a
+200 that simply had no rows, and `None` when the request itself failed);
+`fetch_ppt_set_cards` was throwing it away. Added
+`fetch_ppt_set_cards_detailed()` returning `(cards, status)` where status is
+`ok` / `empty` / `error`, with `fetch_ppt_set_cards` kept as a thin
+list-returning wrapper so the pickers are untouched. Empty sets are now
+skipped and the run continues; only real request failures count toward the
+abort.
+
+**Empty sets are never cached and never stocked, which makes this
+self-healing.** They stay outside `catalog_cards`, so they remain in the
+newest-N window and get retried on the next boot — and an empty result costs
+no per-card credits, so those retries are nearly free. A set stocks itself
+whenever PPT finally publishes it, with no intervention.
+
+**Two selection functions, and they must not be swapped.**
+`select_backfill_window` (newest N, slice-then-filter) is the *automatic*
+startup path and is idempotent across redeploys. `select_next_unstocked`
+(walk the whole catalog, no window) backs the admin **"Stock 5 more sets"**
+button — each press takes the next 5 uncached sets and marches further back
+into older ones. That rolling behaviour is exactly what makes it unsafe for
+startup and correct for a button: one press, one bounded batch, a person
+choosing to spend the credits. Both are covered by tests that assert the
+distinction.
+
+**The button needs `_catalog_known_empty` or it stalls.** Since empty sets
+are never written to `catalog_cards`, "the next 5 unstocked" would return the
+same empty sets on every press and never advance. Empties are remembered
+in-process and excluded. Deliberately NOT persisted: a redeploy clears it, so
+a set that had no data last week gets another try — which is what should
+happen once PPT publishes it. There's a test that removes the skip set purely
+to prove the stall is real.
 
 **Rejected:** a full nightly sync of all ~180 sets (blows the credit budget —
 verify the actual quota in the `X-RateLimit-Daily-Remaining` log line before

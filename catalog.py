@@ -338,6 +338,34 @@ def select_backfill_window(sets: list, already_stocked, limit: int) -> list:
     return [s for s in sets[:limit] if s.get("id") not in have]
 
 
+def select_next_unstocked(sets: list, already_stocked, limit: int, skip=None) -> list:
+    """The next `limit` sets, newest-first, that aren't cached yet.
+
+    Unlike `select_backfill_window` this does NOT slice to a fixed window — it
+    walks the whole catalog, so repeated calls march steadily backwards into
+    older sets. **That is only safe for a human-triggered action.** The
+    startup seed must never use it: every redeploy would stock another batch,
+    forever. One click, one bounded batch, a person deciding to spend it.
+
+    `skip` excludes sets already known to have no data. Without it a click
+    would return the same empty sets every time and the walk would never
+    advance past them.
+    """
+    if limit <= 0:
+        return []
+    have = set(already_stocked or ())
+    skip = set(skip or ())
+    out = []
+    for entry in sets:
+        set_id = entry.get("id")
+        if set_id in have or set_id in skip:
+            continue
+        out.append(entry)
+        if len(out) >= limit:
+            break
+    return out
+
+
 async def cached_set_ids(pool, game: str, language: str = "english") -> set:
     """Set ids already in the cache — lets a caller skip a vendor round-trip."""
     async with pool.acquire() as conn:
