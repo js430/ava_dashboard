@@ -23,8 +23,52 @@ schema, the upsert, and the read queries.
 import re
 import logging
 from decimal import Decimal, InvalidOperation
+from urllib.parse import quote_plus
 
 logger = logging.getLogger("dashboard.catalog")
+
+# TCGplayer product ids are plain integers. Belt-and-braces alongside the
+# `verified` flag: both must hold before a link is offered.
+_TCGPLAYER_ID_RE = re.compile(r"^\d{2,12}$")
+TCGPLAYER_PRODUCT_URL = "https://www.tcgplayer.com/product/{}"
+EBAY_SEARCH_URL = "https://www.ebay.com/sch/i.html?_nkw={}"
+
+
+def tcgplayer_url(tcgplayer_id, verified: bool):
+    """Product-page URL, or None when the id can't be trusted.
+
+    `catalog_cards.tcgplayer_id` is populated from
+    `_first(row, "tcgPlayerId", "tcgplayerId", "id")` — it falls back to PPT's
+    OWN id when the TCGplayer one is absent, and that value points at a
+    different product or nothing at all. `verified` records which source it
+    came from; without it, no link.
+
+    A missing link is honest. A wrong one sends someone to buy the wrong card,
+    which is why this fails closed rather than guessing.
+    """
+    if not verified:
+        return None
+    value = str(tcgplayer_id or "").strip()
+    if not _TCGPLAYER_ID_RE.match(value):
+        return None
+    return TCGPLAYER_PRODUCT_URL.format(value)
+
+
+def ebay_search_url(card_name: str, set_name: str = "", card_number: str = ""):
+    """An eBay search for this card, or None without a name.
+
+    A search rather than a listing: listing ids go stale as items sell, and
+    resolving live ones costs an API call per card, which a 50-row page can't
+    afford. Sellers overwhelmingly title cards "<name> <number>", so that
+    pairing is the most precise query available; the set name stands in when
+    there's no number.
+    """
+    name = (card_name or "").strip()
+    if not name:
+        return None
+    number = (card_number or "").strip()
+    terms = f"{name} {number}".strip() if number else f"{name} {(set_name or '').strip()}".strip()
+    return EBAY_SEARCH_URL.format(quote_plus(terms))
 
 # Cap on a single page of results. The UI asks for 50; this bounds a
 # hand-crafted `limit=100000` from turning one request into a table scan dump.
@@ -87,6 +131,13 @@ CATALOG_SCHEMA = [
     CREATE INDEX IF NOT EXISTS idx_catalog_cards_set
         ON catalog_cards (game, language, set_id)
     """,
+    # Added after the table shipped, so it needs its own ALTER — CREATE TABLE
+    # IF NOT EXISTS won't touch an existing table (same pattern as
+    # card_tracker's justtcg_name/justtcg_set columns). Defaults FALSE, so rows
+    # cached before this simply get no product link until they're refreshed —
+    # which is the safe direction.
+    "ALTER TABLE catalog_cards ADD COLUMN IF NOT EXISTS "
+    "tcgplayer_verified BOOLEAN NOT NULL DEFAULT FALSE",
 ]
 
 
@@ -133,18 +184,20 @@ def _as_numeric(value):
 _UPSERT = """
     INSERT INTO catalog_cards
         (game, language, set_id, set_name, card_name, card_number, rarity,
-         tcgplayer_id, number_sort, raw_price, price_source, priced_at, refreshed_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::NUMERIC,$11,
-            CASE WHEN $10::NUMERIC IS NULL THEN NULL ELSE NOW() END, NOW())
+         tcgplayer_id, tcgplayer_verified, number_sort, raw_price, price_source,
+         priced_at, refreshed_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::NUMERIC,$12,
+            CASE WHEN $11::NUMERIC IS NULL THEN NULL ELSE NOW() END, NOW())
     ON CONFLICT (game, language, set_id, card_number, card_name, rarity)
     DO UPDATE SET
-        set_name     = EXCLUDED.set_name,
-        tcgplayer_id = EXCLUDED.tcgplayer_id,
-        number_sort  = EXCLUDED.number_sort,
-        raw_price    = EXCLUDED.raw_price,
-        price_source = EXCLUDED.price_source,
-        priced_at    = EXCLUDED.priced_at,
-        refreshed_at = NOW()
+        set_name           = EXCLUDED.set_name,
+        tcgplayer_id       = EXCLUDED.tcgplayer_id,
+        tcgplayer_verified = EXCLUDED.tcgplayer_verified,
+        number_sort        = EXCLUDED.number_sort,
+        raw_price          = EXCLUDED.raw_price,
+        price_source       = EXCLUDED.price_source,
+        priced_at          = EXCLUDED.priced_at,
+        refreshed_at       = NOW()
 """
 
 
@@ -173,6 +226,7 @@ async def upsert_set_cards(pool, game: str, language: str, set_id: str,
             name, number,
             str(card.get("variant") or "").strip(),
             str(card.get("tcgplayer_id") or "").strip(),
+            bool(card.get("tcgplayer_id_verified")),
             number_sort_key(number),
             price,
             price_source if price is not None else None,
@@ -183,7 +237,7 @@ async def upsert_set_cards(pool, game: str, language: str, set_id: str,
     async with pool.acquire() as conn:
         await conn.executemany(_UPSERT, rows)
 
-    priced = sum(1 for r in rows if r[9] is not None)
+    priced = sum(1 for r in rows if r[10] is not None)
     logger.info("Catalog: cached %d card(s) for %s/%s [%s] — %d with a raw price",
                 len(rows), game, set_id, language, priced)
     return {"cards": len(rows), "priced": priced}
@@ -246,7 +300,7 @@ async def query_cards(pool, *, game: str, language: str = "english",
     page_params = params + [limit, offset]
     page_sql = (
         "SELECT set_id, set_name, card_name, card_number, rarity, tcgplayer_id, "
-        "       raw_price, price_source, priced_at, refreshed_at "
+        "       tcgplayer_verified, raw_price, price_source, priced_at, refreshed_at "
         f"FROM catalog_cards WHERE {where_sql} "
         f"ORDER BY {order_by} "
         f"LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}"
@@ -265,6 +319,10 @@ async def query_cards(pool, *, game: str, language: str = "english",
             "card_number": r["card_number"],
             "rarity": r["rarity"],
             "tcgplayer_id": r["tcgplayer_id"],
+            # Resolved server-side so the gate that decides a link is safe
+            # lives in one tested place, not in template JavaScript.
+            "tcgplayer_url": tcgplayer_url(r["tcgplayer_id"], r["tcgplayer_verified"]),
+            "ebay_url": ebay_search_url(r["card_name"], r["set_name"], r["card_number"]),
             "raw_price": float(r["raw_price"]) if r["raw_price"] is not None else None,
             "price_source": r["price_source"],
             "priced_at": r["priced_at"].isoformat() if r["priced_at"] else None,

@@ -452,11 +452,20 @@ async def fetch_ppt_set_cards_detailed(client: httpx.AsyncClient, set_name: str,
         name = _first(row, "name", "cardName")
         if not name:
             continue
+        # Kept separate from the `id` fallback below: only a value that came
+        # from a real TCGplayer field can safely be turned into a
+        # tcgplayer.com/product/<id> link. PPT's own `id` would point at the
+        # wrong product entirely.
+        tcg_id = _first(row, "tcgPlayerId", "tcgplayerId")
         cards.append({
             "name": str(name),
             "card_number": str(_first(row, "cardNumber", "number", "card_number") or ""),
             "variant": str(_first(row, "rarity", "variant") or ""),
-            "tcgplayer_id": str(_first(row, "tcgPlayerId", "tcgplayerId", "id") or ""),
+            "tcgplayer_id": str(tcg_id or _first(row, "id") or ""),
+            # True only when tcgplayer_id is genuinely a TCGplayer product id.
+            # The existing `id` fallback is preserved for the price lookup that
+            # already relies on it, but it must never become a buy link.
+            "tcgplayer_id_verified": bool(tcg_id),
             "set_name": str(_first(row, "setName", "set_name") or set_name),
             # Already in this payload — the call is billed per card either way,
             # so carrying it costs nothing and lets the catalog cache raw

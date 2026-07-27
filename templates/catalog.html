@@ -67,6 +67,8 @@
   table.rows tr:last-child td { border-bottom: none; }
   table.rows tbody tr:hover { background: #fafafa; }
   .cname { font-weight: 600; color: #111; }
+  a.clink { text-decoration: none; }
+  a.clink:hover { color: #5865F2; text-decoration: underline; }
   .cnum { color: #aaa; font-size: 11px; margin-left: 5px; }
   .cset { color: #888; }
   .price { font-weight: 700; color: #16a34a; white-space: nowrap; }
@@ -120,6 +122,7 @@
   html[data-theme="dark"] table.rows td { border-bottom-color: #242427; }
   html[data-theme="dark"] table.rows tbody tr:hover { background: #232326; }
   html[data-theme="dark"] .cname { color: #f0f0f0; }
+  html[data-theme="dark"] a.clink:hover { color: #a5b4fc; }
   html[data-theme="dark"] .rarity-chip { background: #2a2a2d; color: #bbbbc5; }
   html[data-theme="dark"] .setrow:hover { background: #232326; }
   html[data-theme="dark"] .pager, html[data-theme="dark"] .note { border-top-color: #303033; }
@@ -371,14 +374,25 @@ async function loadCards(){
   const tbody = document.getElementById('cardRows');
   const empty = document.getElementById('emptyState');
 
-  tbody.innerHTML = d.cards.map(c => `<tr>
-    <td><span class="cname">${esc(c.name)}</span>${c.card_number ? `<span class="cnum">${esc(c.card_number)}</span>` : ''}</td>
+  tbody.innerHTML = d.cards.map(c => {
+    // TCGplayer when the id is trustworthy, otherwise an eBay search — so a
+    // row is always clickable and never points at the wrong product. The
+    // server decides which; this only renders it.
+    const href = c.tcgplayer_url || c.ebay_url;
+    const where = c.tcgplayer_url ? 'TCGplayer' : 'eBay';
+    const nameCell = href
+      ? `<a class="cname clink" href="${esc(href)}" target="_blank" rel="noopener noreferrer"
+            title="Look up ${esc(c.name)} on ${where}">${esc(c.name)}</a>`
+      : `<span class="cname">${esc(c.name)}</span>`;
+    return `<tr>
+    <td>${nameCell}${c.card_number ? `<span class="cnum">${esc(c.card_number)}</span>` : ''}</td>
     <td class="cset">${esc(c.set_name || c.set_id)}</td>
     <td>${c.rarity ? `<span class="rarity-chip">${esc(c.rarity)}</span>` : ''}</td>
     <td class="right">${c.raw_price == null
         ? '<span class="price-none">no price</span>'
         : `<span class="price">${money(c.raw_price)}</span>`}</td>
-  </tr>`).join('');
+  </tr>`;
+  }).join('');
 
   if (!d.cards.length){
     empty.style.display = 'block';

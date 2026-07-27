@@ -124,6 +124,40 @@ change, not a migration.
 stocked. The page says so, and a blank price renders as "no price", never
 `$0` — those mean different things and conflating them would misprice a card.
 
+**Card names link out, and the link gate fails closed.** TCGplayer when the
+id is trustworthy, otherwise an eBay *search* URL — so every row is clickable
+and none can point at the wrong product. Both are built from data already in
+the table: no API call, no credits, and no CSP change (`img-src` doesn't
+govern `<a href>`, and there's no `form-action` rule).
+
+The trap: `catalog_cards.tcgplayer_id` was NOT reliably a TCGplayer id.
+`fetch_ppt_set_cards` populated it via
+`_first(row, "tcgPlayerId", "tcgplayerId", "id")` — falling back to **PPT's
+own id**, which points at a different product entirely. A naive
+`tcgplayer.com/product/<id>` link would have sent people to buy the wrong
+card. Fixed at the source with an additive `tcgplayer_id_verified` flag
+(true only when the value came from a real TCGplayer field); the `id`
+fallback is deliberately preserved because the price lookup already depends
+on it. `catalog.tcgplayer_url()` requires the flag **and** a numeric id, and
+returns None otherwise. eBay is a search, not a listing: listing ids go stale
+as items sell, and resolving live ones costs an API call per card, which a
+50-row page can't afford.
+
+`tcgplayer_verified` shipped after the table existed, so it needs the
+`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` in `CATALOG_SCHEMA` —
+`CREATE TABLE IF NOT EXISTS` will not add a column to a live table. Rows
+cached before it default to FALSE and simply get the eBay fallback until
+they're re-stocked, which is the safe direction.
+
+**Images were considered and deferred.** CSP already allows
+`https://images.pokemontcg.io`, so that source needs no security change — but
+catalog rows come from PPT (set ids are *names*) while pokemontcg.io needs
+set *codes* (`swsh12pt5`), the same id-space mismatch behind the
+set-cards fallback bug. `grading_sets.py` holds real pokemontcg.io ids and
+could bridge both. TCGplayer's image CDN would need an `img-src` addition.
+Worth checking the existing `set-cards first row keys` log line first: if PPT
+returns an image URL directly, images become as cheap as links.
+
 **Security:** `ORDER BY` resolves through the `SORT_COLUMNS` allowlist
 (unknown keys fall back to the default) — same rule as the raffle wheel's
 `_pick_col`. Everything else is parameterized, including ILIKE patterns,
