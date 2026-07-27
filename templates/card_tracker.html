@@ -744,11 +744,18 @@ function pollRefresh(t0){
         const spend = [];
         if (r.ppt_credits) spend.push(`${r.ppt_credits} Pokémon credit(s)`);
         if (r.justtcg_calls) spend.push(`${r.justtcg_calls} One Piece call(s)`);
+        // Coverage is the headline: it's the direct answer to "does every card
+        // have a price for today", rather than something inferred from counts.
+        const cover = r.tracked_total
+          ? ` — ${r.priced_today}/${r.tracked_total} Pokémon cards priced today`
+            + (r.missing_today ? `, ${r.missing_today} still missing (retried within 3h)` : '')
+          : '';
         note.textContent = `Done — ${r.snapshots} snapshot(s), ${r.scored} scored`
           + (spend.length ? `, ${spend.join(' + ')}` : '')
           + (r.backfilled ? `, ${r.backfilled} history row(s) backfilled` : '')
-          + (r.ppt_rate_limited ? ' — stopped early on a rate limit, the rest resume next run' : '')
-          + (r.failures && r.failures.length ? `, ${r.failures.length} issue(s) (see logs)` : '');
+          + (r.ppt_rate_limited ? ' — stopped early on a rate limit, the rest resume next sweep' : '')
+          + (r.failures && r.failures.length ? `, ${r.failures.length} issue(s) (see logs)` : '')
+          + cover;
       } else {
         note.textContent = 'Refresh finished.';
       }

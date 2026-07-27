@@ -51,6 +51,41 @@ budget is shared with the catalog and the grading calculator and **has already
 been seen 429ing**, so this takes a bounded slice rather than assuming it's
 free. Watch `ppt_credits` in the refresh summary.
 
+**Guarantee: one price per Pokémon card per UTC day.** `run_ppt_ingest` is
+**gap-filling, not a scheduled batch** — it prices only cards with no snapshot
+for the current UTC day, and a sweep runs every 3h
+(`TRACKER_SWEEP_INTERVAL_S`) plus shortly after boot.
+
+**Idempotence is what makes this affordable, and it is the property to
+preserve.** A card already priced today is skipped, so eight passes a day cost
+the same credits as one — which is why the sweep can recover from a restart,
+a mid-run 429, or a transient per-card error within hours instead of never.
+Anything that makes a run re-price already-covered cards silently multiplies
+the daily spend by the sweep count.
+
+**Ordering is neediest-first** (`last_priced ASC NULLS FIRST`). The first
+version used `ORDER BY id LIMIT n`, which re-priced the same first N every
+night and would never have reached cards beyond the cap at all — a silent
+permanent gap once the list exceeded 150. UTC is the day boundary, matching
+the JustTCG history backfill's existing dedupe, so the two can't disagree
+about what "today" is.
+
+**Resolution never leaves a card stranded:** catalog first (free), then a
+one-time PPT search (`resolve_ppt_tcgplayer_id`, ~5 credits, capped at
+`TRACKER_PPT_RESOLVE_CAP` per run) for cards whose set isn't stocked. Reuses
+`_ppt_pick_card` rather than a second matcher.
+
+**What can still break the guarantee, and it's arithmetic:** if tracked cards
+exceed PPT's daily credit allowance, no scheduling fixes it. Coverage is
+therefore reported as a number (`priced_today` / `tracked_total` /
+`missing_today`) in the refresh summary and on the tracker page — a shortfall
+must be visible, not a silent hole in the history.
+
+**Pokémon has NO history backfill.** JustTCG returns price history so a missed
+One Piece day self-heals; `fetch_ppt_card_prices` returns current price only.
+A Pokémon day missed entirely is permanently lost — which is precisely why the
+sweep exists rather than a single nightly run.
+
 **Unverified:** never run against the live DB or a real PPT key. The matcher
 and the series selector are unit-tested; the ingest path is not.
 

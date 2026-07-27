@@ -401,6 +401,53 @@ async def fetch_ppt_card_prices(client: httpx.AsyncClient, tcgplayer_id: str,
     return out, "ok"
 
 
+async def resolve_ppt_tcgplayer_id(client: httpx.AsyncClient, name: str,
+                                   set_name: str = "", card_number: str = "",
+                                   language: str = PPT_DEFAULT_LANGUAGE) -> tuple:
+    """(tcgplayer_id, status) — pin a card's TCGplayer id by search.
+
+    Costs up to PPT_SEARCH_LIMIT credits, ONCE per card ever: the id is stored
+    afterwards and every later price refresh is a pinned 1-credit lookup. This
+    is the fallback for cards whose set isn't in catalog_cards, so a card is
+    never left permanently unpriced waiting on a set to be stocked.
+
+    Reuses _ppt_pick_card, the same matcher the grading calculator relies on,
+    rather than a second bespoke one.
+    """
+    search = _ppt_search_name(name)
+    if not search:
+        return None, "error"
+    language = ppt_language(language)
+    card = CardRef(game="pokemon", name=name, set_name=(set_name or "").strip(),
+                   card_number=(card_number or "").strip(), language=language)
+
+    base = {"search": search, "limit": PPT_SEARCH_LIMIT, "language": language}
+    attempts = []
+    if card.set_name:
+        attempts.append({**base, "set": card.set_name})
+    # An empty result bills no per-card credits, so retrying without the set
+    # filter is cheap — and PPT's set filter is case/format sensitive.
+    attempts.append(base)
+
+    for params in attempts:
+        rows, resp = await _ppt_get(client, "/cards", params, f"resolve({search})")
+        if not rows:
+            status = _ppt_empty_status(resp)
+            if status in ("rate_limited", "error"):
+                return None, status
+            continue
+        row = _ppt_pick_card(rows, card)
+        if not row:
+            continue
+        tcg_id = row.get("tcgPlayerId") or row.get("tcgplayerId")
+        if tcg_id:
+            logger.info("PPT resolve: %r -> %r %s (%s) tcgPlayerId=%s", name,
+                        row.get("name"), row.get("cardNumber"), row.get("setName"),
+                        tcg_id)
+            return str(tcg_id), "ok"
+    return None, "empty"
+
+
 async def fetch_ppt_sets(client: httpx.AsyncClient,
                          language: str = PPT_DEFAULT_LANGUAGE) -> list:
     """[{id, name, year}] of every Pokemon set PPT knows, newest first.

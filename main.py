@@ -126,6 +126,52 @@ async def _card_tracker_daily_scheduler(app: FastAPI) -> None:
         await _run_tracker_refresh(app)
 
 
+# ---- Card tracker: gap-filling price sweep ----
+# The nightly ingest alone cannot guarantee a price per card per day: this is
+# an in-process scheduler, so a Railway restart near 11pm silently skips that
+# night, and a rate limit part-way through drops whatever came after it.
+#
+# The sweep closes both holes. run_ppt_ingest only prices cards with NO
+# snapshot for the current UTC day, so running it repeatedly is idempotent and
+# costs nothing extra — a card already priced today is skipped. Eight passes a
+# day therefore cost the same credits as one, while recovering from restarts,
+# throttles and transient per-card failures within hours instead of never.
+CARD_SWEEP_INTERVAL_S = float(os.getenv("TRACKER_SWEEP_INTERVAL_S", str(3 * 3600)))
+# Let the app finish booting (and the catalog backfill get a head start) before
+# spending any quota.
+CARD_SWEEP_START_DELAY_S = float(os.getenv("TRACKER_SWEEP_START_DELAY_S", "90"))
+
+
+async def _card_price_sweep(app: FastAPI) -> None:
+    """Fill today's price gaps, then re-score if anything was added."""
+    pool = app.state.db
+    result = await run_ppt_ingest(pool)
+    if result["snapshots"]:
+        # Scores are pure DB math — no quota — so keep them in step with the
+        # prices the sweep just added rather than waiting for the nightly.
+        await run_scoring(pool)
+    return result
+
+
+async def _card_price_sweep_scheduler(app: FastAPI) -> None:
+    await asyncio.sleep(CARD_SWEEP_START_DELAY_S)
+    while True:
+        try:
+            st = _tracker_refresh_state(app)
+            if st["running"]:
+                logger.info("Price sweep: a refresh is running — skipping this pass")
+            else:
+                result = await _card_price_sweep(app)
+                logger.info("Price sweep: %d new snapshot(s), %d/%d Pokemon card(s) "
+                            "priced today", result["snapshots"],
+                            result["priced_today"], result["total"])
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Price sweep failed — retrying next interval")
+        await asyncio.sleep(CARD_SWEEP_INTERVAL_S)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     secret = os.getenv("SESSION_SECRET", "")
@@ -144,11 +190,15 @@ async def lifespan(app: FastAPI):
     # Background, never awaited: seeding the catalog must not delay startup or
     # take the app down if PPT is unreachable.
     catalog_backfill_task = asyncio.create_task(_catalog_backfill_startup(app))
+    # Runs shortly after boot, which is also the catch-up for a night the
+    # 11pm ingest missed because the process restarted.
+    price_sweep_task = asyncio.create_task(_card_price_sweep_scheduler(app))
     try:
         yield
     finally:
         scheduler_task.cancel()
         catalog_backfill_task.cancel()
+        price_sweep_task.cancel()
         await app.state.db.close()
 
 
@@ -1157,6 +1207,10 @@ async def _run_tracker_refresh(app) -> None:
             "ppt_snapshots": ppt["snapshots"],
             "ppt_cards": ppt["cards"],
             "ppt_rate_limited": ppt["rate_limited"],
+            # The per-day guarantee, as a number rather than an assumption.
+            "priced_today": ppt["priced_today"],
+            "tracked_total": ppt["total"],
+            "missing_today": ppt["missing"],
             "onepiece_snapshots": ingest["snapshots"],
             "scored": scoring["scored"],
         }

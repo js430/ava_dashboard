@@ -25,6 +25,10 @@ logger = logging.getLogger("dashboard.card_tracker")
 # assuming the whole thing is free. Cards beyond the cap are picked up on the
 # next run.
 PPT_RUN_CAP = int(os.getenv("TRACKER_PPT_RUN_CAP", "150"))
+# Cap on one-time resolution searches per run (PPT_SEARCH_LIMIT credits each).
+# Bounds the cost of a large unresolved backlog — the rest resolve on the next
+# sweep, and once resolved a card never needs searching again.
+PPT_RESOLVE_CAP = int(os.getenv("TRACKER_PPT_RESOLVE_CAP", "20"))
 # A 429 means "later", not "never" (same rule as the catalog backfill): back
 # off, then stop the run cleanly so the next one resumes.
 PPT_RATE_WAIT_S = float(os.getenv("TRACKER_PPT_RATE_WAIT_S", "30"))
@@ -270,32 +274,89 @@ async def resolve_tcgplayer_ids(pool) -> dict:
     return summary
 
 
-async def run_ppt_ingest(pool) -> dict:
-    """One raw-price snapshot per tracked Pokemon card, from PPT.
+# Cards with no snapshot for the current UTC day, neediest first. UTC matches
+# the day boundary the JustTCG history backfill already dedupes on, so the two
+# can't disagree about what "today" means.
+_MISSING_TODAY_SQL = """
+    SELECT t.id, t.name, t.set_name, t.card_number, t.variant, t.tcgplayer_id,
+           (SELECT MAX(p.captured_at) FROM price_snapshots p WHERE p.card_id = t.id)
+               AS last_priced
+    FROM tracked_cards t
+    WHERE t.game = 'pokemon'
+      AND NOT EXISTS (
+          SELECT 1 FROM price_snapshots p
+          WHERE p.card_id = t.id
+            AND (p.captured_at AT TIME ZONE 'UTC')::date = (NOW() AT TIME ZONE 'UTC')::date
+      )
+    ORDER BY last_priced ASC NULLS FIRST, t.id
+    LIMIT $1
+"""
 
-    Cards that can't be resolved from the catalog are skipped and reported,
-    NOT fetched some other way — falling back to JustTCG here would mix two
-    different definitions of "mid" into one series and corrupt momentum.
+_COVERAGE_SQL = """
+    SELECT COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE EXISTS (
+               SELECT 1 FROM price_snapshots p
+               WHERE p.card_id = t.id
+                 AND (p.captured_at AT TIME ZONE 'UTC')::date
+                     = (NOW() AT TIME ZONE 'UTC')::date
+           )) AS priced_today
+    FROM tracked_cards t WHERE t.game = 'pokemon'
+"""
+
+
+async def ppt_coverage(pool) -> dict:
+    """{total, priced_today, missing} for Pokemon — the guarantee, as a number.
+
+    Surfaced rather than assumed: if the credit budget can't cover the list,
+    that has to be visible instead of quietly leaving holes in the history.
     """
-    summary = {"cards": 0, "snapshots": 0, "resolved": 0, "skipped": 0,
-               "credits": 0, "failed": [], "rate_limited": False}
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(_COVERAGE_SQL)
+    total = int(row["total"] or 0)
+    priced = int(row["priced_today"] or 0)
+    return {"total": total, "priced_today": priced, "missing": total - priced}
+
+
+async def run_ppt_ingest(pool) -> dict:
+    """Ensure every tracked Pokemon card has a price for the current UTC day.
+
+    GAP-FILLING, not a scheduled batch: it prices only cards with no snapshot
+    today. That one property is what makes the per-day guarantee hold —
+    repeated runs are idempotent and nearly free (a card already priced is
+    skipped), so this can run every few hours and recover from a missed
+    nightly, a rate limit part-way through, or a transient per-card error,
+    without ever paying twice for the same card on the same day.
+
+    Ordering is neediest-first (never priced, then longest since), so a run cut
+    short by the cap or a 429 still makes progress on the cards furthest
+    behind — the previous ORDER BY id would have re-priced the same first N
+    forever and never reached the rest.
+
+    Resolution is free where possible (catalog_cards) and falls back to a
+    one-time PPT search, so no card is permanently stuck unpriced. Pricing is
+    always PPT — never JustTCG — because mixing two definitions of "mid" into
+    one series would corrupt momentum.
+    """
+    summary = {"cards": 0, "snapshots": 0, "resolved": 0, "resolved_by_search": 0,
+               "skipped": 0, "credits": 0, "failed": [], "rate_limited": False,
+               "total": 0, "priced_today": 0, "missing": 0}
 
     if not price_sources.pokemonpricetracker_available():
         logger.info("Tracker: PokemonPriceTracker not configured — skipping Pokemon pricing")
+        summary.update(await ppt_coverage(pool))
         return summary
 
     res = await resolve_tcgplayer_ids(pool)
     summary["resolved"] = res["resolved"]
-    summary["failed"].extend(res["unmatched"][:20])
 
     async with pool.acquire() as conn:
-        cards = await conn.fetch(
-            "SELECT id, name, tcgplayer_id FROM tracked_cards "
-            "WHERE game = 'pokemon' AND tcgplayer_id IS NOT NULL AND tcgplayer_id <> '' "
-            "ORDER BY id LIMIT $1", PPT_RUN_CAP)
+        cards = await conn.fetch(_MISSING_TODAY_SQL, PPT_RUN_CAP)
     summary["cards"] = len(cards)
     if not cards:
-        logger.info("Tracker: no Pokemon cards with a resolved TCGplayer id")
+        summary.update(await ppt_coverage(pool))
+        logger.info("Tracker: every Pokemon card already has a price for today "
+                    "(%d/%d) — no credits spent",
+                    summary["priced_today"], summary["total"])
         return summary
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -318,11 +379,41 @@ async def run_ppt_ingest(pool) -> dict:
             except Exception:
                 logger.exception("Tracker: release-date lookup failed for %r", c["name"])
 
+        searches_left = PPT_RESOLVE_CAP
         for c in cards:
+            tcg_id = (c["tcgplayer_id"] or "").strip()
+
+            # Not in the catalog — resolve by search, once. Capped per run so a
+            # large unresolved backlog can't drain the budget in one go; the
+            # rest resolve on the next sweep.
+            if not tcg_id:
+                if searches_left <= 0:
+                    summary["skipped"] += 1
+                    summary["failed"].append(
+                        f"{c['name']}: not in the catalog, search budget used for this run")
+                    continue
+                searches_left -= 1
+                tcg_id, r_status = await price_sources.resolve_ppt_tcgplayer_id(
+                    client, c["name"], c["set_name"] or "", c["card_number"] or "")
+                summary["credits"] += price_sources.PPT_SEARCH_LIMIT
+                if r_status == "rate_limited":
+                    summary["rate_limited"] = True
+                    summary["failed"].append(
+                        "stopped: rate-limited while resolving — the next sweep resumes")
+                    break
+                if not tcg_id:
+                    summary["skipped"] += 1
+                    summary["failed"].append(f"{c['name']}: PPT has no match for it")
+                    continue
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE tracked_cards SET tcgplayer_id = $1 WHERE id = $2",
+                        tcg_id, c["id"])
+                summary["resolved_by_search"] += 1
+
             prices, status = {}, "error"
             for attempt in range(PPT_RATE_RETRIES + 1):
-                prices, status = await price_sources.fetch_ppt_card_prices(
-                    client, c["tcgplayer_id"])
+                prices, status = await price_sources.fetch_ppt_card_prices(client, tcg_id)
                 if status != "rate_limited" or attempt >= PPT_RATE_RETRIES:
                     break
                 wait = PPT_RATE_WAIT_S * (2 ** attempt)
@@ -355,11 +446,17 @@ async def run_ppt_ingest(pool) -> dict:
                     prices.get("high"), PPT_SOURCE)
             summary["snapshots"] += 1
 
-    logger.info("Tracker (PPT): %d snapshot(s) across %d card(s), %d newly resolved, "
-                "%d skipped, %d credit(s) spent%s",
+    summary.update(await ppt_coverage(pool))
+    logger.info("Tracker (PPT): %d snapshot(s) from %d card(s) missing today, "
+                "%d resolved from catalog, %d by search, %d skipped, %d credit(s)%s "
+                "| coverage today: %d/%d priced, %d still missing",
                 summary["snapshots"], summary["cards"], summary["resolved"],
-                summary["skipped"], summary["credits"],
-                " — STOPPED on rate limit" if summary["rate_limited"] else "")
+                summary["resolved_by_search"], summary["skipped"], summary["credits"],
+                " — STOPPED on rate limit" if summary["rate_limited"] else "",
+                summary["priced_today"], summary["total"], summary["missing"])
+    if summary["missing"]:
+        logger.warning("Tracker: %d Pokemon card(s) still have no price for today — "
+                       "the next sweep retries them", summary["missing"])
     return summary
 
 
