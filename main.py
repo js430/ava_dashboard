@@ -1780,6 +1780,12 @@ CATALOG_BACKFILL_MAX_ERRORS = 3
 # click. Unlike the startup seed this walks the whole catalog rather than a
 # fixed window — safe precisely because a person triggers each batch.
 CATALOG_NEXT_BATCH_SETS = int(os.getenv("CATALOG_NEXT_BATCH_SETS", "5"))
+# A 429 is temporary, so it is NOT counted as a failure — the set is retried
+# after a wait, doubling each time. If it's still throttled after that, the run
+# stops cleanly and can be resumed later with the button: sets already stocked
+# are skipped, so nothing is lost or paid for twice.
+CATALOG_BACKFILL_RATE_WAIT_S = float(os.getenv("CATALOG_BACKFILL_RATE_WAIT_S", "30"))
+CATALOG_BACKFILL_RATE_RETRIES = int(os.getenv("CATALOG_BACKFILL_RATE_RETRIES", "2"))
 
 
 def _catalog_known_empty(app) -> set:
@@ -1803,7 +1809,7 @@ def _catalog_backfill_state(app) -> dict:
     if st is None:
         st = {"running": False, "started_at": None, "finished_at": None,
               "planned": 0, "done": 0, "stocked": 0, "empty": 0, "cards": 0,
-              "current": None, "error": None, "last_result": None}
+              "current": None, "waiting_s": 0, "error": None, "last_result": None}
         app.state.catalog_backfill = st
     return st
 
@@ -1832,7 +1838,7 @@ async def _run_catalog_backfill(app, limit: int | None = None,
 
     st.update(running=True, started_at=datetime.utcnow().isoformat() + "Z",
               finished_at=None, planned=0, done=0, stocked=0, empty=0, cards=0,
-              current=None, error=None)
+              current=None, waiting_s=0, error=None)
     pool = app.state.db
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1864,11 +1870,35 @@ async def _run_catalog_backfill(app, limit: int | None = None,
         error_streak = 0
         for entry in todo:
             st["current"] = entry.get("name") or entry["id"]
-            try:
-                stats = await _catalog_stock_set(pool, entry["id"], "english")
-            except Exception:
-                logger.exception("Catalog backfill: %r failed", entry["id"])
-                stats = {"cards": 0, "priced": 0, "status": "error"}
+
+            # Retry a throttled set in place, backing off, before giving up on
+            # the run. A 429 says "later", not "never".
+            for attempt in range(CATALOG_BACKFILL_RATE_RETRIES + 1):
+                try:
+                    stats = await _catalog_stock_set(pool, entry["id"], "english")
+                except Exception:
+                    logger.exception("Catalog backfill: %r failed", entry["id"])
+                    stats = {"cards": 0, "priced": 0, "status": "error"}
+                if stats.get("status") != "rate_limited" or attempt >= CATALOG_BACKFILL_RATE_RETRIES:
+                    break
+                wait = CATALOG_BACKFILL_RATE_WAIT_S * (2 ** attempt)
+                st["waiting_s"] = wait
+                logger.warning("Catalog backfill: rate limited on %r — waiting %.0fs "
+                               "(retry %d of %d)", entry["id"], wait,
+                               attempt + 1, CATALOG_BACKFILL_RATE_RETRIES)
+                await asyncio.sleep(wait)
+            st["waiting_s"] = 0
+
+            if stats.get("status") == "rate_limited":
+                st["error"] = (
+                    "PokemonPriceTracker is still rate-limiting after backing off, so "
+                    "stocking stopped here. Nothing was lost — press “Stock 5 more "
+                    "sets” later and it picks up where it left off. If this keeps "
+                    "happening, check the daily-remaining figure in the logs.")
+                logger.warning("Catalog backfill: stopped — still rate limited at %r",
+                               entry["id"])
+                break
+
             st["done"] += 1
 
             if stats["cards"]:
@@ -2030,6 +2060,11 @@ async def api_catalog_stock(request: Request, user=Depends(require_admin)):
                 status_code=404,
                 detail=f"PokemonPriceTracker has no cards for {set_id} yet. Brand-new "
                        "sets often aren't published for a while — try again later.")
+        if stats.get("status") == "rate_limited":
+            raise HTTPException(
+                status_code=429,
+                detail="PokemonPriceTracker is rate-limiting us right now — "
+                       "wait a bit and try again.")
         raise HTTPException(status_code=502,
                             detail=f"The request for {set_id} failed — see logs.")
     return JSONResponse({"set_id": set_id, "language": language, **stats},

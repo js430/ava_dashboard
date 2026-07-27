@@ -51,14 +51,28 @@ ones PPT most often has no data for yet, so "the newest 20" is the window
 most likely to contain empty sets — the abort condition and the window
 selection were in direct conflict.
 
-`_ppt_get` already knew the difference (it returns a response object for a
-200 that simply had no rows, and `None` when the request itself failed);
-`fetch_ppt_set_cards` was throwing it away. Added
-`fetch_ppt_set_cards_detailed()` returning `(cards, status)` where status is
-`ok` / `empty` / `error`, with `fetch_ppt_set_cards` kept as a thin
-list-returning wrapper so the pickers are untouched. Empty sets are now
-skipped and the run continues; only real request failures count toward the
-abort.
+`_ppt_get` already knew the difference; `fetch_ppt_set_cards` was throwing it
+away. Added `fetch_ppt_set_cards_detailed()` returning `(cards, status)`,
+with `fetch_ppt_set_cards` kept as a thin list-returning wrapper so the
+pickers are untouched. Empty sets are now skipped and the run continues; only
+real request failures count toward the abort.
+
+**Then production showed a THIRD outcome: HTTP 429.** The first fix
+classified it as `error`, which was still wrong — a 429 means "later", not
+"never". `_ppt_get` now returns the response on a non-200 as well (it was
+returning `None`, which erased the status code), so status is `ok` / `empty` /
+`error` / **`rate_limited`**:
+
+- `rate_limited` — retried in place with a doubling wait
+  (`CATALOG_BACKFILL_RATE_WAIT_S`, default 30s, 2 retries). Still throttled
+  after that stops the run **cleanly**; the button resumes from where it
+  stopped, and already-stocked sets are skipped, so nothing is paid twice.
+- 429s log `Retry-After`, `X-RateLimit-Daily-Remaining` and
+  `X-API-Calls-Consumed`. **That's the line to read**: it's what separates a
+  short per-minute throttle (waiting fixes it) from the daily cap being spent
+  (nothing helps until it resets).
+
+A rate-limited set is never cached, so the retry genuinely re-requests it.
 
 **Empty sets are never cached and never stocked, which makes this
 self-healing.** They stay outside `catalog_cards`, so they remain in the

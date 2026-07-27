@@ -296,7 +296,13 @@ def _first(payload: dict, *keys):
 
 async def _ppt_get(client: httpx.AsyncClient, path: str, params: dict,
                    label: str) -> tuple[list, object]:
-    """GET a PPT endpoint and return (rows, response). ([], None) on failure."""
+    """GET a PPT endpoint and return (rows, response).
+
+    `response` is None ONLY when no HTTP response was obtained (no API key, or
+    a transport failure). A non-200 still hands the response back, so callers
+    can tell a 429 (temporary — back off and resume) from a 4xx/5xx (broken).
+    Callers that only check `rows` are unaffected.
+    """
     key = os.getenv("POKEMONPRICETRACKER_API_KEY")
     if not key:
         return [], None
@@ -307,10 +313,21 @@ async def _ppt_get(client: httpx.AsyncClient, path: str, params: dict,
     except Exception:
         logger.exception("PokemonPriceTracker %s request failed", label)
         return [], None
+    if resp.status_code == 429:
+        # Log the budget headers: they're what distinguishes a short per-minute
+        # throttle (wait and resume) from the daily cap being spent (nothing to
+        # do until it resets).
+        logger.warning("PokemonPriceTracker %s rate limited (429) | retry-after=%s "
+                       "daily-remaining=%s consumed=%s | %s", label,
+                       resp.headers.get("Retry-After", "?"),
+                       resp.headers.get("X-RateLimit-Daily-Remaining", "?"),
+                       resp.headers.get("X-API-Calls-Consumed", "?"),
+                       resp.text[:200])
+        return [], resp
     if resp.status_code != 200:
         logger.warning("PokemonPriceTracker %s HTTP %s: %s",
                        label, resp.status_code, resp.text[:300])
-        return [], None
+        return [], resp
     try:
         payload = resp.json()
     except Exception:
@@ -400,11 +417,21 @@ async def fetch_ppt_set_cards_detailed(client: httpx.AsyncClient, set_name: str,
                                  "limit": 1000, "language": language},
                                 f"set-cards({set_name}/{language})")
     if not rows:
-        # resp is None only when the request itself failed (HTTP != 200,
-        # transport error, missing key). A 200 carrying no rows means PPT
-        # genuinely has nothing for this set — and costs no per-card credits,
-        # so retrying it on a later run is nearly free.
-        status = "empty" if resp is not None else "error"
+        # Three genuinely different outcomes that all arrive as an empty list:
+        #   rate_limited — 429. Temporary; back off and resume where we stopped.
+        #   error        — no response at all, or a non-200 that isn't a 429.
+        #   empty        — a clean 200 with no rows: PPT simply has nothing for
+        #                  this set yet (routine for brand-new releases), and
+        #                  it cost no per-card credits, so retrying later is
+        #                  nearly free.
+        if resp is None:
+            status = "error"
+        elif getattr(resp, "status_code", None) == 429:
+            status = "rate_limited"
+        elif getattr(resp, "status_code", None) != 200:
+            status = "error"
+        else:
+            status = "empty"
         logger.info("PokemonPriceTracker set-cards %r [%s]: no cards (%s)",
                     set_name, language, status)
         return [], status

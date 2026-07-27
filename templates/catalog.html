@@ -472,6 +472,16 @@ function renderBackfill(bf){
   const el = document.getElementById('backfillLine');
   clearTimeout(backfillPoll);
 
+  if (bf.running && bf.waiting_s){
+    el.className = 'backfill';
+    el.textContent = `Paused for ${Math.round(bf.waiting_s)}s — PokemonPriceTracker `
+      + `is rate-limiting us. It resumes on its own`
+      + (bf.current ? ` at ${bf.current}` : '') + '.';
+    el.style.display = 'block';
+    backfillPoll = setTimeout(() => { loadFacets(); loadCards(); }, 5000);
+    return;
+  }
+
   if (bf.running){
     const of = bf.planned ? ` of ${bf.planned}` : '';
     // Sets with no data yet are reported separately — otherwise "12 done, 4000
