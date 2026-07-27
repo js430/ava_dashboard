@@ -6,15 +6,32 @@ script — matching ava_bot's CREATE TABLE IF NOT EXISTS convention, since
 neither repo has a migration system.
 """
 
+import os
+import re
 import asyncio
 import logging
 
 import httpx
 
 import justtcg
+import price_sources
 from watchlist import WATCHLIST
 
 logger = logging.getLogger("dashboard.card_tracker")
+
+# Per-run cap on PokemonPriceTracker calls (1 credit per card). PPT's budget is
+# shared with the catalog backfill and the grading calculator, and has already
+# been seen returning 429s, so the tracker takes a bounded slice rather than
+# assuming the whole thing is free. Cards beyond the cap are picked up on the
+# next run.
+PPT_RUN_CAP = int(os.getenv("TRACKER_PPT_RUN_CAP", "150"))
+# A 429 means "later", not "never" (same rule as the catalog backfill): back
+# off, then stop the run cleanly so the next one resumes.
+PPT_RATE_WAIT_S = float(os.getenv("TRACKER_PPT_RATE_WAIT_S", "30"))
+PPT_RATE_RETRIES = int(os.getenv("TRACKER_PPT_RATE_RETRIES", "2"))
+# Source label written to price_snapshots.source. Scoring groups by this, so
+# it must stay distinct from the JustTCG labels.
+PPT_SOURCE = "pokemonpricetracker"
 
 # Abort an ingest run after this many consecutive API failures — protects the
 # free-tier call budget from burning on an outage or a wrong endpoint shape.
@@ -89,6 +106,11 @@ CARD_TRACKER_SCHEMA = [
     "ALTER TABLE tracked_cards ADD COLUMN IF NOT EXISTS justtcg_name TEXT",
     "ALTER TABLE tracked_cards ADD COLUMN IF NOT EXISTS justtcg_set TEXT",
     "ALTER TABLE tracked_cards ADD COLUMN IF NOT EXISTS justtcg_number TEXT",
+    # Pokemon pricing moved to PokemonPriceTracker, pinned by TCGplayer id.
+    # Resolved for free out of catalog_cards rather than by a paid search, so
+    # a card only needs its set stocked once to be trackable forever.
+    "ALTER TABLE tracked_cards ADD COLUMN IF NOT EXISTS tcgplayer_id TEXT",
+    "ALTER TABLE tracked_cards ADD COLUMN IF NOT EXISTS catalog_matched_name TEXT",
 ]
 
 
@@ -132,12 +154,226 @@ async def sync_watchlist(pool) -> int:
     return added
 
 
-async def run_ingest(pool) -> dict:
-    """Fetch current JustTCG pricing for every tracked card and insert one
-    price_snapshots row each. Resolves missing justtcg_card_id / release_date
-    on the way. Per-card failures are logged and skipped, never fatal.
+# ── Pokemon pricing via PokemonPriceTracker ────────────────────────────────
+# Replaces JustTCG for Pokemon entirely. Two things make it cheaper AND more
+# reliable than what it replaces:
+#   * Resolution is FREE. catalog_cards already holds tcgplayer_id for every
+#     card in a stocked set, so matching happens against local rows instead of
+#     one-or-more paid search calls per card — which was the ingest's most
+#     expensive pass and its main source of wrong matches.
+#   * Pricing is pinned by tcgPlayerId, so there is no name/set matching at
+#     request time at all.
+# JustTCG stays the source for One Piece, which PPT doesn't cover.
 
-    Returns a summary dict: {"cards", "snapshots", "resolved", "failed": [...]}.
+
+def _canon(value: str) -> str:
+    """Lowercase, letters and digits only — for tolerant name comparison."""
+    return re.sub(r"[^a-z0-9]", "", (value or "").lower())
+
+
+def _number_key(value: str) -> str:
+    """'215/203' and '015' both reduce to a comparable '215' / '15'."""
+    head = str(value or "").split("/")[0].strip().lstrip("0").lower()
+    return head
+
+
+def match_catalog_row(card: dict, candidates: list):
+    """Best catalog_cards row for a tracked card, or None if none is safe.
+
+    Scored rather than first-match: a set can contain several printings of the
+    same name, and picking the wrong one would silently track the wrong card's
+    price for months. Requires a positive score, so an ambiguous match yields
+    nothing and the card is reported as unresolved instead of guessed at.
+    """
+    want_name = _canon(card.get("name"))
+    want_num = _number_key(card.get("card_number"))
+    want_set = _canon(card.get("set_name"))
+    want_variant = _canon(card.get("variant"))
+
+    best, best_score = None, 0
+    for row in candidates:
+        score = 0
+        row_name = _canon(row.get("card_name"))
+        if not row_name or not want_name:
+            continue
+        if row_name == want_name:
+            score += 4
+        elif row_name.startswith(want_name) or want_name.startswith(row_name):
+            score += 2
+        else:
+            continue                      # name must at least partially agree
+
+        row_num = _number_key(row.get("card_number"))
+        if want_num and row_num:
+            # A number disagreement is disqualifying: same name, different
+            # print is exactly the wrong-card case this guards against.
+            if row_num != want_num:
+                continue
+            score += 4
+
+        if want_set and _canon(row.get("set_name")):
+            row_set = _canon(row.get("set_name"))
+            if row_set == want_set or want_set in row_set or row_set in want_set:
+                score += 2
+
+        # Variant/rarity is a tiebreaker only — watchlist wording ("Alternate
+        # Art Secret") rarely matches a catalog rarity string exactly.
+        if want_variant and _canon(row.get("rarity")):
+            row_rarity = _canon(row.get("rarity"))
+            if want_variant in row_rarity or row_rarity in want_variant:
+                score += 1
+
+        if score > best_score:
+            best, best_score = row, score
+
+    return best
+
+
+async def resolve_tcgplayer_ids(pool) -> dict:
+    """Fill tracked_cards.tcgplayer_id from catalog_cards. No API calls.
+
+    Only rows whose id is verified as a real TCGplayer product id are used —
+    the same gate the catalog's buy links use, for the same reason: an
+    unverified id is PPT's own, and pricing against it would return the wrong
+    card's numbers.
+    """
+    summary = {"resolved": 0, "unmatched": []}
+    async with pool.acquire() as conn:
+        cards = await conn.fetch(
+            "SELECT id, name, set_name, card_number, variant FROM tracked_cards "
+            "WHERE game = 'pokemon' AND (tcgplayer_id IS NULL OR tcgplayer_id = '') "
+            "ORDER BY id")
+        for c in cards:
+            candidates = await conn.fetch(
+                "SELECT card_name, card_number, rarity, set_name, tcgplayer_id "
+                "FROM catalog_cards "
+                "WHERE game = 'pokemon' AND tcgplayer_verified = TRUE "
+                "  AND tcgplayer_id <> '' AND card_name ILIKE $1",
+                f"%{(c['name'] or '').strip()}%")
+            match = match_catalog_row(dict(c), [dict(r) for r in candidates])
+            if not match:
+                summary["unmatched"].append(
+                    f"{c['name']} ({c['set_name'] or 'no set'}): not in the catalog yet")
+                continue
+            await conn.execute(
+                "UPDATE tracked_cards SET tcgplayer_id = $1, catalog_matched_name = $2 "
+                "WHERE id = $3",
+                match["tcgplayer_id"], match["card_name"], c["id"])
+            summary["resolved"] += 1
+            logger.info("Tracker: matched %r -> catalog %r (#%s) tcgPlayerId=%s",
+                        c["name"], match["card_name"], match["card_number"],
+                        match["tcgplayer_id"])
+    if summary["unmatched"]:
+        logger.info("Tracker: %d Pokemon card(s) not resolvable from the catalog — "
+                    "stock their set on /catalog and they resolve next run",
+                    len(summary["unmatched"]))
+    return summary
+
+
+async def run_ppt_ingest(pool) -> dict:
+    """One raw-price snapshot per tracked Pokemon card, from PPT.
+
+    Cards that can't be resolved from the catalog are skipped and reported,
+    NOT fetched some other way — falling back to JustTCG here would mix two
+    different definitions of "mid" into one series and corrupt momentum.
+    """
+    summary = {"cards": 0, "snapshots": 0, "resolved": 0, "skipped": 0,
+               "credits": 0, "failed": [], "rate_limited": False}
+
+    if not price_sources.pokemonpricetracker_available():
+        logger.info("Tracker: PokemonPriceTracker not configured — skipping Pokemon pricing")
+        return summary
+
+    res = await resolve_tcgplayer_ids(pool)
+    summary["resolved"] = res["resolved"]
+    summary["failed"].extend(res["unmatched"][:20])
+
+    async with pool.acquire() as conn:
+        cards = await conn.fetch(
+            "SELECT id, name, tcgplayer_id FROM tracked_cards "
+            "WHERE game = 'pokemon' AND tcgplayer_id IS NOT NULL AND tcgplayer_id <> '' "
+            "ORDER BY id LIMIT $1", PPT_RUN_CAP)
+    summary["cards"] = len(cards)
+    if not cards:
+        logger.info("Tracker: no Pokemon cards with a resolved TCGplayer id")
+        return summary
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # Free catalog lookup (pokemontcg.io), not a PPT call — costs no
+        # credits. Scoring needs release_date for age_days, so this has to keep
+        # running now that Pokemon no longer passes through the JustTCG ingest.
+        async with pool.acquire() as conn:
+            undated = await conn.fetch(
+                "SELECT id, name, set_name FROM tracked_cards "
+                "WHERE game = 'pokemon' AND release_date IS NULL ORDER BY id")
+        for c in undated:
+            try:
+                release = await justtcg.fetch_pokemon_release_date(
+                    client, c["name"], c["set_name"])
+                if release:
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            "UPDATE tracked_cards SET release_date = COALESCE(release_date, $1) "
+                            "WHERE id = $2", release, c["id"])
+            except Exception:
+                logger.exception("Tracker: release-date lookup failed for %r", c["name"])
+
+        for c in cards:
+            prices, status = {}, "error"
+            for attempt in range(PPT_RATE_RETRIES + 1):
+                prices, status = await price_sources.fetch_ppt_card_prices(
+                    client, c["tcgplayer_id"])
+                if status != "rate_limited" or attempt >= PPT_RATE_RETRIES:
+                    break
+                wait = PPT_RATE_WAIT_S * (2 ** attempt)
+                logger.warning("Tracker: rate limited on %r — waiting %.0fs (retry %d/%d)",
+                               c["name"], wait, attempt + 1, PPT_RATE_RETRIES)
+                await asyncio.sleep(wait)
+
+            if status == "rate_limited":
+                summary["rate_limited"] = True
+                summary["failed"].append(
+                    "stopped: PokemonPriceTracker is rate-limiting — remaining cards "
+                    "are picked up on the next run")
+                logger.warning("Tracker: stopping Pokemon ingest — still rate limited at %r",
+                               c["name"])
+                break
+            summary["credits"] += 1
+            if status != "ok":
+                summary["skipped"] += 1
+                summary["failed"].append(f"{c['name']}: no price returned ({status})")
+                continue
+
+            # price_mid carries the market price — the field card_scoring reads
+            # for momentum. low/high are stored when present but are not always
+            # supplied, so they stay nullable.
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO price_snapshots (card_id, price_low, price_mid, "
+                    "price_high, source) VALUES ($1, $2, $3, $4, $5)",
+                    c["id"], prices.get("low"), prices.get("market"),
+                    prices.get("high"), PPT_SOURCE)
+            summary["snapshots"] += 1
+
+    logger.info("Tracker (PPT): %d snapshot(s) across %d card(s), %d newly resolved, "
+                "%d skipped, %d credit(s) spent%s",
+                summary["snapshots"], summary["cards"], summary["resolved"],
+                summary["skipped"], summary["credits"],
+                " — STOPPED on rate limit" if summary["rate_limited"] else "")
+    return summary
+
+
+async def run_ingest(pool) -> dict:
+    """JustTCG pricing for tracked ONE PIECE cards.
+
+    Pokemon moved to run_ppt_ingest — PokemonPriceTracker resolves for free
+    out of catalog_cards and prices by a pinned TCGplayer id, which is both
+    cheaper and more accurate than JustTCG's search-and-match. One Piece has
+    no PPT coverage, so it stays here — and now has the whole JustTCG budget
+    to itself instead of competing with several hundred Pokemon cards.
+
+    Per-card failures are logged and skipped, never fatal. Returns a summary
+    dict: {"cards", "snapshots", "resolved", "backfilled", "failed": [...]}.
     """
     summary = {"cards": 0, "snapshots": 0, "resolved": 0, "backfilled": 0, "failed": []}
     consecutive_failures = 0
@@ -145,11 +381,11 @@ async def run_ingest(pool) -> dict:
     async with pool.acquire() as conn:
         cards = await conn.fetch(
             "SELECT id, name, game, set_name, card_number, variant, release_date, "
-            "justtcg_card_id FROM tracked_cards ORDER BY id"
+            "justtcg_card_id FROM tracked_cards WHERE game = 'one_piece' ORDER BY id"
         )
     summary["cards"] = len(cards)
     if not cards:
-        logger.warning("Ingest: no tracked cards — run sync_watchlist first")
+        logger.info("Ingest: no tracked One Piece cards — nothing for JustTCG to do")
         return summary
 
     async with httpx.AsyncClient(timeout=20) as client:
@@ -216,25 +452,15 @@ async def run_ingest(pool) -> dict:
                 summary["failed"].append(f"{c['name']}: {e}")
                 logger.exception("Ingest: id resolution failed for %r", c["name"])
 
-        # ── Pass 2: fill missing Pokémon release dates (free API) ──
-        for c in cards:
-            if c["release_date"] or c["game"] != "pokemon":
-                continue
-            try:
-                release = await justtcg.fetch_pokemon_release_date(client, c["name"], c["set_name"])
-                if release:
-                    async with pool.acquire() as conn:
-                        await conn.execute(
-                            "UPDATE tracked_cards SET release_date = COALESCE(release_date, $1) "
-                            "WHERE id = $2", release, c["id"])
-            except Exception:
-                logger.exception("Ingest: release-date lookup failed for %r", c["name"])
+        # Pokemon release dates moved to run_ppt_ingest along with the rest of
+        # the Pokemon path — the lookup is a free catalog call, not a JustTCG
+        # one, so it belongs next to the cards it serves.
 
         # ── Pass 3: batch price fetch by resolved id ──
         async with pool.acquire() as conn:
             cards = await conn.fetch(
                 "SELECT id, name, variant, justtcg_card_id FROM tracked_cards "
-                "WHERE justtcg_card_id IS NOT NULL ORDER BY id")
+                "WHERE game = 'one_piece' AND justtcg_card_id IS NOT NULL ORDER BY id")
             # Which calendar days (UTC) each card already has a price for, so
             # the backfill below can add only what's missing.
             have_rows = await conn.fetch(
@@ -328,14 +554,20 @@ async def run_scoring(pool) -> dict:
         cards = await conn.fetch("SELECT id, name, release_date FROM tracked_cards ORDER BY id")
         for c in cards:
             snaps = await conn.fetch(
-                "SELECT captured_at, price_low, price_mid, price_high FROM price_snapshots "
+                "SELECT captured_at, price_low, price_mid, price_high, source "
+                "FROM price_snapshots "
                 "WHERE card_id = $1 AND captured_at >= NOW() - INTERVAL '60 days' "
                 "ORDER BY captured_at",
                 c["id"])
             if not snaps:
                 summary["skipped"] += 1
                 continue
-            s = card_scoring.score_card([dict(r) for r in snaps], c["release_date"])
+            # Never score across two pricing sources — see select_scoring_series.
+            series = card_scoring.select_scoring_series([dict(r) for r in snaps])
+            if not series:
+                summary["skipped"] += 1
+                continue
+            s = card_scoring.score_card(series, c["release_date"])
             await conn.execute(
                 "INSERT INTO card_scores (card_id, momentum_7d, momentum_30d, "
                 "liquidity_score, age_days, potential_score) VALUES ($1, $2, $3, $4, $5, $6)",

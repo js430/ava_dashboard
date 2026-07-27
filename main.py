@@ -27,7 +27,7 @@ from PIL import Image
 from dotenv import load_dotenv
 
 from card_tracker import (ensure_card_tracker_schema, sync_watchlist, run_ingest,
-                          run_scoring, MAX_TRACKED_CARDS)
+                          run_ppt_ingest, run_scoring, MAX_TRACKED_CARDS)
 import card_scoring
 import set_import
 import price_sources
@@ -1139,15 +1139,25 @@ async def _run_tracker_refresh(app) -> None:
     try:
         await ensure_card_tracker_schema(pool)
         added = await sync_watchlist(pool)
+        # Pokemon via PokemonPriceTracker (resolved free from catalog_cards),
+        # One Piece via JustTCG. Split deliberately: see card_tracker.run_ingest.
+        ppt = await run_ppt_ingest(pool)
         ingest = await run_ingest(pool)
         scoring = await run_scoring(pool)
         st["result"] = {
             "watchlist_added": added,
-            "snapshots": ingest["snapshots"],
-            "resolved": ingest["resolved"],
+            # Both sources contribute snapshots; the totals are summed for the
+            # headline and broken out below so a failure in one is still visible.
+            "snapshots": ppt["snapshots"] + ingest["snapshots"],
+            "resolved": ppt["resolved"] + ingest["resolved"],
             "backfilled": ingest.get("backfilled", 0),
-            "failures": ingest["failed"][:20],
+            "failures": (ppt["failed"] + ingest["failed"])[:20],
             "justtcg_calls": ingest.get("justtcg_calls", 0),
+            "ppt_credits": ppt["credits"],
+            "ppt_snapshots": ppt["snapshots"],
+            "ppt_cards": ppt["cards"],
+            "ppt_rate_limited": ppt["rate_limited"],
+            "onepiece_snapshots": ingest["snapshots"],
             "scored": scoring["scored"],
         }
     except Exception as e:

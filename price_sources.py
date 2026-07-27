@@ -233,6 +233,27 @@ def _ppt_grade_price(entry: dict):
     return None, None, None
 
 
+def _ppt_empty_status(resp) -> str:
+    """Why an empty row list came back: 'rate_limited' | 'error' | 'empty'.
+
+    Three genuinely different outcomes that all arrive as an empty list, and
+    callers act differently on each:
+      rate_limited — 429. Temporary; back off and resume where we stopped.
+      error        — no response at all, or a non-200 that isn't a 429.
+      empty        — a clean 200 with no rows. PPT simply has nothing for this
+                     query, and it cost no per-card credits, so retrying later
+                     is nearly free.
+    """
+    if resp is None:
+        return "error"
+    code = getattr(resp, "status_code", None)
+    if code == 429:
+        return "rate_limited"
+    if code != 200:
+        return "error"
+    return "empty"
+
+
 def _ppt_raw_price(row: dict):
     """Ungraded market price off a PPT card row, or None.
 
@@ -341,6 +362,45 @@ async def _ppt_get(client: httpx.AsyncClient, path: str, params: dict,
     return data, resp
 
 
+async def fetch_ppt_card_prices(client: httpx.AsyncClient, tcgplayer_id: str,
+                                language: str = PPT_DEFAULT_LANGUAGE) -> tuple:
+    """({low, market, high}, status) — ungraded prices for ONE card.
+
+    Deliberately the cheapest per-card refresh available: pinned by
+    tcgPlayerId so no search is needed, and WITHOUT includeEbay, which bills a
+    second credit per card for graded data the tracker doesn't store. One card
+    in, one credit out.
+
+    Separate from fetch_pokemonpricetracker, which builds full graded quotes
+    for the calculator and costs considerably more per card.
+    """
+    tcg_id = str(tcgplayer_id or "").strip()
+    if not tcg_id:
+        return {}, "error"
+    rows, resp = await _ppt_get(client, "/cards",
+                                {"tcgPlayerId": tcg_id, "limit": 1,
+                                 "language": ppt_language(language)},
+                                f"card-prices({tcg_id})")
+    if not rows:
+        return {}, _ppt_empty_status(resp)
+
+    prices = (rows[0] or {}).get("prices") or {}
+
+    def _num(key):
+        try:
+            value = float(prices.get(key))
+        except (TypeError, ValueError):
+            return None
+        return round(value, 2) if value > 0 else None
+
+    out = {"low": _num("low"), "market": _num("market"), "high": _num("high")}
+    if out["market"] is None and out["low"] is None and out["high"] is None:
+        # A 200 with a row but no usable numbers — the call happened and was
+        # billed, so this is 'empty', not an error.
+        return out, "empty"
+    return out, "ok"
+
+
 async def fetch_ppt_sets(client: httpx.AsyncClient,
                          language: str = PPT_DEFAULT_LANGUAGE) -> list:
     """[{id, name, year}] of every Pokemon set PPT knows, newest first.
@@ -417,21 +477,7 @@ async def fetch_ppt_set_cards_detailed(client: httpx.AsyncClient, set_name: str,
                                  "limit": 1000, "language": language},
                                 f"set-cards({set_name}/{language})")
     if not rows:
-        # Three genuinely different outcomes that all arrive as an empty list:
-        #   rate_limited — 429. Temporary; back off and resume where we stopped.
-        #   error        — no response at all, or a non-200 that isn't a 429.
-        #   empty        — a clean 200 with no rows: PPT simply has nothing for
-        #                  this set yet (routine for brand-new releases), and
-        #                  it cost no per-card credits, so retrying later is
-        #                  nearly free.
-        if resp is None:
-            status = "error"
-        elif getattr(resp, "status_code", None) == 429:
-            status = "rate_limited"
-        elif getattr(resp, "status_code", None) != 200:
-            status = "error"
-        else:
-            status = "empty"
+        status = _ppt_empty_status(resp)
         logger.info("PokemonPriceTracker set-cards %r [%s]: no cards (%s)",
                     set_name, language, status)
         return [], status

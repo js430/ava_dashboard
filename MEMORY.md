@@ -3,6 +3,59 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-07-27 — Card tracker: Pokémon prices move to PPT, resolved free off the catalog
+
+**Decided:** The nightly ingest is split by game. **Pokémon** prices come from
+PokemonPriceTracker (`run_ppt_ingest`); **One Piece** stays on JustTCG
+(`run_ingest`, now filtered to `game = 'one_piece'`). One raw-price snapshot
+per card per day, into `price_snapshots` as before.
+
+**Resolution is now free, and that's the main win.** `catalog_cards` already
+holds `tcgplayer_id` for every card in a stocked set, so `resolve_tcgplayer_ids`
+matches tracked cards against **local rows** — replacing JustTCG's
+search-per-card pass, which was the ingest's most expensive step (55-call
+budget, paced at 10/min) *and* its main source of wrong matches. Pricing is
+then pinned by `tcgPlayerId`, so there is no name/set matching at request time
+at all. `fetch_ppt_card_prices` deliberately omits `includeEbay`: that flag
+bills a second credit per card for graded data the tracker doesn't store, so
+this is 1 credit per card.
+
+**Side effect worth knowing:** One Piece now has the entire JustTCG budget to
+itself instead of competing with several hundred Pokémon cards.
+
+**THE TRAP — scoring must never span two sources.** `card_scoring` computes
+momentum from `price_mid`. JustTCG's "mid" and PPT's "market" are different
+estimators of the same thing, so a naive switch makes momentum report the
+change of ruler as a price move. Measured on synthetic data: **31.0% vs 0.77%**
+for the same card. `card_scoring.select_scoring_series()` groups snapshots by
+source family and scores only one — preferring the newest family once it has
+≥2 points, falling back to the largest otherwise. `justtcg` and
+`justtcg-history` are one family (same estimator); `pokemonpricetracker` is
+its own. Old snapshots stay in the DB and still draw on the graph; they just
+don't feed momentum. **If you add a third price source, add it to
+`SOURCE_FAMILIES` or momentum will silently break again.**
+
+**Unresolvable Pokémon cards get no price, deliberately.** A card whose set
+isn't stocked yet is reported, not fetched from JustTCG as a fallback — that
+fallback is exactly what would mix two estimators into one series. The fix is
+to stock its set on `/catalog`, after which it resolves on the next run.
+
+**`match_catalog_row` refuses to guess.** A *disagreeing* card number is
+disqualifying, not merely lower-scoring: a set holds several printings of the
+same name, and picking the wrong one would track the wrong card's price for
+months without any visible symptom. Ambiguous matches return None.
+
+**Budget:** `TRACKER_PPT_RUN_CAP` (default 150) bounds credits per run, and a
+429 backs off then stops cleanly, same rule as the catalog backfill. PPT's
+budget is shared with the catalog and the grading calculator and **has already
+been seen 429ing**, so this takes a bounded slice rather than assuming it's
+free. Watch `ppt_credits` in the refresh summary.
+
+**Unverified:** never run against the live DB or a real PPT key. The matcher
+and the series selector are unit-tested; the ingest path is not.
+
+---
+
 ## 2026-07-26 — Card catalog: local cache filled free off the grading calculator
 
 **Decided:** New `/catalog` page — browse/filter every card the dashboard has

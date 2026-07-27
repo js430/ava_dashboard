@@ -738,9 +738,17 @@ function pollRefresh(t0){
         note.textContent = 'Refresh failed: ' + st.error;
       } else if (st.result){
         const r = st.result;
-        note.textContent = `Done — ${r.snapshots} snapshot(s), ${r.scored} scored, ${r.justtcg_calls} API call(s)` +
-          (r.backfilled ? `, ${r.backfilled} history row(s) backfilled` : '') +
-          (r.failures && r.failures.length ? `, ${r.failures.length} issue(s) (see logs)` : '');
+        // Two price sources now: PokemonPriceTracker credits for Pokemon,
+        // JustTCG calls for One Piece. Reported separately because they draw
+        // on different budgets — one running dry says nothing about the other.
+        const spend = [];
+        if (r.ppt_credits) spend.push(`${r.ppt_credits} Pokémon credit(s)`);
+        if (r.justtcg_calls) spend.push(`${r.justtcg_calls} One Piece call(s)`);
+        note.textContent = `Done — ${r.snapshots} snapshot(s), ${r.scored} scored`
+          + (spend.length ? `, ${spend.join(' + ')}` : '')
+          + (r.backfilled ? `, ${r.backfilled} history row(s) backfilled` : '')
+          + (r.ppt_rate_limited ? ' — stopped early on a rate limit, the rest resume next run' : '')
+          + (r.failures && r.failures.length ? `, ${r.failures.length} issue(s) (see logs)` : '');
       } else {
         note.textContent = 'Refresh finished.';
       }

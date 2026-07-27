@@ -60,6 +60,53 @@ def snapshot_price(snap: dict):
     return None
 
 
+# Snapshot sources that measure the same thing and can safely share a series.
+# JustTCG's live and history rows are the same estimator, so they group.
+# PokemonPriceTracker's market price is a DIFFERENT estimator — mixing it with
+# JustTCG mid would make momentum register a jump at the changeover that is
+# purely a change of ruler, not of price.
+SOURCE_FAMILIES = {
+    "justtcg": "justtcg",
+    "justtcg-history": "justtcg",
+    "pokemonpricetracker": "pokemonpricetracker",
+}
+# Below this, a family isn't enough of a series to prefer over an established
+# one — momentum needs at least two points to mean anything.
+MIN_SERIES_POINTS = 2
+
+
+def source_family(source) -> str:
+    return SOURCE_FAMILIES.get((source or "").strip().lower(), (source or "unknown"))
+
+
+def select_scoring_series(snapshots: list) -> list:
+    """The largest self-consistent run of snapshots to score from.
+
+    Scoring must never span two pricing sources. Picks the family with the
+    most recent data, provided it has enough points to be a series; otherwise
+    falls back to whichever family has the most. Older snapshots from the
+    other source are kept in the database and still drawn on the graph — they
+    just don't feed momentum, which would otherwise report a source change as
+    a price move.
+    """
+    if not snapshots:
+        return []
+    families = {}
+    for snap in snapshots:
+        families.setdefault(source_family(snap.get("source")), []).append(snap)
+    if len(families) == 1:
+        return list(snapshots)
+
+    def latest(rows):
+        return max(r["captured_at"] for r in rows)
+
+    newest = max(families.values(), key=latest)
+    if len(newest) >= MIN_SERIES_POINTS:
+        return sorted(newest, key=lambda r: r["captured_at"])
+    biggest = max(families.values(), key=len)
+    return sorted(biggest, key=lambda r: r["captured_at"])
+
+
 def _priced(snapshots: list) -> list:
     """[(captured_at, price)] sorted ascending, snapshots without a price dropped."""
     out = []
