@@ -2035,6 +2035,9 @@ async def catalog_page(request: Request):
         "user_id": user["id"],
         "is_admin": is_admin,
         "is_mod": request.session.get("mod", False),
+        # Drives rel="sponsored" and the disclosure line. Both must appear
+        # only when the eBay links actually carry EPN tracking.
+        "ebay_affiliate": catalog.ebay_affiliate_enabled(),
     })
 
 

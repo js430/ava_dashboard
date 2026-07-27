@@ -328,6 +328,13 @@
             Prices are the ungraded ("raw") market price from PokemonPriceTracker, captured
             when the set was last stocked &mdash; not live. A blank price means no market
             price was reported for that card, not that it's worthless.
+            {% if ebay_affiliate %}
+            <br><br>
+            <strong>Heads up:</strong> card names that link to eBay are affiliate links.
+            If you buy something after clicking one, this server may earn a small
+            commission at no extra cost to you. It doesn't change the price you pay,
+            and it doesn't affect which cards or prices are shown here.
+            {% endif %}
           </div>
         </div>
       </div>
@@ -350,6 +357,8 @@
 </div>
 
 <script>
+// True only when EBAY_AFFILIATE_PARAMS is configured server-side.
+const EBAY_AFFILIATE = {{ 'true' if ebay_affiliate else 'false' }};
 const PAGE_SIZE = 50;
 let offset = 0;
 let total = 0;
@@ -549,8 +558,13 @@ async function loadCards(){
     // server decides which; this only renders it.
     const href = c.tcgplayer_url || c.ebay_url;
     const where = c.tcgplayer_url ? 'TCGplayer' : 'eBay';
+    // rel="sponsored" belongs only on links that actually carry affiliate
+    // tracking — here, the eBay fallback when EPN is configured. Marking an
+    // untracked link sponsored would be a false declaration.
+    const rel = (!c.tcgplayer_url && EBAY_AFFILIATE)
+      ? 'sponsored nofollow noopener noreferrer' : 'noopener noreferrer';
     const nameCell = href
-      ? `<a class="cname clink" href="${esc(href)}" target="_blank" rel="noopener noreferrer"
+      ? `<a class="cname clink" href="${esc(href)}" target="_blank" rel="${rel}"
             title="Look up ${esc(c.name)} on ${where}">${esc(c.name)}</a>`
       : `<span class="cname">${esc(c.name)}</span>`;
     return `<tr>

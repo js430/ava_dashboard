@@ -20,10 +20,11 @@ Nothing here fetches. `main.py` owns the network calls; this module owns the
 schema, the upsert, and the read queries.
 """
 
+import os
 import re
 import logging
 from decimal import Decimal, InvalidOperation
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, parse_qsl, urlencode
 
 logger = logging.getLogger("dashboard.catalog")
 
@@ -54,6 +55,58 @@ def tcgplayer_url(tcgplayer_id, verified: bool):
     return TCGPLAYER_PRODUCT_URL.format(value)
 
 
+# eBay Partner Network tracking, appended to outbound eBay links. Set
+# EBAY_AFFILIATE_PARAMS to the query string EPN gives you, for example:
+#   mkcid=1&mkrid=<rotation id>&campid=<your campaign>&toolid=10001&mkevt=1
+#
+# Held as opaque configuration ON PURPOSE. EPN has changed its link format
+# over time and the rotation id is site-specific, so hardcoding a parameter
+# set here would be a guess that silently stops earning when it goes stale.
+# Whatever the dashboard gives you is pasted in as-is; no code change, and no
+# campaign id in git.
+#
+# `_nkw` is refused because it carries the search terms — an affiliate string
+# that included one would replace the query and send every card to the same
+# page.
+_EBAY_RESERVED_PARAMS = {"_nkw"}
+_ebay_params_cache: tuple = ("", [])
+
+
+def _ebay_affiliate_pairs() -> list:
+    """Parsed EPN parameters, or [] when unset or unusable.
+
+    Fails closed to "no tracking" rather than raising: a malformed campaign
+    string costs revenue, but it must never cost the member a working link.
+    """
+    global _ebay_params_cache
+    raw = (os.getenv("EBAY_AFFILIATE_PARAMS", "") or "").strip().lstrip("?&")
+    if _ebay_params_cache[0] == raw:
+        return _ebay_params_cache[1]
+    pairs = []
+    if raw:
+        try:
+            pairs = [(k, v) for k, v in parse_qsl(raw, keep_blank_values=False)
+                     if k and v and k not in _EBAY_RESERVED_PARAMS]
+        except Exception:
+            logger.warning("EBAY_AFFILIATE_PARAMS could not be parsed — "
+                           "serving plain eBay links")
+            pairs = []
+        if not pairs:
+            logger.warning("EBAY_AFFILIATE_PARAMS is set but yielded no usable "
+                           "parameters — serving plain eBay links")
+    _ebay_params_cache = (raw, pairs)
+    return pairs
+
+
+def ebay_affiliate_enabled() -> bool:
+    """True when outbound eBay links carry EPN tracking.
+
+    Drives the rel="sponsored" attribute and the disclosure line — both of
+    which must appear only when the links are genuinely monetised.
+    """
+    return bool(_ebay_affiliate_pairs())
+
+
 def ebay_search_url(card_name: str, set_name: str = "", card_number: str = ""):
     """An eBay search for this card, or None without a name.
 
@@ -62,13 +115,19 @@ def ebay_search_url(card_name: str, set_name: str = "", card_number: str = ""):
     afford. Sellers overwhelmingly title cards "<name> <number>", so that
     pairing is the most precise query available; the set name stands in when
     there's no number.
+
+    Carries EPN tracking when configured, and is a plain search when not.
     """
     name = (card_name or "").strip()
     if not name:
         return None
     number = (card_number or "").strip()
     terms = f"{name} {number}".strip() if number else f"{name} {(set_name or '').strip()}".strip()
-    return EBAY_SEARCH_URL.format(quote_plus(terms))
+    url = EBAY_SEARCH_URL.format(quote_plus(terms))
+    pairs = _ebay_affiliate_pairs()
+    if pairs:
+        url += "&" + urlencode(pairs)
+    return url
 
 # Cap on a single page of results. The UI asks for 50; this bounds a
 # hand-crafted `limit=100000` from turning one request into a table scan dump.

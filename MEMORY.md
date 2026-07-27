@@ -237,6 +237,30 @@ as items sell, and resolving live ones costs an API call per card, which a
 cached before it default to FALSE and simply get the eBay fallback until
 they're re-stocked, which is the safe direction.
 
+**eBay links carry Partner Network tracking, from config not code.**
+`EBAY_AFFILIATE_PARAMS` holds the EPN query string verbatim
+(`mkcid=…&mkrid=…&campid=…&toolid=…&mkevt=1`). Deliberately opaque: EPN has
+changed its link format over time and the rotation id is site-specific, so
+hardcoding a parameter set would be a guess that silently stops earning once
+stale. Nothing to redeploy when EPN changes it, and no campaign id in git.
+
+**It fails closed to a plain link.** Unset, malformed, or yielding no usable
+pairs → the ordinary eBay search, logged as a warning. A broken campaign
+string costs revenue; it must never cost a member a working link. `_nkw` is
+refused from the affiliate string because it carries the search terms — one
+slipping through would send every card to the same page.
+
+`rel="sponsored"` and the on-page disclosure appear **only** when tracking is
+actually configured (`catalog.ebay_affiliate_enabled()` → template flag).
+Declaring a link sponsored when it isn't would be false, and disclosure is an
+EPN/FTC obligation, so both track the real setting rather than being
+hardcoded.
+
+**TCGplayer links are NOT affiliate.** Only the eBay fallback is monetised —
+and note that as sets get re-stocked and `tcgplayer_verified` fills in, the
+eBay share of clicks shrinks. If monetisation matters, TCGplayer's own
+program is where the volume ends up.
+
 **Images were considered and deferred.** CSP already allows
 `https://images.pokemontcg.io`, so that source needs no security change — but
 catalog rows come from PPT (set ids are *names*) while pokemontcg.io needs
