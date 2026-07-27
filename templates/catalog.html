@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%23fff' stroke='%23111' stroke-width='2'/><path d='M2 16a14 14 0 0 1 28 0z' fill='%23ee1515'/><path d='M2 16h28' stroke='%23111' stroke-width='3'/><circle cx='16' cy='16' r='5' fill='%23fff' stroke='%23111' stroke-width='3'/></svg>">
+<script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Card Catalog — Restock Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .header-title { font-size: 16px; font-weight: 600; color: #111; }
+  .header-sub { font-size: 12px; color: #999; margin-top: 1px; }
+  .nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; }
+  .nav a:hover { background: #f4f4f5; }
+  .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-group { position: relative; display: inline-flex; }
+  .nav-group-btn { font-family: inherit; font-size: 12px; color: #555; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+  .nav-group-btn:hover { background: #f4f4f5; }
+  .nav-group-btn.active, .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-menu a.active { background: #5865F2; color: #fff; }
+  .nav-caret { font-size: 9px; line-height: 1; }
+  .nav-menu { display: none; position: absolute; top: calc(100% + 4px); right: 0; min-width: 150px; padding: 4px; background: #fff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.10); z-index: 400; }
+  .nav-group.open .nav-menu { display: block; }
+  .nav-menu a { display: block; padding: 6px 10px; border: none; border-radius: 5px; background: none; font-size: 12px; color: #555; text-decoration: none; white-space: nowrap; }
+  .nav-menu a:hover { background: #f4f4f5; }
+  .theme-toggle { font-size: 16px; background: #f4f4f5; border: 1px solid #ddd; border-radius: 6px; padding: 4px 8px; cursor: pointer; line-height: 1; flex-shrink: 0; }
+  .main { padding: 24px; max-width: 1280px; margin: 0 auto; }
+
+  .card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; overflow: hidden; margin-bottom: 16px; }
+  .card-head { padding: 12px 16px; border-bottom: 1px solid #e4e4e7; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .card-title { font-size: 14px; font-weight: 600; color: #111; }
+  .card-body { padding: 14px 16px; }
+  .label { font-size: 12px; color: #888; margin-bottom: 5px; display: block; }
+  .status { font-size: 12px; color: #999; margin-left: auto; }
+  .sub { font-size: 12px; color: #888; }
+  .hint { font-size: 11px; color: #aaa; line-height: 1.5; }
+
+  input[type=text], input[type=number], select { width: 100%; font-size: 12px; height: 30px; padding: 0 8px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #111; font-family: inherit; }
+  input:focus, select:focus { outline: 2px solid #5865F2; outline-offset: -1px; }
+  .btn { font-size: 12px; height: 30px; padding: 0 12px; border: none; border-radius: 6px; background: #5865F2; color: #fff; cursor: pointer; font-weight: 600; font-family: inherit; }
+  .btn:disabled { opacity: .6; cursor: not-allowed; }
+  .btn-plain { background: #fff; color: #333; border: 1px solid #ddd; font-weight: 400; }
+  .btn-sm { height: 24px; padding: 0 8px; font-size: 11px; }
+
+  .catalog-grid { display: grid; grid-template-columns: 270px minmax(0,1fr); gap: 16px; align-items: start; }
+  .filters { position: sticky; top: 16px; }
+  .frow { margin-bottom: 12px; }
+  .frow:last-child { margin-bottom: 0; }
+  .price-row { display: flex; gap: 8px; align-items: center; }
+  .price-row span { font-size: 12px; color: #aaa; }
+  .checklist { max-height: 210px; overflow-y: auto; border: 1px solid #eee; border-radius: 8px; padding: 6px 8px; }
+  .checklist label { display: flex; align-items: center; gap: 7px; font-size: 12px; color: #333; padding: 3px 0; cursor: pointer; }
+  .checklist input[type=checkbox] { width: auto; height: auto; margin: 0; accent-color: #5865F2; flex-shrink: 0; }
+  .checklist .ck-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .checklist .ck-count { margin-left: auto; font-size: 11px; color: #bbb; flex-shrink: 0; }
+  .filter-search { margin-bottom: 6px; }
+  .chk-toggle { font-size: 11px; color: #5865F2; cursor: pointer; background: none; border: none; padding: 0; font-family: inherit; }
+  .chk-toggle:hover { text-decoration: underline; }
+
+  table.rows { border-collapse: collapse; width: 100%; font-size: 12px; }
+  table.rows th { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: .05em; padding: 7px 10px; text-align: left; border-bottom: 1px solid #e4e4e7; white-space: nowrap; }
+  table.rows th.right, table.rows td.right { text-align: right; }
+  table.rows td { padding: 7px 10px; border-bottom: 1px solid #f4f4f5; }
+  table.rows tr:last-child td { border-bottom: none; }
+  table.rows tbody tr:hover { background: #fafafa; }
+  .cname { font-weight: 600; color: #111; }
+  .cnum { color: #aaa; font-size: 11px; margin-left: 5px; }
+  .cset { color: #888; }
+  .price { font-weight: 700; color: #16a34a; white-space: nowrap; }
+  .price-none { color: #bbb; font-weight: 400; }
+  .rarity-chip { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 8px; background: #f3f4f6; color: #6b7280; white-space: nowrap; }
+  .table-wrap { overflow-x: auto; }
+
+  .pager { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px solid #f0f0f0; }
+  .pager .sub { margin-right: auto; }
+  .empty { padding: 28px 16px; text-align: center; color: #999; font-size: 13px; line-height: 1.6; }
+
+  .setlist { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow-y: auto; }
+  .setrow { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 4px 6px; border-radius: 6px; }
+  .setrow:hover { background: #fafafa; }
+  .setrow .sname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .setrow .smeta { margin-left: auto; font-size: 11px; color: #aaa; white-space: nowrap; flex-shrink: 0; }
+  .warn { font-size: 12px; color: #9a3412; background: #ffedd5; border-radius: 8px; padding: 7px 10px; margin-top: 10px; line-height: 1.5; }
+  .backfill { font-size: 12px; border-radius: 8px; padding: 7px 10px; margin-bottom: 10px; line-height: 1.5; background: #eef0ff; color: #4752d4; }
+  .backfill.done { background: #dcfce7; color: #166534; }
+  .backfill.err { background: #ffedd5; color: #9a3412; }
+  .note { font-size: 11px; color: #999; line-height: 1.6; margin-top: 12px; border-top: 1px solid #f0f0f0; padding-top: 10px; }
+
+  @media (max-width: 900px) {
+    .catalog-grid { grid-template-columns: 1fr; }
+    .filters { position: static; }
+    .main { padding: 12px; }
+    .nav-menu { left: 0; right: auto; }
+  }
+
+  html[data-theme="dark"] { color-scheme: dark; }
+  html[data-theme="dark"] body { background: #111113; color: #f0f0f0; }
+  html[data-theme="dark"] .header { background: #1c1c1f; border-bottom-color: #303033; }
+  html[data-theme="dark"] .header-title { color: #f0f0f0; }
+  html[data-theme="dark"] .nav a, html[data-theme="dark"] .nav-group-btn { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .nav a:hover, html[data-theme="dark"] .nav-group-btn:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .nav-group-btn.active, html[data-theme="dark"] .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .nav-menu { background: #1c1c1f; border-color: #383838; box-shadow: 0 6px 20px rgba(0,0,0,.45); }
+  html[data-theme="dark"] .nav-menu a { color: #bbbbc5; }
+  html[data-theme="dark"] .nav-menu a:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav-menu a.active { background: #5865F2; color: #fff; }
+  html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
+  html[data-theme="dark"] .card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .card-head { border-bottom-color: #303033; }
+  html[data-theme="dark"] .card-title { color: #f0f0f0; }
+  html[data-theme="dark"] input[type=text], html[data-theme="dark"] input[type=number], html[data-theme="dark"] select { background: #252528; border-color: #383838; color: #f0f0f0; }
+  html[data-theme="dark"] .btn-plain { background: #252528; border-color: #383838; color: #e0e0e0; }
+  html[data-theme="dark"] .checklist { border-color: #303033; }
+  html[data-theme="dark"] .checklist label { color: #d4d4d8; }
+  html[data-theme="dark"] table.rows th { border-bottom-color: #303033; }
+  html[data-theme="dark"] table.rows td { border-bottom-color: #242427; }
+  html[data-theme="dark"] table.rows tbody tr:hover { background: #232326; }
+  html[data-theme="dark"] .cname { color: #f0f0f0; }
+  html[data-theme="dark"] .rarity-chip { background: #2a2a2d; color: #bbbbc5; }
+  html[data-theme="dark"] .setrow:hover { background: #232326; }
+  html[data-theme="dark"] .pager, html[data-theme="dark"] .note { border-top-color: #303033; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="header-title">Card Catalog</div>
+    <div class="header-sub">Browse by set, rarity and raw market price</div>
+  </div>
+  <div class="nav">
+    <a href="/">Dashboard</a>
+    <a href="/map">Map</a>
+    {% if is_admin %}
+    <div class="nav-group">
+      <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        <a href="/admin">Visitor Log</a>
+        <a href="/contributors">Contributors</a>
+        <a href="/invite-network">Network</a>
+        <a href="/raffle-wheel">Raffle</a>
+      </div>
+    </div>
+    {% endif %}
+    <div class="nav-group">
+      <button class="nav-group-btn active" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Nexus Playground<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        {% if is_admin %}<a href="/card-tracker">Tracker</a>{% endif %}
+        <a href="/grading-calculator">Grading Calculator</a>
+        <a href="/catalog" class="active">Card Catalog</a>
+      </div>
+    </div>
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">&#127769;</button>
+    <a href="/logout">Log out</a>
+  </div>
+</div>
+
+<div class="main">
+  <div class="catalog-grid">
+
+    <aside class="filters">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Filters</span>
+          <button class="chk-toggle" style="margin-left:auto" onclick="clearFilters()">Reset</button>
+        </div>
+        <div class="card-body">
+          <div class="frow">
+            <label class="label" for="qSearch">Card name or number</label>
+            <input type="text" id="qSearch" placeholder="Umbreon, or 215">
+          </div>
+
+          <div class="frow">
+            <label class="label">Raw price</label>
+            <div class="price-row">
+              <input type="number" id="qMin" placeholder="Min" min="0" step="1">
+              <span>to</span>
+              <input type="number" id="qMax" placeholder="Max" min="0" step="1">
+            </div>
+            <label style="display:flex; align-items:center; gap:7px; font-size:12px; color:#888; margin-top:8px; cursor:pointer">
+              <input type="checkbox" id="qPriced" style="width:auto; height:auto; accent-color:#5865F2">
+              Only cards with a price
+            </label>
+          </div>
+
+          <div class="frow">
+            <label class="label">
+              Sets
+              <button class="chk-toggle" style="float:right" onclick="clearGroup('set')">clear</button>
+            </label>
+            <input type="text" class="filter-search" id="setFilter" placeholder="Find a set&hellip;">
+            <div class="checklist" id="setList"><div class="hint">Loading&hellip;</div></div>
+          </div>
+
+          <div class="frow">
+            <label class="label">
+              Rarity
+              <button class="chk-toggle" style="float:right" onclick="clearGroup('rarity')">clear</button>
+            </label>
+            <div class="checklist" id="rarityList"><div class="hint">Loading&hellip;</div></div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <section>
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Cards</span>
+          <span class="status" id="resultCount"></span>
+          <select id="qSort" style="width:auto; margin-left:8px">
+            <option value="price_desc">Price: high to low</option>
+            <option value="price_asc">Price: low to high</option>
+            <option value="name_asc">Name A&ndash;Z</option>
+            <option value="number_asc">Card number</option>
+            <option value="set_newest">Recently stocked</option>
+          </select>
+        </div>
+        <div class="table-wrap">
+          <table class="rows">
+            <thead>
+              <tr>
+                <th>Card</th>
+                <th>Set</th>
+                <th>Rarity</th>
+                <th class="right">Raw price</th>
+              </tr>
+            </thead>
+            <tbody id="cardRows"></tbody>
+          </table>
+        </div>
+        <div class="empty" id="emptyState" style="display:none"></div>
+        <div class="pager">
+          <span class="sub" id="pageInfo"></span>
+          <button class="btn btn-plain btn-sm" id="prevBtn" onclick="changePage(-1)">Previous</button>
+          <button class="btn btn-plain btn-sm" id="nextBtn" onclick="changePage(1)">Next</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">What's stocked</span>
+          <span class="status" id="coverage"></span>
+        </div>
+        <div class="card-body">
+          <div class="backfill" id="backfillLine" style="display:none"></div>
+          <div class="hint" style="margin-bottom:10px">
+            The newest sets are stocked automatically. Anything older lands here the
+            first time someone opens it in the
+            <a href="/grading-calculator" style="color:#5865F2">Grading Calculator</a> &mdash;
+            that lookup already covers the whole set, so stocking it costs nothing extra.
+            Sets nobody has opened yet aren't searchable here.
+          </div>
+          <div class="setlist" id="stockedSets"></div>
+          {% if is_admin %}
+          <div style="border-top:1px solid #f0f0f0; padding-top:12px; margin-top:12px">
+            <label class="label" for="stockSet">Stock a set now (admin)</label>
+            <div style="display:flex; gap:8px">
+              <select id="stockSet"><option value="">Choose a set&hellip;</option></select>
+              <button class="btn" id="stockBtn" onclick="stockSet()" style="flex-shrink:0">Stock</button>
+            </div>
+            <div class="hint" style="margin-top:6px">
+              Spends PokemonPriceTracker credits &mdash; one per card, so a full set is
+              a few hundred. Shared with the grading calculator's budget.
+            </div>
+            <div style="margin-top:10px">
+              <button class="btn btn-plain btn-sm" id="backfillBtn" onclick="runBackfill()">
+                Re-run newest-sets seed
+              </button>
+              <span class="hint" style="margin-left:6px">
+                Skips sets already stocked, so it's free to re-run.
+              </span>
+            </div>
+            <div class="warn" id="stockMsg" style="display:none"></div>
+          </div>
+          {% endif %}
+          <div class="note">
+            Prices are the ungraded ("raw") market price from PokemonPriceTracker, captured
+            when the set was last stocked &mdash; not live. A blank price means no market
+            price was reported for that card, not that it's worthless.
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script>
+const PAGE_SIZE = 50;
+let offset = 0;
+let total = 0;
+let loadTimer = null;
+let allSets = [];        // stocked sets, from /facets
+let availableSets = [];  // every set PPT knows (admin stock picker)
+
+function esc(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function money(v){
+  return '$' + Number(v).toLocaleString('en-US',
+    {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+
+// Checked values for a checkbox group, in DOM order.
+function checkedValues(group){
+  return Array.from(document.querySelectorAll(`input[data-group="${group}"]:checked`))
+    .map(el => el.value);
+}
+function clearGroup(group){
+  document.querySelectorAll(`input[data-group="${group}"]:checked`)
+    .forEach(el => { el.checked = false; });
+  resetAndLoad();
+}
+function clearFilters(){
+  ['qSearch','qMin','qMax'].forEach(id => { document.getElementById(id).value = ''; });
+  document.getElementById('qPriced').checked = false;
+  document.querySelectorAll('input[data-group]:checked').forEach(el => { el.checked = false; });
+  resetAndLoad();
+}
+
+// Any filter change starts the results over at page 1 — keeping the old offset
+// would land the user on an empty page whenever the result set shrinks.
+function resetAndLoad(){
+  offset = 0;
+  scheduleLoad();
+}
+function scheduleLoad(){
+  clearTimeout(loadTimer);
+  loadTimer = setTimeout(loadCards, 250);
+}
+
+function currentParams(){
+  const p = new URLSearchParams();
+  const search = document.getElementById('qSearch').value.trim();
+  const min = document.getElementById('qMin').value.trim();
+  const max = document.getElementById('qMax').value.trim();
+  if (search) p.set('search', search);
+  if (min !== '') p.set('min_price', min);
+  if (max !== '') p.set('max_price', max);
+  if (document.getElementById('qPriced').checked) p.set('priced_only', '1');
+  const sets = checkedValues('set');
+  const rarities = checkedValues('rarity');
+  if (sets.length) p.set('sets', sets.join(','));
+  if (rarities.length) p.set('rarities', rarities.join(','));
+  p.set('sort', document.getElementById('qSort').value);
+  p.set('limit', PAGE_SIZE);
+  p.set('offset', offset);
+  return p;
+}
+
+async function loadCards(){
+  const countEl = document.getElementById('resultCount');
+  countEl.textContent = 'Loading…';
+  let d;
+  try {
+    const resp = await fetch('/api/catalog/cards?' + currentParams());
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    d = await resp.json();
+  } catch(e){
+    countEl.textContent = 'Couldn’t load cards.';
+    return;
+  }
+  total = d.total;
+  const tbody = document.getElementById('cardRows');
+  const empty = document.getElementById('emptyState');
+
+  tbody.innerHTML = d.cards.map(c => `<tr>
+    <td><span class="cname">${esc(c.name)}</span>${c.card_number ? `<span class="cnum">${esc(c.card_number)}</span>` : ''}</td>
+    <td class="cset">${esc(c.set_name || c.set_id)}</td>
+    <td>${c.rarity ? `<span class="rarity-chip">${esc(c.rarity)}</span>` : ''}</td>
+    <td class="right">${c.raw_price == null
+        ? '<span class="price-none">no price</span>'
+        : `<span class="price">${money(c.raw_price)}</span>`}</td>
+  </tr>`).join('');
+
+  if (!d.cards.length){
+    empty.style.display = 'block';
+    empty.textContent = total === 0 && !document.querySelector('input[data-group]:checked')
+        && !document.getElementById('qSearch').value.trim()
+      ? 'Nothing stocked yet. Open a set in the Grading Calculator and it’ll show up here.'
+      : 'No cards match those filters.';
+  } else {
+    empty.style.display = 'none';
+  }
+
+  countEl.textContent = total.toLocaleString() + (total === 1 ? ' card' : ' cards');
+  const from = total ? offset + 1 : 0;
+  const to = Math.min(offset + PAGE_SIZE, total);
+  document.getElementById('pageInfo').textContent =
+    total ? `Showing ${from.toLocaleString()}–${to.toLocaleString()} of ${total.toLocaleString()}` : '';
+  document.getElementById('prevBtn').disabled = offset <= 0;
+  document.getElementById('nextBtn').disabled = offset + PAGE_SIZE >= total;
+}
+
+function changePage(dir){
+  const next = offset + dir * PAGE_SIZE;
+  if (next < 0 || next >= total) return;
+  offset = next;
+  loadCards();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+async function loadFacets(){
+  let d;
+  try {
+    const resp = await fetch('/api/catalog/facets');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    d = await resp.json();
+  } catch(e){
+    document.getElementById('setList').innerHTML = '<div class="hint">Couldn’t load filters.</div>';
+    return;
+  }
+  allSets = d.sets || [];
+  availableSets = d.available_sets || [];
+
+  document.getElementById('setList').innerHTML = allSets.length
+    ? allSets.map(s => `<label>
+        <input type="checkbox" data-group="set" value="${esc(s.set_id)}" onchange="resetAndLoad()">
+        <span class="ck-name">${esc(s.set_name)}</span>
+        <span class="ck-count">${s.cards}</span>
+      </label>`).join('')
+    : '<div class="hint">No sets stocked yet.</div>';
+
+  document.getElementById('rarityList').innerHTML = (d.rarities || []).length
+    ? d.rarities.map(r => `<label>
+        <input type="checkbox" data-group="rarity" value="${esc(r.rarity)}" onchange="resetAndLoad()">
+        <span class="ck-name">${esc(r.rarity)}</span>
+        <span class="ck-count">${r.count}</span>
+      </label>`).join('')
+    : '<div class="hint">No rarities yet.</div>';
+
+  renderBackfill(d.backfill || {});
+
+  document.getElementById('coverage').textContent =
+    `${(d.total_cards || 0).toLocaleString()} cards · ${allSets.length} set(s) · `
+    + `${(d.total_priced || 0).toLocaleString()} priced`;
+
+  document.getElementById('stockedSets').innerHTML = allSets.length
+    ? allSets.map(s => `<div class="setrow">
+        <span class="sname">${esc(s.set_name)}</span>
+        <span class="smeta">${s.priced}/${s.cards} priced</span>
+      </div>`).join('')
+    : '<div class="hint">Nothing stocked yet.</div>';
+
+  // Admin picker: only sets that aren't stocked yet, so it can't be used to
+  // re-spend credits on something already cached by accident.
+  const picker = document.getElementById('stockSet');
+  if (picker){
+    const have = new Set(allSets.map(s => s.set_id));
+    const missing = availableSets.filter(s => !have.has(s.id));
+    picker.innerHTML = '<option value="">Choose a set…</option>' + missing.map(s =>
+      `<option value="${esc(s.id)}">${esc(s.name)}${s.year ? ' (' + esc(s.year) + ')' : ''}</option>`).join('');
+    if (!d.can_stock){
+      picker.disabled = true;
+      document.getElementById('stockBtn').disabled = true;
+      showStockMsg('PokemonPriceTracker isn’t configured, so sets can’t be stocked.');
+    }
+  }
+}
+
+// Seeding progress. While it's running the page polls, so the set list and
+// counts fill in live instead of the catalog looking permanently half-empty.
+let backfillPoll = null;
+function renderBackfill(bf){
+  const el = document.getElementById('backfillLine');
+  clearTimeout(backfillPoll);
+
+  if (bf.running){
+    const of = bf.planned ? ` of ${bf.planned}` : '';
+    el.className = 'backfill';
+    el.textContent = `Stocking the newest sets — ${bf.done}${of} done`
+      + (bf.current ? ` (currently ${bf.current})` : '')
+      + `. ${(bf.cards || 0).toLocaleString()} cards so far.`;
+    el.style.display = 'block';
+    // Re-reads facets AND the card list, so results appear as sets land.
+    backfillPoll = setTimeout(() => { loadFacets(); loadCards(); }, 5000);
+    return;
+  }
+
+  if (bf.error){
+    el.className = 'backfill err';
+    el.textContent = bf.error;
+    el.style.display = 'block';
+    return;
+  }
+  // Only worth reporting a finished run while the page was open to see it —
+  // a stale "done" banner on every later visit is noise.
+  if (bf.finished_at && bf.cards){
+    el.className = 'backfill done';
+    el.textContent = bf.last_result || 'Seeding finished.';
+    el.style.display = 'block';
+    return;
+  }
+  el.style.display = 'none';
+}
+
+async function runBackfill(){
+  const btn = document.getElementById('backfillBtn');
+  btn.disabled = true;
+  showStockMsg('Starting the newest-sets seed… this runs in the background.');
+  try {
+    const resp = await fetch('/api/catalog/backfill', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({})
+    });
+    const d = await resp.json();
+    if (!resp.ok){
+      showStockMsg(d.detail || 'Couldn’t start the seed.');
+    } else {
+      showStockMsg(`Seeding the newest ${d.sets} set(s) — progress shows above.`);
+      loadFacets();
+    }
+  } catch(e){
+    showStockMsg('Network error — please try again.');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function showStockMsg(msg){
+  const el = document.getElementById('stockMsg');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+async function stockSet(){
+  const picker = document.getElementById('stockSet');
+  const btn = document.getElementById('stockBtn');
+  const setId = picker.value;
+  if (!setId){ showStockMsg('Pick a set first.'); return; }
+  btn.disabled = true;
+  showStockMsg('Stocking ' + picker.options[picker.selectedIndex].text + '… this can take a moment.');
+  try {
+    const resp = await fetch('/api/catalog/stock', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ set_id: setId })
+    });
+    const d = await resp.json();
+    if (!resp.ok){
+      showStockMsg(d.detail || 'Couldn’t stock that set.');
+    } else {
+      showStockMsg(`Stocked ${d.cards} card(s), ${d.priced} with a price.`);
+      await loadFacets();
+      resetAndLoad();
+    }
+  } catch(e){
+    showStockMsg('Network error — please try again.');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Filter the set checklist itself — long lists are unusable otherwise. Hides
+// rows only, so a checked set stays checked (and still filtered on) even when
+// the search text hides it.
+document.getElementById('setFilter').addEventListener('input', function(){
+  const q = this.value.trim().toLowerCase();
+  document.querySelectorAll('#setList label').forEach(el => {
+    const name = (el.querySelector('.ck-name') || {}).textContent || '';
+    el.style.display = (!q || name.toLowerCase().includes(q)) ? '' : 'none';
+  });
+});
+
+['qSearch','qMin','qMax'].forEach(id =>
+  document.getElementById(id).addEventListener('input', resetAndLoad));
+document.getElementById('qPriced').addEventListener('change', resetAndLoad);
+document.getElementById('qSort').addEventListener('change', resetAndLoad);
+
+loadFacets();
+loadCards();
+
+(function(){
+  var btn = document.getElementById('themeToggle');
+  function upd(){
+    if (!btn) return;
+    var d = document.documentElement.getAttribute('data-theme') === 'dark';
+    btn.textContent = d ? '☀️' : '🌙';
+    btn.title = d ? 'Light mode' : 'Dark mode';
+  }
+  window.toggleTheme = function(){
+    var d = document.documentElement.getAttribute('data-theme') === 'dark';
+    var n = d ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', n);
+    localStorage.setItem('theme', n);
+    upd();
+  };
+  upd();
+})();
+
+function closeNavGroups(){
+  document.querySelectorAll('.nav-group.open').forEach(function(g){
+    g.classList.remove('open');
+    var b = g.querySelector('.nav-group-btn');
+    if (b) b.setAttribute('aria-expanded', 'false');
+  });
+}
+function toggleNavGroup(ev){
+  ev.preventDefault();
+  ev.stopPropagation();
+  var btn = ev.currentTarget, grp = btn.parentElement, wasOpen = grp.classList.contains('open');
+  closeNavGroups();
+  if (!wasOpen){ grp.classList.add('open'); btn.setAttribute('aria-expanded', 'true'); }
+}
+document.addEventListener('click', closeNavGroups);
+document.addEventListener('keydown', function(ev){ if (ev.key === 'Escape') closeNavGroups(); });
+</script>
+</body>
+</html>

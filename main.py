@@ -34,6 +34,7 @@ import price_sources
 import grading_roi
 import grading_tiers
 import grading_sets
+import catalog
 
 load_dotenv()
 
@@ -135,11 +136,19 @@ async def lifespan(app: FastAPI):
         await ensure_card_tracker_schema(app.state.db)
     except Exception:
         logger.exception("Card tracker schema ensure failed — /card-tracker may be unavailable")
+    try:
+        await catalog.ensure_catalog_schema(app.state.db)
+    except Exception:
+        logger.exception("Catalog schema ensure failed — /catalog may be unavailable")
     scheduler_task = asyncio.create_task(_card_tracker_daily_scheduler(app))
+    # Background, never awaited: seeding the catalog must not delay startup or
+    # take the app down if PPT is unreachable.
+    catalog_backfill_task = asyncio.create_task(_catalog_backfill_startup(app))
     try:
         yield
     finally:
         scheduler_task.cancel()
+        catalog_backfill_task.cancel()
         await app.state.db.close()
 
 
@@ -1634,6 +1643,15 @@ async def api_grading_set_cards(request: Request, game: str, set_id: str,
                 cards = await price_sources.fetch_ppt_set_cards(
                     client, set_id, language=language)
             if cards:
+                # Free catalog fill. This response was billed per card and
+                # already carries rarity and raw price for the whole set, so
+                # stocking /catalog from it costs nothing extra. Wrapped so a
+                # catalog write can never break the calculator's picker.
+                try:
+                    await catalog.upsert_set_cards(request.app.state.db, "pokemon",
+                                                   language, set_id, cards)
+                except Exception:
+                    logger.exception("Catalog: couldn't cache set %r from the picker", set_id)
                 return JSONResponse({"set_id": set_id, "source": "pokemonpricetracker",
                                      "language": language, "cards": cards},
                                     headers={"Cache-Control": "no-store"})
@@ -1661,6 +1679,316 @@ async def api_grading_set_cards(request: Request, game: str, set_id: str,
     return JSONResponse({"set_id": set_id, "source": "catalog",
                          "language": "english",
                          "cards": _grading_set_cache[cache_key]},
+                        headers={"Cache-Control": "no-store"})
+
+
+# ---- Card catalog ----
+# Browse/filter every card the dashboard has seen, by set, rarity and raw
+# price. Reads come from the local `catalog_cards` cache, never from a vendor:
+# "every holo under $50 across all sets" spans ~36,000 cards and PPT bills per
+# card returned, so that question is only affordable against local rows.
+#
+# The cache fills two ways, neither of which costs extra credits:
+#   1. Lazily — every grading-calculator set-cards call already pays for a
+#      whole set's rows (including prices), so the result is written here on
+#      the way past. Browsing the calculator stocks the catalog for free.
+#   2. Admin "stock this set" below, for seeding popular sets deliberately.
+# A member browsing the catalog NEVER triggers a vendor call.
+#
+# Pokemon-only for now: One Piece's catalog source (optcgapi) returns rarity
+# but no prices at all, so OP cards would sit in a price-filtered table with
+# nothing to filter on. See MEMORY.md.
+CATALOG_GAME = "pokemon"
+
+
+def _csv_list(raw: str, *, max_items: int = 40, max_len: int = 120) -> list:
+    """Split a comma-separated filter param, bounded in count and length so a
+    hand-crafted query can't build an enormous ANY() array."""
+    out = []
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        out.append(part[:max_len])
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _opt_price(raw) -> float | None:
+    """A price bound, or None when absent/unparseable. Negatives clamp to 0."""
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value):
+        return None
+    return max(0.0, value)
+
+
+async def _catalog_stock_set(pool, set_id: str, language: str) -> dict:
+    """Fetch one set from PPT and write it into the catalog cache.
+
+    Spends credits (1 per card) unless price_sources' 24h set-cards cache
+    covers it. Callers must be admin-gated or rate-limited accordingly.
+    """
+    if not price_sources.pokemonpricetracker_available():
+        raise HTTPException(status_code=503,
+                            detail="PokemonPriceTracker isn't configured, so sets can't be stocked.")
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        cards = await price_sources.fetch_ppt_set_cards(client, set_id, language=language)
+    if not cards:
+        return {"cards": 0, "priced": 0}
+    return await catalog.upsert_set_cards(pool, CATALOG_GAME, language, set_id, cards)
+
+
+# ---- Catalog backfill ----
+# Seeds the catalog with the newest N sets so the page isn't empty on day one.
+# Everything older fills in lazily as members open sets in the grading
+# calculator.
+#
+# THE WINDOW IS "THE NEWEST N SETS", NOT "THE NEXT N UNSTOCKED SETS". Railway
+# redeploys on every push and the in-process PPT cache dies with the process,
+# so a rolling "next N unstocked" would re-spend the whole budget on every
+# deploy, forever. Anchoring to the newest N and skipping what's already in
+# `catalog_cards` (which survives deploys) makes the first boot pay once and
+# every later boot a no-op — and a newly released set enters the window on its
+# own and gets stocked without anyone doing anything.
+CATALOG_BACKFILL_SETS = int(os.getenv("CATALOG_BACKFILL_SETS", "20"))
+# Spread the calls out — this is a background seed, not something anyone is
+# waiting on, and it shares PPT's budget with live member lookups.
+CATALOG_BACKFILL_DELAY_S = float(os.getenv("CATALOG_BACKFILL_DELAY_S", "2"))
+# Let the app finish booting and start serving before spending any quota.
+CATALOG_BACKFILL_START_DELAY_S = float(os.getenv("CATALOG_BACKFILL_START_DELAY_S", "15"))
+# fetch_ppt_set_cards returns [] for a credit/rate limit exactly as it does for
+# a genuinely empty set, so consecutive empties are the only signal available
+# that the budget ran out. Stop rather than grind through 20 futile sets.
+CATALOG_BACKFILL_MAX_EMPTY = 3
+
+
+def _catalog_backfill_state(app) -> dict:
+    st = getattr(app.state, "catalog_backfill", None)
+    if st is None:
+        st = {"running": False, "started_at": None, "finished_at": None,
+              "planned": 0, "done": 0, "cards": 0, "current": None,
+              "error": None, "last_result": None}
+        app.state.catalog_backfill = st
+    return st
+
+
+async def _run_catalog_backfill(app, limit: int | None = None) -> None:
+    """Stock the newest `limit` sets that aren't cached yet. Never raises."""
+    st = _catalog_backfill_state(app)
+    if st["running"]:
+        logger.info("Catalog backfill: already running — skipping this trigger")
+        return
+    limit = CATALOG_BACKFILL_SETS if limit is None else limit
+    if limit <= 0:
+        logger.info("Catalog backfill: disabled (CATALOG_BACKFILL_SETS=%s)", limit)
+        return
+    if not price_sources.pokemonpricetracker_available():
+        logger.info("Catalog backfill: PokemonPriceTracker not configured — skipping")
+        return
+
+    st.update(running=True, started_at=datetime.utcnow().isoformat() + "Z",
+              finished_at=None, planned=0, done=0, cards=0, current=None, error=None)
+    pool = app.state.db
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            sets = await price_sources.fetch_ppt_sets(client, language="english")
+        if not sets:
+            st["error"] = "PokemonPriceTracker returned no sets."
+            logger.warning("Catalog backfill: no sets from PPT — nothing to do")
+            return
+
+        have = await catalog.cached_set_ids(pool, CATALOG_GAME, "english")
+        todo = catalog.select_backfill_window(sets, have, limit)
+        st["planned"] = len(todo)
+        logger.info("Catalog backfill: newest %d set(s), %d already stocked, "
+                    "%d to fetch", min(limit, len(sets)),
+                    min(limit, len(sets)) - len(todo), len(todo))
+        if not todo:
+            st["last_result"] = "Already stocked — nothing to fetch."
+            return
+
+        empty_streak = 0
+        for entry in todo:
+            st["current"] = entry.get("name") or entry["id"]
+            try:
+                stats = await _catalog_stock_set(pool, entry["id"], "english")
+            except Exception:
+                logger.exception("Catalog backfill: %r failed", entry["id"])
+                stats = {"cards": 0, "priced": 0}
+            st["done"] += 1
+            if stats["cards"]:
+                empty_streak = 0
+                st["cards"] += stats["cards"]
+            else:
+                empty_streak += 1
+                if empty_streak >= CATALOG_BACKFILL_MAX_EMPTY:
+                    st["error"] = (f"Stopped after {empty_streak} sets returned nothing — "
+                                   "PokemonPriceTracker credits may be exhausted.")
+                    logger.warning("Catalog backfill: %s", st["error"])
+                    break
+            await asyncio.sleep(CATALOG_BACKFILL_DELAY_S)
+
+        st["last_result"] = f"Stocked {st['cards']} card(s) across {st['done']} set(s)."
+        logger.info("Catalog backfill: done — %s", st["last_result"])
+    except Exception:
+        logger.exception("Catalog backfill failed")
+        st["error"] = "Backfill failed — see logs."
+    finally:
+        st.update(running=False, current=None,
+                  finished_at=datetime.utcnow().isoformat() + "Z")
+
+
+async def _catalog_backfill_startup(app) -> None:
+    """Startup seed. Idempotent across deploys: once the newest N sets are in
+    `catalog_cards`, every later boot finds nothing to do and spends nothing."""
+    try:
+        await asyncio.sleep(CATALOG_BACKFILL_START_DELAY_S)
+        await _run_catalog_backfill(app)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("Catalog backfill startup task failed")
+
+
+@app.get("/catalog", response_class=HTMLResponse)
+async def catalog_page(request: Request):
+    user = request.session.get("user")
+    if not user:
+        return RedirectResponse("/login")
+    if is_demo(request):
+        return RedirectResponse("/sample")
+    if not await terms_current(request, user):
+        return RedirectResponse("/terms")
+    is_admin = int(user["id"]) in ADMIN_USER_IDS
+    return templates.TemplateResponse("catalog.html", {
+        "request": request,
+        "username": user["username"],
+        "avatar": user.get("avatar"),
+        "user_id": user["id"],
+        "is_admin": is_admin,
+        "is_mod": request.session.get("mod", False),
+    })
+
+
+@app.get("/api/catalog/cards")
+@limiter.limit("120/minute")
+async def api_catalog_cards(request: Request, sets: str = "", rarities: str = "",
+                            min_price: str = "", max_price: str = "",
+                            search: str = "", priced_only: str = "",
+                            sort: str = catalog.DEFAULT_SORT,
+                            limit: int = 50, offset: int = 0,
+                            language: str = "english",
+                            user=Depends(get_current_user)):
+    """Filtered, paginated catalog rows. Pure DB read — spends no vendor quota,
+    which is why it carries a generous rate limit."""
+    result = await catalog.query_cards(
+        request.app.state.db,
+        game=CATALOG_GAME,
+        language=price_sources.ppt_language(language),
+        set_ids=_csv_list(sets),
+        rarities=_csv_list(rarities),
+        min_price=_opt_price(min_price),
+        max_price=_opt_price(max_price),
+        search=(search or "").strip()[:80],
+        priced_only=str(priced_only).lower() in ("1", "true", "yes"),
+        # Unknown sort keys fall back to the default inside query_cards; the
+        # ORDER BY clause itself is never built from user input.
+        sort=sort,
+        limit=limit,
+        offset=offset,
+    )
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/catalog/facets")
+@limiter.limit("60/minute")
+async def api_catalog_facets(request: Request, language: str = "english",
+                             user=Depends(get_current_user)):
+    """Filter options plus coverage.
+
+    `sets` is what's stocked; `available_sets` is PPT's full set list, so the
+    UI can show which sets have no data yet instead of pretending the catalog
+    is complete. The set list is cached for a day in price_sources.
+    """
+    language = price_sources.ppt_language(language)
+    data = await catalog.facets(request.app.state.db, CATALOG_GAME, language)
+
+    available = []
+    if price_sources.pokemonpricetracker_available():
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                available = await price_sources.fetch_ppt_sets(client, language=language)
+        except Exception:
+            logger.exception("Catalog: PPT set list failed — showing stocked sets only")
+    data["available_sets"] = available
+    data["language"] = language
+    data["can_stock"] = price_sources.pokemonpricetracker_available()
+    # Lets the page show seeding progress instead of looking broken while the
+    # startup backfill is still working through the newest sets.
+    data["backfill"] = dict(_catalog_backfill_state(request.app))
+    data["backfill"]["window"] = CATALOG_BACKFILL_SETS
+    return JSONResponse(data, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/catalog/stock")
+@limiter.limit("20/hour")
+async def api_catalog_stock(request: Request, user=Depends(require_admin)):
+    """Admin: pull a set into the catalog cache.
+
+    Admin-only because it spends PokemonPriceTracker credits (1 per card, so a
+    large set is ~400), and the budget is shared with the grading calculator.
+    """
+    body = await request.json()
+    set_id = str(body.get("set_id") or "").strip()
+    if not set_id or len(set_id) > 120:
+        raise HTTPException(status_code=400, detail="A set is required")
+    language = price_sources.ppt_language(body.get("language"))
+    try:
+        stats = await _catalog_stock_set(request.app.state.db, set_id, language)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Catalog stock failed for %r", set_id)
+        raise HTTPException(status_code=502, detail="Couldn't stock that set")
+    if not stats["cards"]:
+        raise HTTPException(status_code=404,
+                            detail=f"PokemonPriceTracker returned no cards for {set_id}")
+    return JSONResponse({"set_id": set_id, "language": language, **stats},
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/catalog/backfill")
+@limiter.limit("6/hour")
+async def api_catalog_backfill(request: Request, user=Depends(require_admin)):
+    """Admin: re-run the newest-N seed by hand.
+
+    Runs in the background and returns immediately — stocking 20 sets takes
+    minutes. Poll /api/catalog/facets for progress. Sets already cached are
+    skipped, so re-running costs nothing.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    limit = body.get("sets")
+    try:
+        limit = CATALOG_BACKFILL_SETS if limit is None else int(limit)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="'sets' must be a number")
+    # Bounded so a typo can't queue up the entire ~180-set catalog.
+    limit = max(0, min(limit, 50))
+
+    st = _catalog_backfill_state(request.app)
+    if st["running"]:
+        raise HTTPException(status_code=409, detail="A backfill is already running.")
+    asyncio.create_task(_run_catalog_backfill(request.app, limit=limit))
+    return JSONResponse({"started": True, "sets": limit},
                         headers={"Cache-Control": "no-store"})
 
 

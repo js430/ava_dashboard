@@ -233,6 +233,27 @@ def _ppt_grade_price(entry: dict):
     return None, None, None
 
 
+def _ppt_raw_price(row: dict):
+    """Ungraded market price off a PPT card row, or None.
+
+    `prices.market` is PPT's raw/ungraded figure, with `prices.low` as the
+    fallback — the same pair `fetch_pokemonpricetracker` reads for its "raw"
+    quote. Pulled out as a helper because EVERY /cards row carries this block,
+    including the whole-set responses, so the catalog gets raw prices out of
+    calls it was already paying for. (fetch_pokemonpricetracker still has this
+    inline; left alone deliberately to keep this change additive.)
+    """
+    prices = (row or {}).get("prices") or {}
+    for key in ("market", "low"):
+        try:
+            value = float(prices.get(key))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return round(value, 2)
+    return None
+
+
 def pokemonpricetracker_available() -> bool:
     return bool(os.getenv("POKEMONPRICETRACKER_API_KEY"))
 
@@ -399,6 +420,11 @@ async def fetch_ppt_set_cards(client: httpx.AsyncClient, set_name: str,
             "variant": str(_first(row, "rarity", "variant") or ""),
             "tcgplayer_id": str(_first(row, "tcgPlayerId", "tcgplayerId", "id") or ""),
             "set_name": str(_first(row, "setName", "set_name") or set_name),
+            # Already in this payload — the call is billed per card either way,
+            # so carrying it costs nothing and lets the catalog cache raw
+            # prices for a whole set for free. The grading calculator's picker
+            # ignores this key.
+            "raw_price": _ppt_raw_price(row),
         })
 
     def _sort_key(card):

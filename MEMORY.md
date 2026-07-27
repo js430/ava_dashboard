@@ -3,6 +3,96 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-07-26 — Card catalog: local cache filled free off the grading calculator
+
+**Decided:** New `/catalog` page — browse/filter every card the dashboard has
+seen by set, rarity and raw market price. Backed by a new dashboard-owned
+table `catalog_cards` (`catalog.py`, `CREATE TABLE IF NOT EXISTS` at startup,
+same convention as the card tracker). Reads never touch a vendor.
+
+**The finding that shaped the whole design:** PPT's `/cards` response already
+carries `prices.market` and `rarity` for **every** card, and
+`price_sources.fetch_ppt_set_cards` was already paying for that call (billed
+per card) to drive the grading calculator's picker — then discarding the
+price. `fetch_pokemonpricetracker` reads raw from exactly that field. So a
+whole set's raw prices cost **zero extra credits**; they were being thrown
+away. `_ppt_raw_price()` was added and the price threaded onto the existing
+card dicts (additive — the picker ignores the new key).
+
+**Filling is lazy, never member-triggered.** `/api/grading-calculator/set-cards`
+upserts its result into `catalog_cards` on the way past, so browsing the
+calculator stocks the catalog for free. Plus an admin-only `POST
+/api/catalog/stock` for seeding sets deliberately. **A member browsing
+/catalog can never cause a vendor call** — `/api/catalog/cards` is a pure DB
+read. That's the point: "every holo under $50 across all sets" spans ~36,000
+cards, and at 1 credit/card a full upfront backfill is unaffordable. The
+catalog stocks itself from real usage instead.
+
+**Seeded with the newest 20 sets** (`CATALOG_BACKFILL_SETS`, env-tunable, 0
+disables) by a background task at startup, so the page isn't empty on day one.
+Everything older arrives lazily.
+
+**The seed slices BEFORE filtering out already-stocked sets, and that order is
+load-bearing.** `catalog.select_backfill_window()` takes the newest N *then*
+drops what's cached. The obvious alternative — "the next N sets nobody has
+stocked" — walks further back through the catalog on every call, and since
+Railway redeploys on every push and the in-process PPT cache dies with the
+process, that would re-spend ~4,000 credits on **every deploy, forever**.
+Slicing first pins a fixed window: first boot pays once, every later boot is a
+no-op, and a newly released set enters the window on its own. This is covered
+by tests (the redeploy no-op, the new-release case, and that a set pushed out
+of the bottom of the window is never re-fetched) — if you change that
+function, keep those properties.
+
+**The seed stops after 3 consecutive empty sets.** `fetch_ppt_set_cards`
+returns `[]` for a credit/rate limit exactly as it does for a genuinely empty
+set, so consecutive empties are the only available signal that the budget ran
+out. Better to stop than grind through 20 futile sets. If PPT ever
+distinguishes these, prefer the real signal.
+
+**Rejected:** a full nightly sync of all ~180 sets (blows the credit budget —
+verify the actual quota in the `X-RateLimit-Daily-Remaining` log line before
+anyone revisits this); on-demand fetching from the catalog page (a member
+typing in a price filter would spend credits); client-side filtering (can't
+answer cross-set questions without holding every set in the browser).
+
+**Pokémon-only on purpose.** One Piece's catalog source (optcgapi) returns
+rarity but **no prices at all**, so OP cards would sit in a price-filtered
+table with nothing to filter on. `CATALOG_GAME = "pokemon"` in `main.py`; the
+table's `game` CHECK still permits `one_piece` so adding it later is a code
+change, not a migration.
+
+**Two schema details that will look wrong if you skim them:**
+- `rarity` is part of the unique index. One Piece prints alt-art/manga
+  variants under the *same name and number* — without rarity in the key those
+  collapse into one row and a variant silently vanishes. Costs nothing for
+  Pokémon; correct for when OP is wired up.
+- A refresh takes the new response as truth: a card that no longer reports a
+  price has its cached price **cleared**, not left to look current.
+  `priced_at` is set only when a price is actually stored, so it always
+  describes the number next to it.
+
+**Freshness is honest, not live.** Prices are captured when a set was last
+stocked. The page says so, and a blank price renders as "no price", never
+`$0` — those mean different things and conflating them would misprice a card.
+
+**Security:** `ORDER BY` resolves through the `SORT_COLUMNS` allowlist
+(unknown keys fall back to the default) — same rule as the raffle wheel's
+`_pick_col`. Everything else is parameterized, including ILIKE patterns,
+whose `%`/`_` are escaped so typed text can't become a wildcard. Page and
+read APIs are member-gated; `/api/catalog/stock` is `require_admin` because
+it spends credits.
+
+**Nav:** this is an **11th** template carrying the copy-pasted nav dropdown
+(see the 2026-07-23 entry). The `Card Catalog` link was added to all 10
+existing templates in the same change, per that entry's rule. Extracting a
+shared base template is still the real fix and still wasn't attempted.
+
+**Cross-repo:** additive only — one new dashboard-owned table, no bot-owned
+table touched. Log in data-system.md's ownership table.
+
+---
+
 ## 2026-07-23 — Nav: "Admin Tools" dropdown, click-to-open, duplicated per template
 
 **Decided:** The four admin-only nav links collapse into one `Admin Tools`
