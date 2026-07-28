@@ -77,9 +77,14 @@
   .picker-list .ck-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .picker-list .ck-count { margin-left: auto; font-size: 11px; color: #bbb; flex-shrink: 0; }
   .picker-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid #f0f0f0; margin-top: 6px; padding-top: 8px; }
-  /* Sticky so the era stays identifiable while scrolling a long set list. */
-  .picker-group { position: sticky; top: 0; z-index: 1; background: #fff; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: #9a94b8; padding: 7px 4px 3px; border-bottom: 1px solid #f0f0f0; }
-  .picker-group:first-child { padding-top: 2px; }
+  /* Sticky so the era stays identifiable while scrolling a long set list.
+     It's a label with a checkbox: ticking it selects the whole era. */
+  .picker-group { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; background: #fff; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: #8b85ad; padding: 7px 4px 5px; border-bottom: 1px solid #f0f0f0; cursor: pointer; }
+  .picker-group:hover { color: #5865F2; }
+  .picker-group input[type=checkbox] { width: auto; height: auto; margin: 0; accent-color: #5865F2; flex-shrink: 0; cursor: pointer; }
+  .picker-group .ck-count { font-weight: 400; letter-spacing: 0; }
+  /* Sets sit slightly inset so the era header reads as their parent. */
+  .picker-list label:not(.picker-group) { padding-left: 12px; }
 
   table.rows { border-collapse: collapse; width: 100%; font-size: 12px; }
   table.rows th { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: .05em; padding: 7px 10px; text-align: left; border-bottom: 1px solid #e4e4e7; white-space: nowrap; }
@@ -377,6 +382,10 @@ let availableSets = [];  // every set PPT knows (admin stock picker)
 // place (card_eras.py) rather than being mirrored here.
 let eraOrder = [];
 let eraLabels = {};
+// era key -> the option rows currently rendered under it. Rebuilt on every
+// picker render; toggleEra and syncEraBoxes both work from this so they can
+// never disagree with what's on screen.
+let visibleByEra = new Map();
 
 function esc(s){
   return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
@@ -520,6 +529,10 @@ function renderPickerList(filter){
       if (!buckets.has(e)) buckets.set(e, []);
       buckets.get(e).push(o);
     });
+    // Kept for toggleEra: it acts on what's CURRENTLY VISIBLE, so ticking an
+    // era while a search is active selects the matching sets, not the whole
+    // era invisibly.
+    visibleByEra = buckets;
     const order = eraOrder.length ? eraOrder : [...buckets.keys()];
     const seen = new Set();
     let html = '';
@@ -527,16 +540,21 @@ function renderPickerList(filter){
       const rows = buckets.get(e);
       if (!rows || seen.has(e)) return;
       seen.add(e);
-      html += `<div class="picker-group">${esc(eraLabels[e] || e)}</div>`
-            + rows.map(o => optionRow(key, o)).join('');
+      html += `<label class="picker-group">
+          <input type="checkbox" data-era="${esc(e)}" onchange="toggleEra('${esc(e)}', this.checked)">
+          <span class="ck-name">${esc(eraLabels[e] || e)}</span>
+          <span class="ck-count">${rows.length}</span>
+        </label>` + rows.map(o => optionRow(key, o)).join('');
     };
     order.forEach(emit);
     // Anything the server sent with an era the order list doesn't cover still
     // gets rendered rather than silently vanishing from the filter.
     [...buckets.keys()].forEach(emit);
     list.innerHTML = html;
+    syncEraBoxes();
     return;
   }
+  visibleByEra = new Map();
 
   list.innerHTML = opts.map(o => optionRow(key, o)).join('');
 }
@@ -547,7 +565,36 @@ function togglePick(key, el){
   if (el.checked) selected[key].add(el.value);
   else selected[key].delete(el.value);
   updatePickerLabel(key);
+  if (key === 'set') syncEraBoxes();
   resetAndLoad();
+}
+
+// Ticking an era selects every set in it. Acts on the CURRENTLY VISIBLE sets
+// so it agrees with what's on screen during a search — selecting sets the
+// user can't see would be a filter they can't explain.
+function toggleEra(era, checked){
+  const rows = visibleByEra.get(era) || [];
+  rows.forEach(o => checked ? selected.set.add(o.value) : selected.set.delete(o.value));
+  // Update the child boxes in place rather than re-rendering: a re-render
+  // resets the list's scroll position out from under the cursor.
+  document.querySelectorAll('#pickerList input[type=checkbox]').forEach(el => {
+    if (!el.dataset.era) el.checked = selected.set.has(el.value);
+  });
+  updatePickerLabel('set');
+  syncEraBoxes();
+  resetAndLoad();
+}
+
+// An era box is checked when all of its visible sets are, indeterminate when
+// only some are. `indeterminate` can't be set from markup, so it's applied
+// after every render.
+function syncEraBoxes(){
+  document.querySelectorAll('#pickerList input[data-era]').forEach(box => {
+    const rows = visibleByEra.get(box.dataset.era) || [];
+    const n = rows.filter(o => selected.set.has(o.value)).length;
+    box.checked = rows.length > 0 && n === rows.length;
+    box.indeterminate = n > 0 && n < rows.length;
+  });
 }
 
 function clearPicker(){

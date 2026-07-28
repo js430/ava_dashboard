@@ -4,16 +4,23 @@ Source: TCGplayer, "Every Pokémon TCG Set in Order (Newest to Oldest)"
 (published 2026-06-12), read 2026-07-28. Covers all 128 English expansions
 plus the promotional and miscellaneous groups.
 
+Promos are a STANDALONE group, deliberately. "SWSH Black Star Promos" sits
+with the other promos rather than inside Sword & Shield — it isn't a
+main-series expansion, and letting the series name in its title pull it into
+that series would put a promo set among the boosters.
+
 ADDING A NEW SET
 ----------------
-Usually you don't have to. Sets are classified in three passes, and the first
-two handle almost everything automatically:
+Usually you don't have to. Sets are classified in four passes, and the first
+three handle almost everything automatically:
 
+  0. Anything whose name says "promo" -> the Promos group, before any other
+     rule gets a chance to claim it.
   1. An explicit name in SET_ERAS below.
   2. An era PREFIX on the name — PokemonPriceTracker labels its sets like
      "SWSH: Crown Zenith" and "ME: Ascended Heroes", so a set released next
      year lands in the right era without this file being touched.
-  3. A keyword rule for the promo / McDonald's / POP / Trainer Kit groups.
+  3. A keyword rule for the McDonald's / POP / Trainer Kit groups.
 
 Anything still unmatched falls into "Other" rather than being guessed at — a
 set in the wrong era is worse than one in an obvious catch-all. If a new set
@@ -74,7 +81,7 @@ _ERA_SETS = {
     "mega_evolution": [
         "Delta Reign", "30th Celebration", "Pitch Black", "Chaos Rising",
         "Perfect Order", "Ascended Heroes", "Phantasmal Flames", "Mega Evolution",
-        "Mega Evolution Promos", "Mega Evolution Energies",
+        "Mega Evolution Energies",
     ],
     "scarlet_violet": [
         "White Flare", "Black Bolt", "Destined Rivals", "Journey Together",
@@ -82,7 +89,6 @@ _ERA_SETS = {
         "Twilight Masquerade", "Temporal Forces", "Paldean Fates", "Paradox Rift",
         "Scarlet & Violet—151", "Scarlet & Violet 151", "151",
         "Obsidian Flames", "Paldea Evolved", "Scarlet & Violet",
-        "Scarlet & Violet Promos", "Scarlet & Violet Black Star Promos",
         "Scarlet & Violet Energies",
     ],
     "sword_shield": [
@@ -94,52 +100,47 @@ _ERA_SETS = {
         "Celebrations", "Celebrations: Classic Collection", "Evolving Skies",
         "Chilling Reign", "Battle Styles", "Shining Fates", "Shining Fates Shiny Vault",
         "Vivid Voltage", "Champion's Path", "Darkness Ablaze", "Rebel Clash",
-        "Sword & Shield", "Sword & Shield Promos", "SWSH Black Star Promos",
+        "Sword & Shield",
     ],
     "sun_moon": [
         "Cosmic Eclipse", "Hidden Fates", "Hidden Fates Shiny Vault", "Unified Minds",
         "Unbroken Bonds", "Detective Pikachu", "Team Up", "Lost Thunder",
         "Dragon Majesty", "Celestial Storm", "Forbidden Light", "Ultra Prism",
         "Crimson Invasion", "Shining Legends", "Burning Shadows", "Guardians Rising",
-        "Sun & Moon", "Sun & Moon Promos", "SM Black Star Promos",
+        "Sun & Moon",
     ],
     "xy": [
         "Evolutions", "Steam Siege", "Fates Collide", "Generations", "BREAKpoint",
         "BREAKthrough", "Ancient Origins", "Roaring Skies", "Double Crisis",
         "Primal Clash", "Phantom Forces", "Furious Fists", "Flashfire", "XY",
-        "Kalos Starter Set", "XY Promos", "XY Black Star Promos",
+        "Kalos Starter Set",
     ],
     "black_white": [
         "Legendary Treasures", "Plasma Blast", "Plasma Freeze", "Plasma Storm",
         "Boundaries Crossed", "Dragon Vault", "Dragons Exalted", "Dark Explorers",
         "Next Destinies", "Noble Victories", "Emerging Powers", "Black & White",
-        "Black & White Promos", "BW Black Star Promos",
     ],
     "hgss": [
         "Call of Legends", "Triumphant", "HS—Triumphant", "Undaunted", "HS—Undaunted",
         "Unleashed", "HS—Unleashed", "HeartGold & SoulSilver",
-        "HeartGold & SoulSilver Promos", "HGSS Black Star Promos",
     ],
     "platinum": ["Arceus", "Supreme Victors", "Rising Rivals", "Platinum"],
     "diamond_pearl": [
         "Stormfront", "Legends Awakened", "Majestic Dawn", "Great Encounters",
         "Secret Wonders", "Mysterious Treasures", "Diamond & Pearl",
-        "Diamond & Pearl Promos", "DP Black Star Promos",
     ],
     "ex": [
         "Power Keepers", "Dragon Frontiers", "Crystal Guardians", "Holon Phantoms",
         "Legend Maker", "Delta Species", "Unseen Forces", "Emerald", "Deoxys",
         "Team Rocket Returns", "FireRed & LeafGreen", "Hidden Legends",
         "Team Magma vs Team Aqua", "Dragon", "Sandstorm", "Ruby & Sapphire",
-        "Nintendo Promos", "Nintendo Black Star Promos",
     ],
     "ecard": ["Skyridge", "Aquapolis", "Expedition", "Expedition Base Set"],
     "legendary": ["Legendary Collection"],
     "neo": ["Neo Destiny", "Neo Revelation", "Neo Discovery", "Neo Genesis"],
     "original": [
         "Gym Challenge", "Gym Heroes", "Team Rocket", "Base Set 2", "Fossil",
-        "Jungle", "Base Set", "Base", "Wizard of the Coast Promos",
-        "Wizards Black Star Promos",
+        "Jungle", "Base Set", "Base",
     ],
     "other": [
         "Pokémon Trading Card Game Classic", "Pokémon Futsal",
@@ -166,13 +167,16 @@ for _era, _names in _ERA_SETS.items():
 # "SWSH: Crown Zenith" -> ("swsh", "Crown Zenith")
 _PREFIX_RE = re.compile(r"^\s*([A-Za-z]{2,5})\s*:\s*(.+)$")
 
-# Keyword rules, applied last. Ordered: the first hit wins, so the more
-# specific patterns come first.
+# Promos are matched BEFORE anything else (see era_for_set) so they stay their
+# own group instead of being absorbed into the series named in their title.
+_PROMO_NEEDLES = ("blackstarpromo", "promos", "promo")
+
+# Remaining keyword rules, applied last. First hit wins, so the more specific
+# patterns come first.
 _KEYWORD_RULES = [
     ("mcdonalds", ("mcdonald",)),
     ("trainer_kits", ("trainerkit",)),
     ("pop", ("popseries",)),
-    ("promos", ("blackstarpromo", "promos", "promo")),
 ]
 
 
@@ -182,26 +186,39 @@ def era_for_set(set_name: str) -> str:
     if not raw:
         return FALLBACK_ERA
 
+    # Strip a vendor prefix up front ("SWSH: Crown Zenith" -> "Crown Zenith"),
+    # keeping both forms: the full name for an exact lookup, the remainder for
+    # keyword tests.
+    prefix, rest = "", raw
+    m = _PREFIX_RE.match(raw)
+    if m:
+        prefix, rest = m.group(1).lower(), m.group(2)
+
+    # 0. Promos are STANDALONE, ahead of everything else. A Black Star Promos
+    #    set isn't a main-series expansion, so it doesn't belong inside one —
+    #    "SWSH Black Star Promos" groups with the other promos, not with Sword
+    #    & Shield. This runs first precisely so a series name in the title
+    #    can't pull it back into that series.
+    if any(n in _norm(rest) or n in _norm(raw) for n in _PROMO_NEEDLES):
+        return "promos"
+
     # 1. Whole name, as given.
     hit = SET_ERAS.get(_norm(raw))
     if hit:
         return hit
 
-    # 2. Vendor prefix ("SWSH: Crown Zenith"). Try the remainder as a name
-    #    first — a known set beats a prefix guess — then the prefix itself,
-    #    which is what makes future sets classify on their own.
-    m = _PREFIX_RE.match(raw)
+    # 2. The remainder after the prefix — a known set beats a prefix guess —
+    #    then the prefix itself, which is what makes future sets classify on
+    #    their own.
     if m:
-        prefix, rest = m.group(1).lower(), m.group(2)
         hit = SET_ERAS.get(_norm(rest))
         if hit:
             return hit
         if prefix in ERA_PREFIXES:
             return ERA_PREFIXES[prefix]
-        raw = rest      # fall through to keywords on the remainder
 
-    # 3. Keyword rules for the promo / misc groups.
-    flat = _norm(raw)
+    # 3. Keyword rules for the remaining misc groups.
+    flat = _norm(rest)
     for era, needles in _KEYWORD_RULES:
         if any(n in flat for n in needles):
             return era

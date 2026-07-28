@@ -278,6 +278,21 @@ Names match loosely (case, spacing and punctuation stripped), so
 the same era. Subsets (Trainer Gallery, Shiny Vault, Galarian Gallery,
 Classic Collection) are listed with their parent's era so they don't scatter.
 
+**Promos are a standalone group, and that rule runs FIRST.** "SWSH Black Star
+Promos" belongs with the other promos, not inside Sword & Shield — it isn't a
+main-series expansion. The promo check happens before the name lookup and the
+prefix rule precisely so a series name in the title (or an `SV:` prefix)
+can't drag it back into that series. Energies are *not* promos and stay with
+their era.
+
+**An era header is itself a checkbox: ticking it selects every set in that
+era.** It operates on the sets *currently visible*, so with a search active it
+takes only the matches — selecting sets the user can't see would produce a
+filter they can't explain. The header shows indeterminate when only some of
+its sets are picked, and `toggleEra` updates the child boxes in place rather
+than re-rendering, because a re-render resets the list's scroll position out
+from under the cursor.
+
 **`ERA_ORDER` lives only in `card_eras.py`.** The API ships `era_order` and
 `era_labels` to the client rather than the template mirroring the list — one
 place to edit when a new series starts.
