@@ -10,7 +10,9 @@ A role-gated web dashboard for visualizing Pokemon card restock data, with Disco
 1. Go to https://discord.com/developers/applications
 2. Create a new application (or use your existing bot's application)
 3. Go to **OAuth2** → copy your **Client ID** and **Client Secret**
-4. Under **Redirects**, add: `https://yourdomain.up.railway.app/callback`
+4. Under **Redirects**, add: `https://www.nexuscardco.com/callback`
+   (must match `DISCORD_REDIRECT_URI` exactly — Discord compares the full
+   string, so a `www.` mismatch or trailing slash breaks login)
 5. For local dev also add: `http://localhost:8000/callback`
 
 ### 2. Environment variables

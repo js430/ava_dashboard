@@ -215,7 +215,7 @@ app = FastAPI(lifespan=lifespan)
 # trusted here because Railway terminates TLS at the proxy, so it can report
 # http://. Env-overridable so a custom domain is config, not a code change.
 PUBLIC_BASE_URL = os.getenv(
-    "PUBLIC_BASE_URL", "https://restock-dashboard-production.up.railway.app").rstrip("/")
+    "PUBLIC_BASE_URL", "https://www.nexuscardco.com").rstrip("/")
 OG_TITLE = "Nexus Card Co — Restock Dashboard"
 OG_DESCRIPTION = ("Historical restock data, store maps, card prices and analytics "
                   "for the Nexus Card Co community — NOVA, RVA, Tidewater and the "
