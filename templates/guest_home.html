@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/brand/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/brand/icon-180.png">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nexus Playground — Guest</title>
+
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #111021;
+    color: #e8e6f5;
+    min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px;
+    background-image:
+      radial-gradient(ellipse at 50% 30%, rgba(124,109,225,.16), transparent 60%),
+      radial-gradient(ellipse at 50% 100%, rgba(88,101,242,.10), transparent 55%);
+  }
+  .wrap { width: 100%; max-width: 560px; text-align: center; }
+  .title { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
+  .lede { font-size: 14px; line-height: 1.6; color: #b9b4d4; margin-bottom: 30px; }
+  .tools { display: flex; flex-direction: column; gap: 12px; }
+  .tool {
+    display: block; text-align: left; text-decoration: none;
+    background: #1a1830; border: 1px solid #2a254a; border-radius: 12px;
+    padding: 16px 18px; transition: border-color .15s ease, background .15s ease;
+  }
+  .tool:hover { border-color: #5865F2; background: #1f1c3a; }
+  .tool-name { font-size: 15px; font-weight: 600; color: #fff; }
+  .tool-desc { font-size: 12.5px; color: #9791b8; margin-top: 4px; line-height: 1.5; }
+  .note { font-size: 12px; color: #6f6a8f; margin-top: 28px; line-height: 1.6;
+          border-top: 1px solid #241f3d; padding-top: 20px; }
+  .note a { color: #a5b4fc; text-decoration: underline; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title">Nexus Playground</div>
+    <p class="lede">Browsing as a guest &mdash; no account needed for these two tools.</p>
+
+    <div class="tools">
+      <a class="tool" href="/grading-calculator">
+        <div class="tool-name">Grading Calculator</div>
+        <div class="tool-desc">
+          Live graded prices and what grading would net you at market prices.
+          Includes {{ guest_scan_daily_limit }} free photo scans a day.
+        </div>
+      </a>
+      <a class="tool" href="/catalog">
+        <div class="tool-name">Card Catalog</div>
+        <div class="tool-desc">Browse cards by set, rarity, and raw market price.</div>
+      </a>
+    </div>
+
+    <p class="note">
+      Guest access covers Nexus Playground only. <a href="/login">Sign in with Discord</a>
+      for the full restock dashboard, maps, and analytics.
+    </p>
+  </div>
+</body>
+</html>

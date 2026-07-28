@@ -185,8 +185,10 @@
     <div class="header-sub">What grading nets you, at market prices</div>
   </div>
   <div class="nav">
+    {% if not is_guest %}
     <a href="/">Dashboard</a>
     <a href="/map">Map</a>
+    {% endif %}
     {% if is_admin %}
     <div class="nav-group">
       <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
@@ -207,7 +209,11 @@
       </div>
     </div>
     <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">&#127769;</button>
+    {% if is_guest %}
+    <a href="/login">Sign in with Discord</a>
+    {% else %}
     <a href="/logout">Log out</a>
+    {% endif %}
   </div>
 </div>
 

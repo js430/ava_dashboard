@@ -442,6 +442,27 @@ DISCORD_OAUTH_BASE_URL = (
 # Scan endpoint — allowed image MIME types for Claude Vision
 ALLOWED_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
 
+# Guests get free but metered access to the photo scanner, since it's the one
+# call in Nexus Playground that spends real Claude API money per request
+# (~1-1.5 cents/scan at current Sonnet pricing). Capped per-IP per-day rather
+# than per-session: a session (cookie) resets the moment a guest clears it,
+# so it can't carry a cost control on its own. In-process like the catalog
+# backfill's trackers — a redeploy resets it, which is the generous direction.
+GUEST_SCAN_DAILY_LIMIT = int(os.getenv("GUEST_SCAN_DAILY_LIMIT", "5"))
+_guest_scan_counts: dict[str, tuple[str, int]] = {}
+
+
+def _guest_scan_take(ip: str) -> bool:
+    """Consume one of today's guest scans for `ip`. False if none remain."""
+    today = datetime.utcnow().date().isoformat()
+    day, count = _guest_scan_counts.get(ip, (today, 0))
+    if day != today:
+        count = 0
+    if count >= GUEST_SCAN_DAILY_LIMIT:
+        return False
+    _guest_scan_counts[ip] = (today, count + 1)
+    return True
+
 # ---- OAuth state helpers (stateless HMAC — no session cookie required) ----
 # This avoids browser SameSite/ITP issues where the session cookie is not sent
 # after a cross-site OAuth redirect round-trip.
@@ -479,6 +500,48 @@ def get_current_user(request: Request):
     if is_demo(request):
         raise HTTPException(status_code=403, detail="Live data requires the member role.")
     return user
+
+# ---- Guest access (Nexus Playground only) ----
+# A guest is a visitor with NO Discord identity at all — distinct from
+# `is_demo`, which is a Discord-authenticated member without the community
+# role. Guests exist only to reach Grading Calculator + Card Catalog
+# (Nexus Playground minus Tracker, which stays admin-only); every other route
+# still requires real Discord auth. Session-only, no DB row — clearing
+# cookies or hitting /logout ends it, same as any other session flag.
+GUEST_USER = {"id": None, "username": "Guest", "avatar": None, "guest": True}
+
+
+def is_guest(request: Request) -> bool:
+    return bool(request.session.get("guest"))
+
+
+def get_current_user_or_guest(request: Request):
+    """Like `get_current_user`, but a guest session also passes.
+
+    Only wired into the Grading Calculator and Card Catalog APIs — every
+    other endpoint keeps `get_current_user` and stays closed to guests.
+    A role-less Discord ("sample") session is NOT granted playground access
+    by this — guest is a separate, narrower tier, not a superset of sample.
+    """
+    user = request.session.get("user")
+    if user and not is_demo(request):
+        return user
+    if is_guest(request):
+        return GUEST_USER
+    if user:
+        raise HTTPException(status_code=403, detail="Live data requires the member role.")
+    raise HTTPException(status_code=401, detail="Not authenticated")
+
+
+def _viewer_context(request: Request, user) -> dict:
+    """Common template vars for a page open to both members and guests.
+    `user` is the session's Discord user dict, or None for a guest."""
+    if user is None:
+        return {"username": GUEST_USER["username"], "avatar": None, "user_id": None,
+                "is_admin": False, "is_mod": False, "is_guest": True}
+    return {"username": user["username"], "avatar": user.get("avatar"),
+            "user_id": user["id"], "is_admin": int(user["id"]) in ADMIN_USER_IDS,
+            "is_mod": request.session.get("mod", False), "is_guest": False}
 
 async def terms_current(request: Request, user: dict) -> bool:
     """Return True if user accepted terms within the last 30 days."""
@@ -682,6 +745,24 @@ async def accept_terms(request: Request):
 async def login(request: Request):
     state = make_oauth_state()
     return RedirectResponse(DISCORD_OAUTH_BASE_URL + f"&state={state}")
+
+@app.get("/guest", response_class=HTMLResponse)
+async def guest_entry(request: Request):
+    """Public entry point: no Discord account needed. Marks the session as a
+    guest and lands on a menu of the two Nexus Playground tools guests may
+    use — Tracker stays admin-only regardless, so it's never listed here."""
+    request.session["guest"] = True
+    return templates.TemplateResponse("guest_home.html", {
+        "request": request,
+        "guest_scan_daily_limit": GUEST_SCAN_DAILY_LIMIT,
+    })
+
+@app.get("/signin", response_class=HTMLResponse)
+async def signin_placeholder(request: Request):
+    """Standing entry point for a future non-Discord account system (likely
+    subscription-gated eventually). No accounts exist yet — this just tells
+    visitors that and points them at what does work today."""
+    return templates.TemplateResponse("signin.html", {"request": request})
 
 @app.get("/callback")
 @limiter.limit("30/minute")
@@ -1555,20 +1636,16 @@ async def api_import_run(request: Request):
 @app.get("/grading-calculator", response_class=HTMLResponse)
 async def grading_calculator_page(request: Request):
     user = request.session.get("user")
-    if not user:
+    if user:
+        if is_demo(request):
+            return RedirectResponse("/sample")
+        if not await terms_current(request, user):
+            return RedirectResponse("/terms")
+    elif not is_guest(request):
         return RedirectResponse("/login")
-    if is_demo(request):
-        return RedirectResponse("/sample")
-    if not await terms_current(request, user):
-        return RedirectResponse("/terms")
-    is_admin = int(user["id"]) in ADMIN_USER_IDS
     return templates.TemplateResponse("grading_calculator.html", {
         "request": request,
-        "username": user["username"],
-        "avatar": user.get("avatar"),
-        "user_id": user["id"],
-        "is_admin": is_admin,
-        "is_mod": request.session.get("mod", False),
+        **_viewer_context(request, user),
         "sources": price_sources.configured_sources(),
         "grade_labels": price_sources.GRADE_LABELS,
         "grade_levels": price_sources.GRADE_LEVEL,
@@ -1582,11 +1659,11 @@ async def grading_calculator_page(request: Request):
 async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
                              set_name: str = "", card_number: str = "",
                              tcgplayer_id: str = "", language: str = "english",
-                             user=Depends(get_current_user)):
+                             user=Depends(get_current_user_or_guest)):
     """Live graded prices for one card, merged across configured vendors.
-    Open to members (like the rest of the grading calculator). Spends
-    PokemonPriceTracker credits and eBay's daily budget, so it keeps the
-    per-IP rate limit above — watch aggregate usage if member traffic grows."""
+    Open to members and guests (like the rest of the grading calculator).
+    Spends PokemonPriceTracker credits and eBay's daily budget, so it keeps
+    the per-IP rate limit above — watch aggregate usage if traffic grows."""
     name = (name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="A card name is required")
@@ -1616,7 +1693,7 @@ async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
 
 @app.post("/api/grading-calculator/calc")
 @limiter.limit("120/minute")
-async def api_grading_calc(request: Request, user=Depends(get_current_user)):
+async def api_grading_calc(request: Request, user=Depends(get_current_user_or_guest)):
     """Net proceeds per grade — no network, no DB. Split from the quotes route
     so editing a price or a cost recalculates instantly and spends no quota."""
     body = await request.json()
@@ -1685,7 +1762,7 @@ _grading_set_cache: dict[tuple[str, str], list] = {}
 @limiter.limit("120/hour")
 async def api_grading_sets(request: Request, game: str = "pokemon",
                            language: str = "english",
-                           user=Depends(get_current_user)):
+                           user=Depends(get_current_user_or_guest)):
     """Set list for the picker.
 
     For Pokemon this comes from PokemonPriceTracker, so the set string sent
@@ -1723,7 +1800,7 @@ async def api_grading_sets(request: Request, game: str = "pokemon",
 @limiter.limit("60/hour")
 async def api_grading_set_cards(request: Request, game: str, set_id: str,
                                 language: str = "english",
-                                user=Depends(get_current_user)):
+                                user=Depends(get_current_user_or_guest)):
     if game not in ("pokemon", "one_piece"):
         raise HTTPException(status_code=400, detail="Unknown game")
     set_id = (set_id or "").strip()
@@ -1877,7 +1954,7 @@ CATALOG_BACKFILL_MAX_ERRORS = 3
 # How many additional sets the admin "Stock 5 more sets" button takes per
 # click. Unlike the startup seed this walks the whole catalog rather than a
 # fixed window — safe precisely because a person triggers each batch.
-CATALOG_NEXT_BATCH_SETS = int(os.getenv("CATALOG_NEXT_BATCH_SETS", "5"))
+CATALOG_NEXT_BATCH_SETS = int(os.getenv("CATALOG_NEXT_BATCH_SETS", "10"))
 # A 429 is temporary, so it is NOT counted as a failure — the set is retried
 # after a wait, doubling each time. If it's still throttled after that, the run
 # stops cleanly and can be resumed later with the button: sets already stocked
@@ -2087,20 +2164,16 @@ async def _catalog_backfill_startup(app) -> None:
 @app.get("/catalog", response_class=HTMLResponse)
 async def catalog_page(request: Request):
     user = request.session.get("user")
-    if not user:
+    if user:
+        if is_demo(request):
+            return RedirectResponse("/sample")
+        if not await terms_current(request, user):
+            return RedirectResponse("/terms")
+    elif not is_guest(request):
         return RedirectResponse("/login")
-    if is_demo(request):
-        return RedirectResponse("/sample")
-    if not await terms_current(request, user):
-        return RedirectResponse("/terms")
-    is_admin = int(user["id"]) in ADMIN_USER_IDS
     return templates.TemplateResponse("catalog.html", {
         "request": request,
-        "username": user["username"],
-        "avatar": user.get("avatar"),
-        "user_id": user["id"],
-        "is_admin": is_admin,
-        "is_mod": request.session.get("mod", False),
+        **_viewer_context(request, user),
         # Drives rel="sponsored" and the disclosure line. Both must appear
         # only when the eBay links actually carry EPN tracking.
         "ebay_affiliate": catalog.ebay_affiliate_enabled(),
@@ -2115,7 +2188,7 @@ async def api_catalog_cards(request: Request, sets: str = "", rarities: str = ""
                             sort: str = catalog.DEFAULT_SORT,
                             limit: int = 50, offset: int = 0,
                             language: str = "english",
-                            user=Depends(get_current_user)):
+                            user=Depends(get_current_user_or_guest)):
     """Filtered, paginated catalog rows. Pure DB read — spends no vendor quota,
     which is why it carries a generous rate limit."""
     result = await catalog.query_cards(
@@ -2146,7 +2219,7 @@ async def api_catalog_cards(request: Request, sets: str = "", rarities: str = ""
 @app.get("/api/catalog/facets")
 @limiter.limit("60/minute")
 async def api_catalog_facets(request: Request, language: str = "english",
-                             user=Depends(get_current_user)):
+                             user=Depends(get_current_user_or_guest)):
     """Filter options plus coverage.
 
     `sets` is what's stocked; `available_sets` is PPT's full set list, so the
@@ -2985,12 +3058,23 @@ async def get_invite_network(request: Request, user=Depends(require_all_mods)):
 
 @app.post("/api/grading-calculator/scan")
 @limiter.limit("10/minute")
-async def api_grading_scan(request: Request, user=Depends(get_current_user)):
+async def api_grading_scan(request: Request, user=Depends(get_current_user_or_guest)):
     """Identify a card from a photo via Claude Vision and return exactly the
     JSON it produced (game/name/number/set + One Piece variant flags) — no
     per-game catalog lookup here. The client matches that JSON against the
     same PPT/catalog set-and-card lists the picker already uses, so a scan
-    result and a manual pick go through identical matching logic."""
+    result and a manual pick go through identical matching logic.
+
+    Guests get a metered daily allowance instead of the member's per-minute
+    limit — this is the one call in Nexus Playground that spends real Claude
+    API money per request, and a guest has no Discord identity to attribute
+    abuse to, only an IP.
+    """
+    if user.get("guest") and not _guest_scan_take(get_real_ip(request)):
+        raise HTTPException(
+            status_code=429,
+            detail=f"Guests get {GUEST_SCAN_DAILY_LIMIT} free scans a day — "
+                   "sign in with Discord for unlimited use.")
     content_length = request.headers.get("content-length")
     if content_length and int(content_length) > 10 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Request body too large (max 10 MB)")

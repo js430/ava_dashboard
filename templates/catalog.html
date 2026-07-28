@@ -207,8 +207,10 @@
     <div class="header-sub">Browse by set, rarity and raw market price</div>
   </div>
   <div class="nav">
+    {% if not is_guest %}
     <a href="/">Dashboard</a>
     <a href="/map">Map</a>
+    {% endif %}
     {% if is_admin %}
     <div class="nav-group">
       <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
@@ -229,7 +231,11 @@
       </div>
     </div>
     <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">&#127769;</button>
+    {% if is_guest %}
+    <a href="/login">Sign in with Discord</a>
+    {% else %}
     <a href="/logout">Log out</a>
+    {% endif %}
   </div>
 </div>
 
@@ -335,21 +341,21 @@
             </div>
             <div style="margin-top:10px">
               <button class="btn btn-plain btn-sm" id="backfillBtn" onclick="runBackfill()">
-                Stock 5 more sets
+                Stock 10 more sets
               </button>
               <span class="hint" style="margin-left:6px">
-                Takes the next 5 sets that aren't stocked yet, newest first.
-                Press it again for the 5 after that.
+                Takes the next 10 sets that aren't stocked yet, newest first.
+                Press it again for the 10 after that.
               </span>
             </div>
             <div style="margin-top:10px">
               <button class="btn btn-plain btn-sm" id="refreshBtn" onclick="runRefresh()">
-                Refresh 5 stocked sets
+                Refresh 10 stocked sets
               </button>
               <span class="hint" style="margin-left:6px">
-                Re-fetches 5 already-stocked sets so any capped at the old
+                Re-fetches 10 already-stocked sets so any capped at the old
                 200-cards-per-set limit pick up the rest. Press again to
-                work through the next 5.
+                work through the next 10.
               </span>
             </div>
             <div class="warn" id="stockMsg" style="display:none"></div>
@@ -913,7 +919,9 @@ async function startBackfill(mode, btn, startedMsg){
   try {
     const resp = await fetch('/api/catalog/backfill', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ mode: mode, sets: 5 })
+      // No `sets` field — the server fills in its own default batch size
+      // (CATALOG_NEXT_BATCH_SETS) rather than duplicating that number here.
+      body: JSON.stringify({ mode: mode })
     });
     const d = await resp.json();
     if (!resp.ok){
