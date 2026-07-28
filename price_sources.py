@@ -295,6 +295,14 @@ _ppt_set_cards_cache: dict[str, tuple[float, list]] = {}
 PPT_LANGUAGES = ("english", "japanese")
 PPT_DEFAULT_LANGUAGE = "english"
 
+# /cards hard-caps a response at 200 rows (documented max for `limit`); a
+# set with more printings than that needs multiple pages via `offset`.
+PPT_CARDS_PAGE_SIZE = 200
+# Safety bound on the pagination loop, mirroring set_import.py's page cap —
+# no real Pokemon set is anywhere near this size; it just stops a runaway
+# loop if PPT's `hasMore` ever misreports.
+PPT_MAX_SET_CARDS = 2000
+
 
 def ppt_language(value: str | None) -> str:
     """Normalise to a supported language, defaulting to English."""
@@ -519,10 +527,48 @@ async def fetch_ppt_set_cards_detailed(client: httpx.AsyncClient, set_name: str,
                     "no credits spent)", set_name, language, len(hit[1]))
         return list(hit[1]), "ok"
 
-    rows, resp = await _ppt_get(client, "/cards",
-                                {"set": set_name, "fetchAllInSet": "true",
-                                 "limit": 1000, "language": language},
-                                f"set-cards({set_name}/{language})")
+    # PPT's /cards hard-caps a single response at 200 cards regardless of the
+    # `limit` requested (`fetchAllInSet=true` only raises the ceiling to that
+    # same 200 — it does not mean "every card"). Sets with more than 200
+    # printings — routine once alt-arts/promos are counted — need real
+    # pagination via `offset`, walking pages while the response's
+    # `metadata.hasMore` says there's another one.
+    rows, resp = [], None
+    offset = 0
+    truncated_by_rate_limit = False
+    while True:
+        page_rows, page_resp = await _ppt_get(
+            client, "/cards",
+            {"set": set_name, "fetchAllInSet": "true", "limit": PPT_CARDS_PAGE_SIZE,
+             "offset": offset, "language": language},
+            f"set-cards({set_name}/{language}, offset={offset})")
+        if page_resp is not None:
+            resp = page_resp
+        if not page_rows:
+            # A 429 after at least one good page is a truncated fetch, not a
+            # clean end-of-set — flagged below so the partial result isn't
+            # cached as if it were the whole set.
+            if offset > 0 and page_resp is not None and page_resp.status_code == 429:
+                truncated_by_rate_limit = True
+                logger.warning("PokemonPriceTracker set-cards %r [%s]: rate limited after "
+                               "%d card(s) — returning what was fetched, not caching it as "
+                               "the complete set", set_name, language, offset)
+            break
+        rows.extend(page_rows)
+        has_more = False
+        if page_resp is not None:
+            try:
+                has_more = bool((page_resp.json() or {}).get("metadata", {}).get("hasMore"))
+            except Exception:
+                has_more = False
+        if not has_more:
+            break
+        offset += len(page_rows)
+        if offset >= PPT_MAX_SET_CARDS:
+            logger.warning("PokemonPriceTracker set-cards %r [%s]: stopped at the %d-card "
+                           "safety bound — set may have more uncached cards", set_name,
+                           language, offset)
+            break
     if not rows:
         status = _ppt_empty_status(resp)
         logger.info("PokemonPriceTracker set-cards %r [%s]: no cards (%s)",
@@ -533,8 +579,9 @@ async def fetch_ppt_set_cards_detailed(client: httpx.AsyncClient, set_name: str,
         logger.info("PokemonPriceTracker set-cards first row keys: %s",
                     sorted(rows[0].keys()) if isinstance(rows[0], dict) else "?")
     if resp is not None:
-        logger.info("PokemonPriceTracker set-cards %r: %d card(s), credits used=%s, "
-                    "daily remaining=%s", set_name, len(rows),
+        logger.info("PokemonPriceTracker set-cards %r: %d card(s) across %d page(s), "
+                    "credits used=%s, daily remaining=%s", set_name, len(rows),
+                    (offset // PPT_CARDS_PAGE_SIZE) + 1,
                     resp.headers.get("X-API-Calls-Consumed", "?"),
                     resp.headers.get("X-RateLimit-Daily-Remaining", "?"))
 
@@ -573,7 +620,7 @@ async def fetch_ppt_set_cards_detailed(client: httpx.AsyncClient, set_name: str,
         return (0, int(match.group(1))) if match else (1, 0)
 
     cards.sort(key=_sort_key)
-    if cards:
+    if cards and not truncated_by_rate_limit:
         _ppt_set_cards_cache[cache_key] = (time.time(), list(cards))
     # Rows came back but none survived normalisation (every row missing a
     # name): the call worked, there's just nothing usable — 'empty', not

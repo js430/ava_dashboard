@@ -342,6 +342,16 @@
                 Press it again for the 5 after that.
               </span>
             </div>
+            <div style="margin-top:10px">
+              <button class="btn btn-plain btn-sm" id="refreshBtn" onclick="runRefresh()">
+                Refresh 5 stocked sets
+              </button>
+              <span class="hint" style="margin-left:6px">
+                Re-fetches 5 already-stocked sets so any capped at the old
+                200-cards-per-set limit pick up the rest. Press again to
+                work through the next 5.
+              </span>
+            </div>
             <div class="warn" id="stockMsg" style="display:none"></div>
           </div>
           {% endif %}
@@ -857,8 +867,9 @@ function renderBackfill(bf){
     // Sets with no data yet are reported separately — otherwise "12 done, 4000
     // cards" next to a half-empty set list reads like something failed.
     const skipped = bf.empty ? `, ${bf.empty} with no data yet` : '';
+    const verb = bf.mode === 'refresh' ? 'Refreshing already-stocked sets' : 'Stocking the newest sets';
     el.className = 'backfill';
-    el.textContent = `Stocking the newest sets — ${bf.done}${of} done${skipped}`
+    el.textContent = `${verb} — ${bf.done}${of} done${skipped}`
       + (bf.current ? ` (currently ${bf.current})` : '')
       + `. ${(bf.cards || 0).toLocaleString()} cards so far.`;
     el.style.display = 'block';
@@ -887,19 +898,28 @@ function renderBackfill(bf){
 }
 
 async function runBackfill(){
-  const btn = document.getElementById('backfillBtn');
+  await startBackfill('next', document.getElementById('backfillBtn'),
+    n => `Stocking the next ${n} set(s) — progress shows above.`);
+}
+
+async function runRefresh(){
+  await startBackfill('refresh', document.getElementById('refreshBtn'),
+    n => `Refreshing the next ${n} stocked set(s) — progress shows above.`);
+}
+
+async function startBackfill(mode, btn, startedMsg){
   btn.disabled = true;
   showStockMsg('Starting… this runs in the background.');
   try {
     const resp = await fetch('/api/catalog/backfill', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ mode: 'next', sets: 5 })
+      body: JSON.stringify({ mode: mode, sets: 5 })
     });
     const d = await resp.json();
     if (!resp.ok){
-      showStockMsg(d.detail || 'Couldn’t start stocking.');
+      showStockMsg(d.detail || 'Couldn’t start.');
     } else {
-      showStockMsg(`Stocking the next ${d.sets} set(s) — progress shows above.`);
+      showStockMsg(startedMsg(d.sets));
       loadFacets();
     }
   } catch(e){

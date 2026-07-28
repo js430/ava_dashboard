@@ -526,6 +526,38 @@ def select_next_unstocked(sets: list, already_stocked, limit: int, skip=None) ->
     return out
 
 
+def select_next_refresh(sets: list, already_stocked, already_refreshed, limit: int) -> list:
+    """The next `limit` ALREADY-cached sets, newest-first, not yet refreshed
+    this run.
+
+    Exists for the 200-cards-per-set cap fix: sets cached before the PPT
+    pagination fix landed have their tail silently missing, and
+    `select_next_unstocked`/`select_backfill_window` will never revisit a set
+    that's already in `catalog_cards`, no matter how incomplete. This walks
+    the OPPOSITE membership test — sets that ARE stocked — so re-running
+    `_catalog_stock_set` on them (upsert-safe, adds/updates by key) fills in
+    whatever the old 200-card ceiling cut off.
+
+    `already_refreshed` is the same kind of in-process, per-run skip set as
+    `select_next_unstocked`'s `skip`, so repeated clicks walk forward through
+    the whole cached list instead of re-refreshing the same batch. Only ever
+    called from an admin action, same caveat as `select_next_unstocked`.
+    """
+    if limit <= 0:
+        return []
+    have = set(already_stocked or ())
+    done = set(already_refreshed or ())
+    out = []
+    for entry in sets:
+        set_id = entry.get("id")
+        if set_id not in have or set_id in done:
+            continue
+        out.append(entry)
+        if len(out) >= limit:
+            break
+    return out
+
+
 async def cached_set_ids(pool, game: str, language: str = "english") -> set:
     """Set ids already in the cache — lets a caller skip a vendor round-trip."""
     async with pool.acquire() as conn:

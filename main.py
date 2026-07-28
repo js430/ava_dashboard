@@ -1902,12 +1902,27 @@ def _catalog_known_empty(app) -> set:
     return known
 
 
+def _catalog_refreshed_sets(app) -> set:
+    """Set ids re-stocked by mode='refresh' this process run.
+
+    Same shape as `_catalog_known_empty`: in-process and cleared by a
+    redeploy, so it only needs to track "already handled since the PPT
+    pagination fix shipped" for the lifetime of one run, not forever.
+    """
+    known = getattr(app.state, "catalog_refreshed_sets", None)
+    if known is None:
+        known = set()
+        app.state.catalog_refreshed_sets = known
+    return known
+
+
 def _catalog_backfill_state(app) -> dict:
     st = getattr(app.state, "catalog_backfill", None)
     if st is None:
         st = {"running": False, "started_at": None, "finished_at": None,
               "planned": 0, "done": 0, "stocked": 0, "empty": 0, "cards": 0,
-              "current": None, "waiting_s": 0, "error": None, "last_result": None}
+              "current": None, "waiting_s": 0, "error": None, "last_result": None,
+              "mode": None}
         app.state.catalog_backfill = st
     return st
 
@@ -1916,11 +1931,14 @@ async def _run_catalog_backfill(app, limit: int | None = None,
                                 mode: str = "window") -> None:
     """Stock sets into the catalog. Never raises.
 
-    mode='window' — the newest `limit` sets, minus what's cached. Idempotent
+    mode='window'  — the newest `limit` sets, minus what's cached. Idempotent
     across redeploys; this is what the startup seed uses.
-    mode='next'   — the next `limit` uncached sets, walking the whole catalog.
+    mode='next'    — the next `limit` uncached sets, walking the whole catalog.
     Advances further back on each call, so it is only ever driven by an admin
     pressing the button.
+    mode='refresh' — the next `limit` ALREADY-cached sets, re-fetched so any
+    that were cached before the PPT /cards pagination fix pick up cards past
+    the old 200-per-set ceiling. Also only ever driven by an admin press.
     """
     st = _catalog_backfill_state(app)
     if st["running"]:
@@ -1936,7 +1954,7 @@ async def _run_catalog_backfill(app, limit: int | None = None,
 
     st.update(running=True, started_at=datetime.utcnow().isoformat() + "Z",
               finished_at=None, planned=0, done=0, stocked=0, empty=0, cards=0,
-              current=None, waiting_s=0, error=None)
+              current=None, waiting_s=0, error=None, mode=mode)
     pool = app.state.db
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1953,6 +1971,12 @@ async def _run_catalog_backfill(app, limit: int | None = None,
             logger.info("Catalog backfill [next]: %d set(s) stocked so far, "
                         "%d known empty — taking the next %d",
                         len(have), len(_catalog_known_empty(app)), len(todo))
+        elif mode == "refresh":
+            todo = catalog.select_next_refresh(
+                sets, have, _catalog_refreshed_sets(app), limit)
+            logger.info("Catalog backfill [refresh]: %d set(s) cached, "
+                        "%d already refreshed this run — taking the next %d",
+                        len(have), len(_catalog_refreshed_sets(app)), len(todo))
         else:
             todo = catalog.select_backfill_window(sets, have, limit)
             logger.info("Catalog backfill [window]: newest %d set(s), %d already "
@@ -1960,9 +1984,12 @@ async def _run_catalog_backfill(app, limit: int | None = None,
                         min(limit, len(sets)) - len(todo), len(todo))
         st["planned"] = len(todo)
         if not todo:
-            st["last_result"] = ("Every set is already stocked."
-                                 if mode == "next"
-                                 else "Already stocked — nothing to fetch.")
+            if mode == "next":
+                st["last_result"] = "Every set is already stocked."
+            elif mode == "refresh":
+                st["last_result"] = "Every cached set has already been refreshed this run."
+            else:
+                st["last_result"] = "Already stocked — nothing to fetch."
             return
 
         error_streak = 0
@@ -2003,6 +2030,8 @@ async def _run_catalog_backfill(app, limit: int | None = None,
                 error_streak = 0
                 st["stocked"] += 1
                 st["cards"] += stats["cards"]
+                if mode == "refresh":
+                    _catalog_refreshed_sets(app).add(entry["id"])
             elif stats.get("status") == "empty":
                 # PPT has nothing for this set yet — expected for unreleased
                 # and just-released sets. Skip it and carry on; it'll be
@@ -2012,6 +2041,8 @@ async def _run_catalog_backfill(app, limit: int | None = None,
                 # Remembered so the "stock 5 more" button steps past it next
                 # click instead of re-offering the same empty set forever.
                 _catalog_known_empty(app).add(entry["id"])
+                if mode == "refresh":
+                    _catalog_refreshed_sets(app).add(entry["id"])
                 logger.info("Catalog backfill: %r has no data yet — skipping",
                             entry["id"])
             else:
@@ -2026,7 +2057,8 @@ async def _run_catalog_backfill(app, limit: int | None = None,
                     break
             await asyncio.sleep(CATALOG_BACKFILL_DELAY_S)
 
-        st["last_result"] = (f"Stocked {st['cards']:,} card(s) across "
+        verb = "Refreshed" if mode == "refresh" else "Stocked"
+        st["last_result"] = (f"{verb} {st['cards']:,} card(s) across "
                              f"{st['stocked']} set(s).")
         if st["empty"]:
             st["last_result"] += (f" {st['empty']} set(s) had no data yet — "
@@ -2194,7 +2226,9 @@ async def api_catalog_backfill(request: Request, user=Depends(require_admin)):
     mode='next' (default) takes the next N sets that aren't cached yet,
     walking steadily back through older sets on each press — one click, one
     batch, a person choosing to spend the credits. mode='window' re-runs the
-    startup seed's newest-N pass instead.
+    startup seed's newest-N pass instead. mode='refresh' re-fetches the next N
+    ALREADY-cached sets, so ones cached before the PPT /cards pagination fix
+    pick up cards past the old 200-per-set ceiling.
 
     Runs in the background and returns immediately; poll
     /api/catalog/facets for progress.
@@ -2205,11 +2239,11 @@ async def api_catalog_backfill(request: Request, user=Depends(require_admin)):
         body = {}
 
     mode = str(body.get("mode") or "next").strip().lower()
-    if mode not in ("next", "window"):
-        raise HTTPException(status_code=400, detail="mode must be 'next' or 'window'")
+    if mode not in ("next", "window", "refresh"):
+        raise HTTPException(status_code=400, detail="mode must be 'next', 'window', or 'refresh'")
 
     limit = body.get("sets")
-    default = CATALOG_NEXT_BATCH_SETS if mode == "next" else CATALOG_BACKFILL_SETS
+    default = CATALOG_BACKFILL_SETS if mode == "window" else CATALOG_NEXT_BATCH_SETS
     try:
         limit = default if limit is None else int(limit)
     except (TypeError, ValueError):
