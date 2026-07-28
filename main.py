@@ -2101,7 +2101,13 @@ async def api_catalog_cards(request: Request, sets: str = "", rarities: str = ""
         sort=sort,
         limit=limit,
         offset=offset,
+        # Facet counts ride along on the page request rather than a second
+        # round-trip: one query set, so the options can never disagree with
+        # the rows being shown.
+        with_facets=True,
     )
+    if result.get("facets"):
+        card_eras.annotate(result["facets"]["sets"], name_key="set_name")
     return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
 

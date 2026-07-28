@@ -77,6 +77,14 @@
   .picker-list .ck-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .picker-list .ck-count { margin-left: auto; font-size: 11px; color: #bbb; flex-shrink: 0; }
   .picker-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid #f0f0f0; margin-top: 6px; padding-top: 8px; }
+  /* Roomier on a desktop, where there's space for it and the era groups make
+     the list long. Phones keep the compact size — positionPicker shrinks the
+     list further if the window is too short for even this. */
+  @media (min-width: 900px) {
+    .picker { width: 330px; }
+    .picker-list { max-height: 480px; }
+    .picker-list label { padding: 7px 4px; }
+  }
   /* Sticky so the era stays identifiable while scrolling a long set list.
      It's a label with a checkbox: ticking it selects the whole era. */
   .picker-group { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; background: #fff; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: #8b85ad; padding: 7px 4px 5px; border-bottom: 1px solid #f0f0f0; cursor: pointer; }
@@ -463,6 +471,43 @@ function currentParams(){
   return p;
 }
 
+// The set and rarity filters narrow each other: pick an era and only the
+// rarities present in it are offered, and vice versa. Counts come back with
+// every page request, each computed with the OTHER filter applied but not its
+// own (see catalog._facet_counts).
+function applyFacets(f){
+  const merge = (key, incoming, labelOf) => {
+    const rows = incoming.slice();
+    // A selected option that now matches nothing must stay listed at 0, or it
+    // disappears while still filtering and can't be switched off.
+    const present = new Set(rows.map(r => r.value));
+    selected[key].forEach(v => {
+      if (!present.has(v)){
+        const old = pickerData[key].options.find(o => o.value === v);
+        rows.push({ value: v, name: old ? old.name : v, count: 0,
+                    era: old ? old.era : undefined });
+      }
+    });
+    pickerData[key].options = rows;
+  };
+
+  merge('set', (f.sets || []).map(s => ({
+    value: s.set_id, name: s.set_name, count: s.cards, era: s.era })));
+  merge('rarity', (f.rarities || []).map(r => ({
+    value: r.rarity, name: r.rarity, count: r.count })));
+
+  updatePickerLabel('set');
+  updatePickerLabel('rarity');
+  // Refresh an open picker so its options track the other filter live, but
+  // keep the user's place: re-rendering resets scrollTop.
+  if (openPickerKey){
+    const list = document.getElementById('pickerList');
+    const keep = list.scrollTop;
+    renderPickerList(document.getElementById('pickerSearch').value);
+    list.scrollTop = keep;
+  }
+}
+
 // ── Multi-select popover ──────────────────────────────────────────────
 let openPickerKey = null;
 
@@ -485,15 +530,30 @@ function openPicker(key, btn){
 
 function positionPicker(btn){
   const panel = document.getElementById('picker');
+  const list = document.getElementById('pickerList');
+  const GAP = 8;
+  // Measure at the CSS size first — a leftover inline max-height from a
+  // previous open would make the panel look shorter than it can be here.
+  list.style.maxHeight = '';
   const r = btn.getBoundingClientRect();
+  const below = window.innerHeight - r.bottom - GAP;
+  const above = r.top - GAP;
+
+  // The list is the only part that can give: shrink it to whichever side has
+  // more room, so a tall desktop panel still fits a short window instead of
+  // running off the bottom. Floored so it can never collapse to a sliver.
+  const chrome = panel.offsetHeight - list.offsetHeight;
+  const maxList = Math.max(140, Math.max(below, above) - chrome);
+  if (list.offsetHeight > maxList) list.style.maxHeight = maxList + 'px';
+
   const w = panel.offsetWidth, h = panel.offsetHeight;
   // Clamp inside the viewport — a header cell near the right edge (or a narrow
   // phone) would otherwise push the panel off-screen.
-  let left = Math.min(r.left, window.innerWidth - w - 8);
-  left = Math.max(8, left);
-  // Flip above the control when there isn't room below.
-  const top = (r.bottom + h + 8 > window.innerHeight && r.top - h - 4 > 0)
-    ? r.top - h - 4 : r.bottom + 4;
+  const left = Math.max(GAP, Math.min(r.left, window.innerWidth - w - GAP));
+  // Prefer below, flip above when it fits better, else pin inside the window.
+  const top = (below >= h) ? r.bottom + 4
+            : (above >= h) ? r.top - h - 4
+            : Math.max(GAP, window.innerHeight - h - GAP);
   panel.style.left = left + 'px';
   panel.style.top = top + 'px';
 }
@@ -650,6 +710,7 @@ async function loadCards(){
     return;
   }
   total = d.total;
+  if (d.facets) applyFacets(d.facets);
   const tbody = document.getElementById('cardRows');
   const empty = document.getElementById('emptyState');
 
@@ -727,21 +788,12 @@ async function loadFacets(){
   eraOrder = d.era_order || [];
   eraLabels = d.era_labels || {};
 
-  pickerData.set.options = allSets.map(s => ({
-    value: s.set_id, name: s.set_name, count: s.cards, era: s.era }));
-  pickerData.rarity.options = (d.rarities || []).map(r => ({
-    value: r.rarity, name: r.rarity, count: r.count }));
-
-  // A set can stop existing between refreshes (nothing removes rows today, but
-  // don't rely on that) — drop any selection that no longer has an option, or
-  // it would filter to zero results with no visible cause.
-  ['set', 'rarity'].forEach(key => {
-    const valid = new Set(pickerData[key].options.map(o => o.value));
-    [...selected[key]].forEach(v => { if (!valid.has(v)) selected[key].delete(v); });
-    updatePickerLabel(key);
-  });
-  if (openPickerKey) renderPickerList(document.getElementById('pickerSearch').value);
-
+  // Picker options deliberately do NOT come from here. They're owned by
+  // applyFacets(), driven by the cross-filtered counts on each page request —
+  // two sources would race, and the global list would sometimes overwrite the
+  // narrowed one. This response supplies coverage, era order and the admin
+  // picker only. On first load the options arrive from the parallel /cards
+  // call a moment later.
   renderBackfill(d.backfill || {});
 
   document.getElementById('coverage').textContent =

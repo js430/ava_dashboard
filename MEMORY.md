@@ -293,6 +293,37 @@ its sets are picked, and `toggleEra` updates the child boxes in place rather
 than re-rendering, because a re-render resets the list's scroll position out
 from under the cursor.
 
+**Set and rarity narrow each other (faceted filtering), and one rule makes it
+work: a facet's own counts NEVER apply its own selection.** Rarity option
+counts are computed with the set/price/search filters applied but NOT the
+rarity filter; set counts the mirror. Apply a facet to itself and picking one
+rarity would collapse the rarity list to just that rarity — no way to add a
+second. `catalog._facet_counts()` runs two queries per page request rather
+than reusing `_build_filters` uniformly, specifically to hold that asymmetry.
+
+Counts ride along on the existing `/api/catalog/cards` response
+(`with_facets=True`) instead of a second round-trip, so the options can never
+disagree with the rows actually shown — no separate "did the facets refresh
+yet" state to get out of sync.
+
+**A selected option that now matches zero cards stays listed, at 0.** Dropped
+instead, and a rarity that only existed in a set you just deselected becomes
+permanently stuck on — the filter, still active, with no control left to turn
+it off. `applyFacets()` re-adds any selected value missing from the response
+before rendering.
+
+**Picker option ownership moved to `applyFacets()`, and `loadFacets()` no
+longer sets `pickerData[key].options`.** Two writers would race — the global
+list (from `/facets`) landing after the cross-filtered one (from `/cards`)
+would silently undo the narrowing on every keystroke. `loadFacets()` still
+owns coverage stats, era order and the admin stock picker.
+
+**The picker panel is larger on desktop** (`min-width: 900px`: 330px wide,
+480px list vs. 250×240 on mobile) and `positionPicker()` now shrinks the list
+to fit a short window rather than letting the panel run off-screen — measured
+against the CSS max-height fresh on every open, so a shrink from a previous
+short window doesn't linger after the browser is resized taller.
+
 **`ERA_ORDER` lives only in `card_eras.py`.** The API ships `era_order` and
 `era_labels` to the client rather than the template mirroring the list — one
 place to edit when a new series starts.

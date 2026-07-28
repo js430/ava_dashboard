@@ -340,14 +340,53 @@ def _build_filters(game: str, language: str, set_ids=None, rarities=None,
     return " AND ".join(where), params
 
 
+async def _facet_counts(conn, game, language, set_ids, rarities,
+                        min_price, max_price, search, priced_only) -> dict:
+    """Option counts for the set and rarity filters, so each narrows the other.
+
+    THE RULE: a facet's counts are computed with every filter applied EXCEPT
+    its own. Rarity options ignore the rarity selection; set options ignore
+    the set selection. Apply a facet to itself and picking one rarity would
+    leave only that rarity listed — you could never select a second, and the
+    filter would look broken.
+
+    Options that match nothing are simply absent; the caller re-adds anything
+    currently selected so a choice can always be undone.
+    """
+    rarity_where, rarity_params = _build_filters(
+        game, language, set_ids, None, min_price, max_price, search, priced_only)
+    set_where, set_params = _build_filters(
+        game, language, None, rarities, min_price, max_price, search, priced_only)
+
+    rarity_rows = await conn.fetch(
+        f"SELECT rarity, COUNT(*) AS n FROM catalog_cards "
+        f"WHERE {rarity_where} AND rarity <> '' "
+        f"GROUP BY rarity ORDER BY n DESC, rarity ASC", *rarity_params)
+    set_rows = await conn.fetch(
+        f"SELECT set_id, MAX(set_name) AS set_name, COUNT(*) AS n "
+        f"FROM catalog_cards WHERE {set_where} "
+        f"GROUP BY set_id ORDER BY MAX(set_name) ASC", *set_params)
+
+    return {
+        "rarities": [{"rarity": r["rarity"], "count": int(r["n"])} for r in rarity_rows],
+        "sets": [{"set_id": r["set_id"], "set_name": r["set_name"] or r["set_id"],
+                  "cards": int(r["n"])} for r in set_rows],
+    }
+
+
 async def query_cards(pool, *, game: str, language: str = "english",
                       set_ids=None, rarities=None, min_price=None, max_price=None,
                       search: str = "", priced_only: bool = False,
-                      sort: str = DEFAULT_SORT, limit: int = 50, offset: int = 0) -> dict:
+                      sort: str = DEFAULT_SORT, limit: int = 50, offset: int = 0,
+                      with_facets: bool = False) -> dict:
     """One page of catalog rows plus the unpaginated total.
 
     `total` is what drives the pager, so it's counted under the same filters
     rather than inferred from the page length.
+
+    `with_facets` adds per-filter option counts so the set and rarity
+    dropdowns can narrow each other — see _facet_counts for the one rule that
+    makes faceted filtering work.
     """
     order_by = SORT_COLUMNS.get(sort, SORT_COLUMNS[DEFAULT_SORT])
     limit = max(1, min(int(limit or 50), MAX_PAGE_SIZE))
@@ -369,8 +408,12 @@ async def query_cards(pool, *, game: str, language: str = "english",
     async with pool.acquire() as conn:
         rows = await conn.fetch(page_sql, *page_params)
         total = await conn.fetchval(count_sql, *params)
+        facets = await _facet_counts(
+            conn, game, language, set_ids, rarities, min_price, max_price,
+            search, priced_only) if with_facets else None
 
     return {
+        **({"facets": facets} if facets is not None else {}),
         "cards": [{
             "set_id": r["set_id"],
             "set_name": r["set_name"],
