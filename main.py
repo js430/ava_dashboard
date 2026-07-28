@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 from collections import defaultdict
 from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -203,6 +204,17 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+# ---- Static assets ----
+# Brand assets (favicon, app icons, the Open Graph banner). Self-hosted, which
+# the existing CSP already allows via img-src 'self' — no security change.
+# Mounted only if the directory exists: StaticFiles raises on a missing
+# directory, and a branding folder must never be able to stop the app booting.
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+if os.path.isdir(STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+else:
+    logger.warning("No static/ directory — brand assets will 404")
 
 # ---- Rate limiter ----
 # Key on the trusted client IP (not the spoofable left-most XFF entry).
