@@ -628,6 +628,27 @@ async def fetch_ppt_set_cards_detailed(client: httpx.AsyncClient, set_name: str,
     return cards, ("ok" if cards else "empty")
 
 
+async def fetch_ppt_set_total(client: httpx.AsyncClient, set_name: str,
+                              language: str = PPT_DEFAULT_LANGUAGE):
+    """The true card count PPT reports for a set, or None if it couldn't be
+    determined. Costs 1 credit — `limit=1` bills as a single-card lookup per
+    PPT's docs, not the requested-limit rate — so a caller can cheaply check
+    whether a cached set is already complete before paying for a full
+    re-fetch (~1 credit/card) that would turn out to find nothing new.
+    """
+    language = ppt_language(language)
+    _rows, resp = await _ppt_get(client, "/cards",
+                                 {"set": set_name, "limit": 1, "language": language},
+                                 f"set-total({set_name}/{language})")
+    if resp is None or resp.status_code != 200:
+        return None
+    try:
+        total = (resp.json() or {}).get("metadata", {}).get("total")
+    except Exception:
+        return None
+    return int(total) if isinstance(total, (int, float)) else None
+
+
 async def fetch_ppt_set_cards(client: httpx.AsyncClient, set_name: str,
                               language: str = PPT_DEFAULT_LANGUAGE) -> list:
     """Every card in a PPT set: [{name, card_number, variant, tcgplayer_id,

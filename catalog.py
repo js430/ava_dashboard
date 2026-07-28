@@ -565,3 +565,18 @@ async def cached_set_ids(pool, game: str, language: str = "english") -> set:
             "SELECT DISTINCT set_id FROM catalog_cards WHERE game = $1 AND language = $2",
             game, language)
     return {r["set_id"] for r in rows}
+
+
+async def cached_set_counts(pool, game: str, language: str = "english") -> dict:
+    """{set_id: cached card count} for sets already in the catalog.
+
+    Lets a refresh compare against the vendor's real total (a 1-credit
+    preflight, see price_sources.fetch_ppt_set_total) and skip a set that's
+    already complete instead of paying for a full re-fetch to find that out.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT set_id, COUNT(*) AS n FROM catalog_cards "
+            "WHERE game = $1 AND language = $2 GROUP BY set_id",
+            game, language)
+    return {r["set_id"]: int(r["n"]) for r in rows}

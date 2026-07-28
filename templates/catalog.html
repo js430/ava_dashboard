@@ -870,12 +870,14 @@ function renderBackfill(bf){
 
   if (bf.running){
     const of = bf.planned ? ` of ${bf.planned}` : '';
-    // Sets with no data yet are reported separately — otherwise "12 done, 4000
-    // cards" next to a half-empty set list reads like something failed.
+    // Sets with no data yet, and (refresh only) sets already complete, are
+    // reported separately — otherwise "12 done, 4000 cards" next to a
+    // half-empty set list reads like something failed.
     const skipped = bf.empty ? `, ${bf.empty} with no data yet` : '';
+    const already = bf.skipped ? `, ${bf.skipped} already complete` : '';
     const verb = bf.mode === 'refresh' ? 'Refreshing already-stocked sets' : 'Stocking the newest sets';
     el.className = 'backfill';
-    el.textContent = `${verb} — ${bf.done}${of} done${skipped}`
+    el.textContent = `${verb} — ${bf.done}${of} done${skipped}${already}`
       + (bf.current ? ` (currently ${bf.current})` : '')
       + `. ${(bf.cards || 0).toLocaleString()} cards so far.`;
     el.style.display = 'block';
@@ -892,9 +894,10 @@ function renderBackfill(bf){
   }
   // Only worth reporting a finished run while the page was open to see it —
   // a stale "done" banner on every later visit is noise. Shown when sets were
-  // skipped for having no data too, so a run that stocked nothing explains
-  // itself rather than looking like it never happened.
-  if (bf.finished_at && (bf.cards || bf.empty)){
+  // skipped for having no data, or (refresh) for already being complete, too
+  // — so a run that stocked nothing explains itself rather than looking like
+  // it never happened.
+  if (bf.finished_at && (bf.cards || bf.empty || bf.skipped)){
     el.className = 'backfill done';
     el.textContent = bf.last_result || 'Seeding finished.';
     el.style.display = 'block';

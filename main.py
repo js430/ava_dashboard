@@ -1997,9 +1997,9 @@ def _catalog_backfill_state(app) -> dict:
     st = getattr(app.state, "catalog_backfill", None)
     if st is None:
         st = {"running": False, "started_at": None, "finished_at": None,
-              "planned": 0, "done": 0, "stocked": 0, "empty": 0, "cards": 0,
-              "current": None, "waiting_s": 0, "error": None, "last_result": None,
-              "mode": None}
+              "planned": 0, "done": 0, "stocked": 0, "empty": 0, "skipped": 0,
+              "cards": 0, "current": None, "waiting_s": 0, "error": None,
+              "last_result": None, "mode": None}
         app.state.catalog_backfill = st
     return st
 
@@ -2030,8 +2030,8 @@ async def _run_catalog_backfill(app, limit: int | None = None,
         return
 
     st.update(running=True, started_at=datetime.utcnow().isoformat() + "Z",
-              finished_at=None, planned=0, done=0, stocked=0, empty=0, cards=0,
-              current=None, waiting_s=0, error=None, mode=mode)
+              finished_at=None, planned=0, done=0, stocked=0, empty=0, skipped=0,
+              cards=0, current=None, waiting_s=0, error=None, mode=mode)
     pool = app.state.db
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -2069,74 +2069,105 @@ async def _run_catalog_backfill(app, limit: int | None = None,
                 st["last_result"] = "Already stocked — nothing to fetch."
             return
 
+        # For refresh, a 1-credit preflight (PPT's metadata.total on a
+        # limit=1 lookup) tells us whether a cached set is already complete
+        # — skipping it there avoids paying for a full re-fetch (~1
+        # credit/card) that would only confirm nothing was missing. Not
+        # worth doing for mode='next'/'window': those sets aren't cached yet,
+        # so there's nothing to compare against.
+        cached_counts = (await catalog.cached_set_counts(pool, CATALOG_GAME, "english")
+                         if mode == "refresh" else {})
+        preflight_client = httpx.AsyncClient(timeout=15.0) if mode == "refresh" else None
+
         error_streak = 0
-        for entry in todo:
-            st["current"] = entry.get("name") or entry["id"]
+        try:
+            for entry in todo:
+                st["current"] = entry.get("name") or entry["id"]
 
-            # Retry a throttled set in place, backing off, before giving up on
-            # the run. A 429 says "later", not "never".
-            for attempt in range(CATALOG_BACKFILL_RATE_RETRIES + 1):
-                try:
-                    stats = await _catalog_stock_set(pool, entry["id"], "english")
-                except Exception:
-                    logger.exception("Catalog backfill: %r failed", entry["id"])
-                    stats = {"cards": 0, "priced": 0, "status": "error"}
-                if stats.get("status") != "rate_limited" or attempt >= CATALOG_BACKFILL_RATE_RETRIES:
+                if preflight_client is not None:
+                    total = await price_sources.fetch_ppt_set_total(
+                        preflight_client, entry["id"], "english")
+                    cached = cached_counts.get(entry["id"], 0)
+                    if total is not None and cached >= total:
+                        logger.info("Catalog backfill [refresh]: %r already complete "
+                                   "(%d/%d card(s)) — skipping the full re-fetch",
+                                   entry["id"], cached, total)
+                        st["done"] += 1
+                        st["skipped"] += 1
+                        error_streak = 0
+                        _catalog_refreshed_sets(app).add(entry["id"])
+                        await asyncio.sleep(CATALOG_BACKFILL_DELAY_S)
+                        continue
+
+                # Retry a throttled set in place, backing off, before giving up on
+                # the run. A 429 says "later", not "never".
+                for attempt in range(CATALOG_BACKFILL_RATE_RETRIES + 1):
+                    try:
+                        stats = await _catalog_stock_set(pool, entry["id"], "english")
+                    except Exception:
+                        logger.exception("Catalog backfill: %r failed", entry["id"])
+                        stats = {"cards": 0, "priced": 0, "status": "error"}
+                    if stats.get("status") != "rate_limited" or attempt >= CATALOG_BACKFILL_RATE_RETRIES:
+                        break
+                    wait = CATALOG_BACKFILL_RATE_WAIT_S * (2 ** attempt)
+                    st["waiting_s"] = wait
+                    logger.warning("Catalog backfill: rate limited on %r — waiting %.0fs "
+                                   "(retry %d of %d)", entry["id"], wait,
+                                   attempt + 1, CATALOG_BACKFILL_RATE_RETRIES)
+                    await asyncio.sleep(wait)
+                st["waiting_s"] = 0
+
+                if stats.get("status") == "rate_limited":
+                    st["error"] = (
+                        "PokemonPriceTracker is still rate-limiting after backing off, so "
+                        "stocking stopped here. Nothing was lost — press “Stock 5 more "
+                        "sets” later and it picks up where it left off. If this keeps "
+                        "happening, check the daily-remaining figure in the logs.")
+                    logger.warning("Catalog backfill: stopped — still rate limited at %r",
+                                   entry["id"])
                     break
-                wait = CATALOG_BACKFILL_RATE_WAIT_S * (2 ** attempt)
-                st["waiting_s"] = wait
-                logger.warning("Catalog backfill: rate limited on %r — waiting %.0fs "
-                               "(retry %d of %d)", entry["id"], wait,
-                               attempt + 1, CATALOG_BACKFILL_RATE_RETRIES)
-                await asyncio.sleep(wait)
-            st["waiting_s"] = 0
 
-            if stats.get("status") == "rate_limited":
-                st["error"] = (
-                    "PokemonPriceTracker is still rate-limiting after backing off, so "
-                    "stocking stopped here. Nothing was lost — press “Stock 5 more "
-                    "sets” later and it picks up where it left off. If this keeps "
-                    "happening, check the daily-remaining figure in the logs.")
-                logger.warning("Catalog backfill: stopped — still rate limited at %r",
-                               entry["id"])
-                break
+                st["done"] += 1
 
-            st["done"] += 1
-
-            if stats["cards"]:
-                error_streak = 0
-                st["stocked"] += 1
-                st["cards"] += stats["cards"]
-                if mode == "refresh":
-                    _catalog_refreshed_sets(app).add(entry["id"])
-            elif stats.get("status") == "empty":
-                # PPT has nothing for this set yet — expected for unreleased
-                # and just-released sets. Skip it and carry on; it'll be
-                # retried on a later run, for free, until data appears.
-                error_streak = 0
-                st["empty"] += 1
-                # Remembered so the "stock 5 more" button steps past it next
-                # click instead of re-offering the same empty set forever.
-                _catalog_known_empty(app).add(entry["id"])
-                if mode == "refresh":
-                    _catalog_refreshed_sets(app).add(entry["id"])
-                logger.info("Catalog backfill: %r has no data yet — skipping",
-                            entry["id"])
-            else:
-                error_streak += 1
-                logger.warning("Catalog backfill: %r failed (%d in a row)",
-                               entry["id"], error_streak)
-                if error_streak >= CATALOG_BACKFILL_MAX_ERRORS:
-                    st["error"] = (f"Stopped after {error_streak} failed requests in a "
-                                   "row — PokemonPriceTracker looks unreachable. Sets "
-                                   "with no data yet are skipped, not counted here.")
-                    logger.warning("Catalog backfill: %s", st["error"])
-                    break
-            await asyncio.sleep(CATALOG_BACKFILL_DELAY_S)
+                if stats["cards"]:
+                    error_streak = 0
+                    st["stocked"] += 1
+                    st["cards"] += stats["cards"]
+                    if mode == "refresh":
+                        _catalog_refreshed_sets(app).add(entry["id"])
+                elif stats.get("status") == "empty":
+                    # PPT has nothing for this set yet — expected for unreleased
+                    # and just-released sets. Skip it and carry on; it'll be
+                    # retried on a later run, for free, until data appears.
+                    error_streak = 0
+                    st["empty"] += 1
+                    # Remembered so the "stock 5 more" button steps past it next
+                    # click instead of re-offering the same empty set forever.
+                    _catalog_known_empty(app).add(entry["id"])
+                    if mode == "refresh":
+                        _catalog_refreshed_sets(app).add(entry["id"])
+                    logger.info("Catalog backfill: %r has no data yet — skipping",
+                                entry["id"])
+                else:
+                    error_streak += 1
+                    logger.warning("Catalog backfill: %r failed (%d in a row)",
+                                   entry["id"], error_streak)
+                    if error_streak >= CATALOG_BACKFILL_MAX_ERRORS:
+                        st["error"] = (f"Stopped after {error_streak} failed requests in a "
+                                       "row — PokemonPriceTracker looks unreachable. Sets "
+                                       "with no data yet are skipped, not counted here.")
+                        logger.warning("Catalog backfill: %s", st["error"])
+                        break
+                await asyncio.sleep(CATALOG_BACKFILL_DELAY_S)
+        finally:
+            if preflight_client is not None:
+                await preflight_client.aclose()
 
         verb = "Refreshed" if mode == "refresh" else "Stocked"
         st["last_result"] = (f"{verb} {st['cards']:,} card(s) across "
                              f"{st['stocked']} set(s).")
+        if st["skipped"]:
+            st["last_result"] += f" {st['skipped']} already complete, skipped."
         if st["empty"]:
             st["last_result"] += (f" {st['empty']} set(s) had no data yet — "
                                   "they'll be picked up automatically once they do.")
