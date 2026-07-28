@@ -36,6 +36,7 @@ import grading_roi
 import grading_tiers
 import grading_sets
 import catalog
+import card_eras
 
 load_dotenv()
 
@@ -2124,7 +2125,15 @@ async def api_catalog_facets(request: Request, language: str = "english",
                 available = await price_sources.fetch_ppt_sets(client, language=language)
         except Exception:
             logger.exception("Catalog: PPT set list failed — showing stocked sets only")
+    # Tag every set with its era so the pickers can group them. Done here
+    # rather than in catalog.py: it's presentation, and catalog.py stays
+    # schema + queries. era_order lets the client sort groups newest-era-first
+    # without duplicating ERA_ORDER in JavaScript.
+    card_eras.annotate(data["sets"], name_key="set_name")
+    card_eras.annotate(available, name_key="name")
     data["available_sets"] = available
+    data["era_order"] = [key for key, _ in card_eras.ERA_ORDER]
+    data["era_labels"] = dict(card_eras.ERA_ORDER)
     data["language"] = language
     data["can_stock"] = price_sources.pokemonpricetracker_available()
     # Lets the page show seeding progress instead of looking broken while the

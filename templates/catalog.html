@@ -77,6 +77,9 @@
   .picker-list .ck-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .picker-list .ck-count { margin-left: auto; font-size: 11px; color: #bbb; flex-shrink: 0; }
   .picker-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid #f0f0f0; margin-top: 6px; padding-top: 8px; }
+  /* Sticky so the era stays identifiable while scrolling a long set list. */
+  .picker-group { position: sticky; top: 0; z-index: 1; background: #fff; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: #9a94b8; padding: 7px 4px 3px; border-bottom: 1px solid #f0f0f0; }
+  .picker-group:first-child { padding-top: 2px; }
 
   table.rows { border-collapse: collapse; width: 100%; font-size: 12px; }
   table.rows th { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: .05em; padding: 7px 10px; text-align: left; border-bottom: 1px solid #e4e4e7; white-space: nowrap; }
@@ -172,6 +175,7 @@
   html[data-theme="dark"] .picker-list label { color: #d4d4d8; }
   html[data-theme="dark"] .picker-list label:hover { background: #2e2e32; }
   html[data-theme="dark"] .picker-foot { border-top-color: #303033; }
+  html[data-theme="dark"] .picker-group { background: #1c1c1f; color: #8b85ad; border-bottom-color: #2a2a2d; }
   html[data-theme="dark"] table.rows th { border-bottom-color: #303033; }
   html[data-theme="dark"] table.rows td { border-bottom-color: #242427; }
   html[data-theme="dark"] table.rows tbody tr:hover { background: #232326; }
@@ -369,6 +373,10 @@ let total = 0;
 let loadTimer = null;
 let allSets = [];        // stocked sets, from /facets
 let availableSets = [];  // every set PPT knows (admin stock picker)
+// Era grouping, supplied by the server so ERA_ORDER lives in exactly one
+// place (card_eras.py) rather than being mirrored here.
+let eraOrder = [];
+let eraLabels = {};
 
 function esc(s){
   return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
@@ -481,6 +489,15 @@ function positionPicker(btn){
   panel.style.top = top + 'px';
 }
 
+function optionRow(key, o){
+  return `<label>
+      <input type="checkbox" value="${esc(o.value)}"${selected[key].has(o.value) ? ' checked' : ''}
+             onchange="togglePick('${esc(key)}', this)">
+      <span class="ck-name">${esc(o.name)}</span>
+      <span class="ck-count">${o.count}</span>
+    </label>`;
+}
+
 function renderPickerList(filter){
   const key = openPickerKey;
   if (!key) return;
@@ -491,12 +508,37 @@ function renderPickerList(filter){
     list.innerHTML = '<div class="hint" style="padding:6px 4px">Nothing matches.</div>';
     return;
   }
-  list.innerHTML = opts.map(o => `<label>
-      <input type="checkbox" value="${esc(o.value)}"${selected[key].has(o.value) ? ' checked' : ''}
-             onchange="togglePick('${esc(key)}', this)">
-      <span class="ck-name">${esc(o.name)}</span>
-      <span class="ck-count">${o.count}</span>
-    </label>`).join('');
+
+  // Sets group by era, newest era first. Rarity stays a flat list — there's
+  // no meaningful grouping for it, and headers over a dozen items would be
+  // noise. Groups are built from the filtered options, so a search that
+  // empties an era drops its header too.
+  if (key === 'set' && opts.some(o => o.era)){
+    const buckets = new Map();
+    opts.forEach(o => {
+      const e = o.era || 'other';
+      if (!buckets.has(e)) buckets.set(e, []);
+      buckets.get(e).push(o);
+    });
+    const order = eraOrder.length ? eraOrder : [...buckets.keys()];
+    const seen = new Set();
+    let html = '';
+    const emit = (e) => {
+      const rows = buckets.get(e);
+      if (!rows || seen.has(e)) return;
+      seen.add(e);
+      html += `<div class="picker-group">${esc(eraLabels[e] || e)}</div>`
+            + rows.map(o => optionRow(key, o)).join('');
+    };
+    order.forEach(emit);
+    // Anything the server sent with an era the order list doesn't cover still
+    // gets rendered rather than silently vanishing from the filter.
+    [...buckets.keys()].forEach(emit);
+    list.innerHTML = html;
+    return;
+  }
+
+  list.innerHTML = opts.map(o => optionRow(key, o)).join('');
 }
 
 // Applies immediately rather than on "Done" — the table updating as boxes are
@@ -635,8 +677,11 @@ async function loadFacets(){
   allSets = d.sets || [];
   availableSets = d.available_sets || [];
 
+  eraOrder = d.era_order || [];
+  eraLabels = d.era_labels || {};
+
   pickerData.set.options = allSets.map(s => ({
-    value: s.set_id, name: s.set_name, count: s.cards }));
+    value: s.set_id, name: s.set_name, count: s.cards, era: s.era }));
   pickerData.rarity.options = (d.rarities || []).map(r => ({
     value: r.rarity, name: r.rarity, count: r.count }));
 
@@ -669,8 +714,20 @@ async function loadFacets(){
   if (picker){
     const have = new Set(allSets.map(s => s.set_id));
     const missing = availableSets.filter(s => !have.has(s.id));
-    picker.innerHTML = '<option value="">Choose a set…</option>' + missing.map(s =>
-      `<option value="${esc(s.id)}">${esc(s.name)}${s.year ? ' (' + esc(s.year) + ')' : ''}</option>`).join('');
+    // Same era grouping as the filter, via optgroup — this list is every set
+    // PPT knows, so it's long enough that a flat dropdown is hard to use.
+    const byEra = new Map();
+    missing.forEach(s => {
+      const e = s.era || 'other';
+      if (!byEra.has(e)) byEra.set(e, []);
+      byEra.get(e).push(s);
+    });
+    const keys = eraOrder.filter(e => byEra.has(e))
+      .concat([...byEra.keys()].filter(e => !eraOrder.includes(e)));
+    picker.innerHTML = '<option value="">Choose a set…</option>' + keys.map(e =>
+      `<optgroup label="${esc(eraLabels[e] || e)}">` + byEra.get(e).map(s =>
+        `<option value="${esc(s.id)}">${esc(s.name)}${s.year ? ' (' + esc(s.year) + ')' : ''}</option>`
+      ).join('') + '</optgroup>').join('');
     if (!d.can_stock){
       picker.disabled = true;
       document.getElementById('stockBtn').disabled = true;

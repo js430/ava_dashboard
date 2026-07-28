@@ -261,6 +261,27 @@ and note that as sets get re-stocked and `tcgplayer_verified` fills in, the
 eBay share of clicks shrinks. If monetisation matters, TCGplayer's own
 program is where the volume ends up.
 
+**Sets in the filter are grouped by era** (`card_eras.py`), newest series
+first, from TCGplayer's "Every Pokémon TCG Set in Order" (read 2026-07-28) —
+all 128 English expansions plus the promo/misc groups.
+
+**New sets mostly classify themselves, which is the point.** Three passes, in
+order: an explicit name in `SET_ERAS`; then an **era prefix** on the name —
+PokemonPriceTracker labels sets `"SWSH: Crown Zenith"`, `"ME: Ascended
+Heroes"`, so next year's release lands in the right era with no edit here;
+then keyword rules for promos / McDonald's / POP / Trainer Kits. Anything
+still unmatched goes to **"Other" rather than being guessed** — a set filed
+under the wrong era is worse than one in a visible catch-all.
+
+Names match loosely (case, spacing and punctuation stripped), so
+`Scarlet & Violet—151`, `Scarlet & Violet 151` and `SV: 151` all resolve to
+the same era. Subsets (Trainer Gallery, Shiny Vault, Galarian Gallery,
+Classic Collection) are listed with their parent's era so they don't scatter.
+
+**`ERA_ORDER` lives only in `card_eras.py`.** The API ships `era_order` and
+`era_labels` to the client rather than the template mirroring the list — one
+place to edit when a new series starts.
+
 **Images were considered and deferred.** CSP already allows
 `https://images.pokemontcg.io`, so that source needs no security change — but
 catalog rows come from PPT (set ids are *names*) while pokemontcg.io needs
