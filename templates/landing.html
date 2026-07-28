@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/brand/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/brand/icon-180.png">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nexus Card Co — Restock Dashboard</title>
+<meta name="description" content="{{ og_description }}">
+
+<!-- The ONLY page an anonymous visitor (or a link-unfurl crawler) can reach.
+     Every other route redirects to Discord OAuth, so these tags have to live
+     here or the dashboard link renders as a bare URL in chat. -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Nexus Card Co">
+<meta property="og:title" content="{{ og_title }}">
+<meta property="og:description" content="{{ og_description }}">
+<meta property="og:url" content="{{ base_url }}/">
+<meta property="og:image" content="{{ base_url }}/static/brand/og-banner.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="343">
+<meta property="og:image:alt" content="Nexus Card Co — restocks, analytics, community">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{{ og_title }}">
+<meta name="twitter:description" content="{{ og_description }}">
+<meta name="twitter:image" content="{{ base_url }}/static/brand/og-banner.png">
+<meta name="theme-color" content="#111021">
+
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #111021;
+    color: #e8e6f5;
+    min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px;
+    /* Echoes the soft radial glow behind the mark in the brand assets. */
+    background-image:
+      radial-gradient(ellipse at 50% 30%, rgba(124,109,225,.16), transparent 60%),
+      radial-gradient(ellipse at 50% 100%, rgba(88,101,242,.10), transparent 55%);
+  }
+  .wrap { width: 100%; max-width: 560px; text-align: center; }
+  .banner { width: 100%; height: auto; max-width: 520px; margin: 0 auto 28px; display: block; }
+  .lede { font-size: 15px; line-height: 1.65; color: #b9b4d4; margin-bottom: 30px; }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+    background: #5865F2; color: #fff; text-decoration: none;
+    font-size: 15px; font-weight: 600;
+    padding: 13px 26px; border-radius: 10px;
+    transition: background .15s ease;
+  }
+  .btn:hover { background: #4752d4; }
+  .btn svg { flex-shrink: 0; }
+  .note { font-size: 12px; color: #6f6a8f; margin-top: 20px; line-height: 1.6; }
+  .feat { display: flex; gap: 26px; justify-content: center; flex-wrap: wrap;
+          margin: 32px auto 0; padding-top: 26px; border-top: 1px solid #241f3d; }
+  .feat div { font-size: 12px; color: #8b85ad; letter-spacing: .06em; text-transform: uppercase; }
+  @media (max-width: 520px) {
+    .lede { font-size: 14px; }
+    .feat { gap: 16px; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <img class="banner" src="/static/brand/banner.png"
+         alt="Nexus Card Co — restocks, analytics, community">
+
+    <p class="lede">
+      Historical restock data, store maps, card prices and analytics for the
+      Nexus Card Co community &mdash; covering NOVA, RVA, Tidewater and the
+      wider DMV.
+    </p>
+
+    <a class="btn" href="/login">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M19.27 5.33C17.94 4.71 16.5 4.26 15 4a.09.09 0 0 0-.07.03c-.18.33-.39.76-.53 1.09a16.09 16.09 0 0 0-4.8 0c-.14-.34-.35-.76-.54-1.09-.01-.02-.04-.03-.07-.03-1.5.26-2.93.71-4.27 1.33-.01 0-.02.01-.03.02-2.72 4.07-3.47 8.03-3.1 11.95 0 .02.01.04.03.05 1.8 1.32 3.53 2.12 5.24 2.65.03.01.06 0 .07-.02.4-.55.76-1.13 1.07-1.74.02-.04 0-.08-.04-.09-.57-.22-1.11-.48-1.64-.78-.04-.02-.04-.08-.01-.11.11-.08.22-.17.33-.25.02-.02.05-.02.07-.01 3.44 1.57 7.15 1.57 10.55 0 .02-.01.05-.01.07.01.11.09.22.17.33.26.04.03.04.09-.01.11-.52.31-1.07.56-1.64.78-.04.01-.05.06-.04.09.32.61.68 1.19 1.07 1.74.03.02.06.03.09.02 1.72-.53 3.45-1.33 5.25-2.65.02-.01.03-.03.03-.05.44-4.53-.73-8.46-3.1-11.95-.01-.01-.02-.02-.04-.02zM8.52 14.91c-1.03 0-1.89-.95-1.89-2.12s.84-2.12 1.89-2.12c1.06 0 1.9.96 1.89 2.12 0 1.17-.84 2.12-1.89 2.12zm6.97 0c-1.03 0-1.89-.95-1.89-2.12s.84-2.12 1.89-2.12c1.06 0 1.9.96 1.89 2.12 0 1.17-.83 2.12-1.89 2.12z"/>
+      </svg>
+      Sign in with Discord
+    </a>
+
+    <div class="feat">
+      <div>Restocks</div>
+      <div>Analytics</div>
+      <div>Community</div>
+    </div>
+
+    <p class="note">
+      Members only. You'll need the community role in the Discord server to get in.
+    </p>
+  </div>
+</body>
+</html>

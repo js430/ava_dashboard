@@ -210,6 +210,17 @@ app = FastAPI(lifespan=lifespan)
 # the existing CSP already allows via img-src 'self' — no security change.
 # Mounted only if the directory exists: StaticFiles raises on a missing
 # directory, and a branding folder must never be able to stop the app booting.
+# Absolute origin for Open Graph tags. og:image MUST be absolute — a relative
+# path is silently ignored by unfurl crawlers — and request.base_url can't be
+# trusted here because Railway terminates TLS at the proxy, so it can report
+# http://. Env-overridable so a custom domain is config, not a code change.
+PUBLIC_BASE_URL = os.getenv(
+    "PUBLIC_BASE_URL", "https://restock-dashboard-production.up.railway.app").rstrip("/")
+OG_TITLE = "Nexus Card Co — Restock Dashboard"
+OG_DESCRIPTION = ("Historical restock data, store maps, card prices and analytics "
+                  "for the Nexus Card Co community — NOVA, RVA, Tidewater and the "
+                  "wider DMV.")
+
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 if os.path.isdir(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -545,7 +556,17 @@ def _extract_latlng(maps_url: str):
 async def index(request: Request):
     user = request.session.get("user")
     if not user:
-        return RedirectResponse("/login")
+        # Public landing page rather than an immediate bounce to Discord OAuth.
+        # This is the ONLY page an anonymous request can reach, so it's the only
+        # place Open Graph tags can live — without it the dashboard link unfurls
+        # in Discord as whatever the OAuth redirect chain ends on. Signed-in
+        # users never see it; every other route still redirects to /login.
+        return templates.TemplateResponse("landing.html", {
+            "request": request,
+            "base_url": PUBLIC_BASE_URL,
+            "og_title": OG_TITLE,
+            "og_description": OG_DESCRIPTION,
+        })
     if is_demo(request):
         return RedirectResponse("/sample")
     if not await terms_current(request, user):

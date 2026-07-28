@@ -69,6 +69,15 @@ def main() -> int:
         # whatever background the client uses, and a transparent PNG can render
         # with white edges in a dark Discord embed.
         banner = banner.convert("RGBA")
+        # Caught for real once: the source arrived stored rotated 90 degrees,
+        # which resizes and saves perfectly happily and only shows up as a
+        # sideways image inside a Discord embed. A wide banner is never
+        # taller than it is wide, so refuse rather than publish it.
+        if banner.height >= banner.width:
+            print(f"  ERROR: banner is {banner.width}x{banner.height} — portrait or "
+                  "square. A wide banner should be landscape; this one looks "
+                  "rotated. Fix the source and re-run.")
+            return 1
         if banner.width > OG_MAX_WIDTH:
             h = round(banner.height * OG_MAX_WIDTH / banner.width)
             banner = banner.resize((OG_MAX_WIDTH, h), Image.LANCZOS)
