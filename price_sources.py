@@ -21,8 +21,10 @@ from __future__ import annotations
 import os
 import re
 import time
+import asyncio
 import base64
 import logging
+from collections import deque
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 
@@ -330,6 +332,53 @@ def _first(payload: dict, *keys):
     return None
 
 
+# PPT's hard per-minute cap (Free and API tiers are both 60/min; Business is
+# 500, Enterprise 1000 — override via env if the account is on one of those).
+# Enforced GLOBALLY, in-process, across every call this app makes: background
+# sweeps (nightly price sweep, tracker ingest), live member/guest requests,
+# and admin actions all draw on the SAME account limit, and slowapi's per-IP
+# limits do nothing to stop the sum of concurrent traffic from blowing past
+# it. This app is a single long-lived process (see the tracker's own
+# scheduler comment), so an in-process gate is the whole limit, not a
+# per-instance slice of it — no Redis or other shared store needed.
+PPT_RATE_LIMIT_PER_MINUTE = int(os.getenv("PPT_RATE_LIMIT_PER_MINUTE", "60"))
+PPT_RATE_WINDOW_S = 60.0
+
+_ppt_rate_lock = asyncio.Lock()
+# Monotonic timestamps of calls made in roughly the current window. Bounded
+# by PPT_RATE_LIMIT_PER_MINUTE itself — it never holds more entries than the
+# cap allows before the oldest ones age out.
+_ppt_call_times: deque = deque()
+
+
+async def _ppt_rate_limit() -> None:
+    """Block until issuing another PPT request keeps the last
+    PPT_RATE_WINDOW_S seconds at or under PPT_RATE_LIMIT_PER_MINUTE calls.
+
+    Sliding window, not a fixed per-minute bucket — 60 calls at :59 and 60
+    more at :01 would both be "within their own minute" under a fixed bucket
+    but is 120 calls in 2 seconds, which is exactly the burst PPT's limit
+    exists to prevent. A rolling window has no such seam.
+
+    The wait happens OUTSIDE the lock so other waiting callers can still
+    prune the deque and re-check while this one sleeps — otherwise every
+    caller after the first would serialize behind the sleeping one instead
+    of genuinely sharing the window.
+    """
+    while True:
+        async with _ppt_rate_lock:
+            now = time.monotonic()
+            while _ppt_call_times and now - _ppt_call_times[0] >= PPT_RATE_WINDOW_S:
+                _ppt_call_times.popleft()
+            if len(_ppt_call_times) < PPT_RATE_LIMIT_PER_MINUTE:
+                _ppt_call_times.append(now)
+                return
+            # Small fudge so the retry lands just after the oldest call
+            # actually ages out, not exactly on the boundary.
+            wait = PPT_RATE_WINDOW_S - (now - _ppt_call_times[0]) + 0.05
+        await asyncio.sleep(max(wait, 0.05))
+
+
 async def _ppt_get(client: httpx.AsyncClient, path: str, params: dict,
                    label: str) -> tuple[list, object]:
     """GET a PPT endpoint and return (rows, response).
@@ -342,6 +391,7 @@ async def _ppt_get(client: httpx.AsyncClient, path: str, params: dict,
     key = os.getenv("POKEMONPRICETRACKER_API_KEY")
     if not key:
         return [], None
+    await _ppt_rate_limit()
     try:
         resp = await client.get(f"{PPT_BASE}{path}",
                                 headers={"Authorization": f"Bearer {key}"},
