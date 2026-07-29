@@ -108,6 +108,8 @@
   .price { font-weight: 700; color: #16a34a; white-space: nowrap; }
   .price-none { color: #bbb; font-weight: 400; }
   .rarity-chip { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 8px; background: #f3f4f6; color: #6b7280; white-space: nowrap; }
+  .col-updated { color: #999; white-space: nowrap; }
+  .check-col { width: 28px; text-align: center; }
   .table-wrap { overflow-x: auto; }
 
   .pager { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px solid #f0f0f0; }
@@ -140,10 +142,14 @@
        price filter off-screen — the columns divide the available width
        instead of being sized by their contents. */
     table.rows { table-layout: fixed; width: 100%; }
-    table.rows th:nth-child(1), table.rows td:nth-child(1) { width: 33%; }
-    table.rows th:nth-child(2), table.rows td:nth-child(2) { width: 24%; }
-    table.rows th:nth-child(3), table.rows td:nth-child(3) { width: 22%; }
-    table.rows th:nth-child(4), table.rows td:nth-child(4) { width: 21%; }
+    /* Admin selection and "last updated" are secondary on a phone-width
+       table — hidden here rather than fought into the same four-column
+       budget the filters already need every percent of. */
+    .check-col, .col-updated { display: none; }
+    table.rows th.col-card, table.rows td.col-card { width: 33%; }
+    table.rows th.col-set, table.rows td.col-set { width: 24%; }
+    table.rows th.col-rarity, table.rows td.col-rarity { width: 22%; }
+    table.rows th.col-price, table.rows td.col-price { width: 21%; }
     table.rows th, table.rows td { padding-left: 5px; padding-right: 5px; }
     table.rows th { font-size: 11px; letter-spacing: 0; }
     /* Wrap rather than ellipsis: truncating a card name hides the thing the
@@ -258,20 +264,26 @@
             <option value="set_newest">Recently stocked</option>
           </select>
           <button class="btn btn-plain btn-sm" id="resetBtn" onclick="clearFilters()">Reset</button>
+          <button class="btn btn-plain btn-sm" id="refreshSelectedBtn" disabled
+                  onclick="refreshSelectedCards()">Refresh selected</button>
+          <span class="hint" id="refreshMsg"></span>
         </div>
         <div class="table-wrap">
           <table class="rows">
             <thead>
               <tr>
-                <th>Card</th>
-                <th>Set</th>
-                <th>Rarity</th>
-                <th class="right">Raw price</th>
+                <th class="check-col"></th>
+                <th class="col-card">Card</th>
+                <th class="col-set">Set</th>
+                <th class="col-rarity">Rarity</th>
+                <th class="right col-price">Raw price</th>
+                <th class="col-updated">Last updated</th>
               </tr>
               <!-- Filters live in the header rather than a sidebar: each one
                    sits under the column it acts on, and on a phone that's one
                    column of controls instead of a panel pushed off-screen. -->
               <tr class="filter-row">
+                <th class="check-col"></th>
                 <th>
                   <input type="text" id="qSearch" class="th-input"
                          placeholder="Search name or number&hellip;"
@@ -300,6 +312,7 @@
                            min="0" step="1" aria-label="Maximum price">
                   </div>
                 </th>
+                <th class="col-updated"></th>
               </tr>
             </thead>
             <tbody id="cardRows"></tbody>
@@ -396,6 +409,12 @@
 <script>
 // True only when EBAY_AFFILIATE_PARAMS is configured server-side.
 const EBAY_AFFILIATE = {{ 'true' if ebay_affiliate else 'false' }};
+const IS_ADMIN = {{ 'true' if is_admin else 'false' }};
+const MAX_REFRESH_SELECTION = 10;
+// Mirrors CATALOG_MANUAL_REFRESH_MIN_AGE_HOURS server-side — a card priced
+// more recently than this can't be selected. Kept in one place (the env var)
+// and passed down, rather than hardcoded here too.
+const REFRESH_MIN_AGE_MS = {{ refresh_min_age_hours }} * 3600 * 1000;
 const PAGE_SIZE = 50;
 let offset = 0;
 let total = 0;
@@ -418,6 +437,113 @@ function esc(s){
 function money(v){
   return '$' + Number(v).toLocaleString('en-US',
     {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+// Relative time for the "Last updated" column. Coarse on purpose — a table
+// of hundreds of rows doesn't need second-level precision, just "is this
+// stale".
+function timeAgo(iso){
+  if (!iso) return 'never';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return 'never';
+  const mins = Math.max(0, Math.round((Date.now() - then) / 60000));
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.round(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.round(months / 12)}y ago`;
+}
+
+// Client-side mirror of the server's eligibility check (main.py's
+// api_catalog_refresh_cards) — disables the checkbox up front so most
+// visitors never hit the 400/skip path, but the server re-checks
+// unconditionally since a disabled checkbox is only a UI nicety.
+function refreshEligible(c){
+  if (!c.tcgplayer_url) return { ok: false, reason: 'No direct TCGplayer link — can’t be refreshed this way' };
+  if (c.priced_at){
+    const ageMs = Date.now() - new Date(c.priced_at).getTime();
+    if (ageMs < REFRESH_MIN_AGE_MS){
+      return { ok: false, reason: `Priced ${timeAgo(c.priced_at)} — refreshable again after ${REFRESH_MIN_AGE_MS / 3600000}h` };
+    }
+  }
+  return { ok: true, reason: '' };
+}
+
+// Admin card-refresh selection. Keyed by catalog_cards.id, persisted across
+// re-renders (pages, filter changes) rather than read off checkbox DOM state
+// — loadCards() replaces the whole tbody every time, which would otherwise
+// silently clear it.
+const selectedCards = new Set();
+
+function updateRefreshButton(){
+  const btn = document.getElementById('refreshSelectedBtn');
+  if (!btn) return;
+  btn.disabled = selectedCards.size === 0;
+  btn.textContent = selectedCards.size
+    ? `Refresh selected (${selectedCards.size})` : 'Refresh selected';
+}
+
+function showRefreshMsg(msg){
+  const el = document.getElementById('refreshMsg');
+  if (el) el.textContent = msg;
+}
+
+function onCardCheck(checkbox){
+  const id = Number(checkbox.dataset.id);
+  if (checkbox.checked){
+    if (selectedCards.size >= MAX_REFRESH_SELECTION){
+      checkbox.checked = false;
+      showRefreshMsg(`You can only refresh ${MAX_REFRESH_SELECTION} cards at a time.`);
+      return;
+    }
+    selectedCards.add(id);
+  } else {
+    selectedCards.delete(id);
+  }
+  updateRefreshButton();
+}
+
+async function refreshSelectedCards(){
+  if (!selectedCards.size) return;
+  const btn = document.getElementById('refreshSelectedBtn');
+  btn.disabled = true;
+  showRefreshMsg(`Refreshing ${selectedCards.size} card(s)…`);
+  try {
+    const resp = await fetch('/api/catalog/refresh-cards', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ ids: Array.from(selectedCards) })
+    });
+    const d = await resp.json();
+    if (!resp.ok){
+      showRefreshMsg(d.detail || 'Couldn’t refresh those cards.');
+      updateRefreshButton();
+      return;
+    }
+    const results = d.results || [];
+    const ok = results.filter(r => r.status === 'ok').length;
+    const cleared = results.filter(r => r.status === 'empty').length;
+    const problems = results.filter(r => !['ok', 'empty'].includes(r.status));
+    let msg = `Refreshed ${ok} card(s)`;
+    if (cleared) msg += `, ${cleared} came back with no price`;
+    if (problems.length){
+      const reasons = { unverified: 'no direct price link', rate_limited: 'rate limited',
+                        error: 'lookup failed', not_found: 'not found',
+                        too_recent: 'priced too recently' };
+      const names = problems.map(r => `${r.name || r.id} (${reasons[r.status] || r.status})`);
+      msg += `. Skipped: ${names.join(', ')}`;
+    }
+    showRefreshMsg(msg);
+    selectedCards.clear();
+    await loadFacets();
+    await loadCards();
+  } catch(e){
+    showRefreshMsg('Network error — please try again.');
+  } finally {
+    updateRefreshButton();
+  }
 }
 
 // Selection lives here, not in the DOM: the picker is built on open and torn
@@ -745,13 +871,19 @@ async function loadCards(){
       ? `<a class="cname clink" href="${esc(href)}" target="_blank" rel="${rel}"
             title="Look up ${esc(c.name)} on ${where}">${esc(c.name)}</a>`
       : `<span class="cname">${esc(c.name)}</span>`;
+    const eligible = refreshEligible(c);
+    const checkCell = `<td class="check-col"><input type="checkbox" class="row-check" data-id="${c.id}"
+          ${selectedCards.has(c.id) ? 'checked' : ''} ${eligible.ok ? '' : 'disabled'}
+          title="${esc(eligible.reason)}" onchange="onCardCheck(this)"></td>`;
     return `<tr>
-    <td>${nameCell}${c.card_number ? `<span class="cnum">${esc(c.card_number)}</span>` : ''}</td>
-    <td class="cset">${esc(c.set_name || c.set_id)}</td>
-    <td>${c.rarity ? `<span class="rarity-chip">${esc(c.rarity)}</span>` : ''}</td>
-    <td class="right">${c.raw_price == null
+    ${checkCell}
+    <td class="col-card">${nameCell}${c.card_number ? `<span class="cnum">${esc(c.card_number)}</span>` : ''}</td>
+    <td class="cset col-set">${esc(c.set_name || c.set_id)}</td>
+    <td class="col-rarity">${c.rarity ? `<span class="rarity-chip">${esc(c.rarity)}</span>` : ''}</td>
+    <td class="right col-price">${c.raw_price == null
         ? '<span class="price-none">no price</span>'
         : `<span class="price">${money(c.raw_price)}</span>`}</td>
+    <td class="col-updated" title="${c.priced_at ? esc(new Date(c.priced_at).toLocaleString()) : ''}">${timeAgo(c.priced_at)}</td>
   </tr>`;
   }).join('');
 

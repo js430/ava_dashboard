@@ -195,12 +195,14 @@ async def lifespan(app: FastAPI):
     # Runs shortly after boot, which is also the catch-up for a night the
     # 11pm ingest missed because the process restarted.
     price_sweep_task = asyncio.create_task(_card_price_sweep_scheduler(app))
+    catalog_price_sweep_task = asyncio.create_task(_catalog_price_sweep_scheduler(app))
     try:
         yield
     finally:
         scheduler_task.cancel()
         catalog_backfill_task.cancel()
         price_sweep_task.cancel()
+        catalog_price_sweep_task.cancel()
         await app.state.db.close()
 
 
@@ -1962,6 +1964,14 @@ CATALOG_NEXT_BATCH_SETS = int(os.getenv("CATALOG_NEXT_BATCH_SETS", "10"))
 CATALOG_BACKFILL_RATE_WAIT_S = float(os.getenv("CATALOG_BACKFILL_RATE_WAIT_S", "30"))
 CATALOG_BACKFILL_RATE_RETRIES = int(os.getenv("CATALOG_BACKFILL_RATE_RETRIES", "2"))
 
+# The manual "refresh these cards" action (/api/catalog/refresh-cards) is open
+# to every viewer, not just admins — this is the floor that keeps it from
+# being a free-for-all: a card priced more recently than this can't be
+# selected (enforced both client-side, for the checkbox, and server-side,
+# since the client can't be trusted). A card can only ever cost 1 credit per
+# window, no matter how many different people try to refresh it.
+CATALOG_MANUAL_REFRESH_MIN_AGE_HOURS = int(os.getenv("CATALOG_MANUAL_REFRESH_MIN_AGE_HOURS", "48"))
+
 
 def _catalog_known_empty(app) -> set:
     """Set ids PPT had no data for this process run.
@@ -2192,6 +2202,143 @@ async def _catalog_backfill_startup(app) -> None:
         logger.exception("Catalog backfill startup task failed")
 
 
+# ---- Catalog nightly price sweep (11:15pm America/New_York) ----
+# Spends whatever PPT daily credit budget is left over refreshing catalog
+# prices, one card at a time via the cheapest lookup PPT offers (pinned by
+# tcgplayer_id, 1 credit — see price_sources.fetch_ppt_card_prices). Runs
+# 15 minutes after the card tracker's own 11pm ingest so "remaining budget"
+# already reflects everything else that spent credits today: that ingest,
+# its 3-hourly gap-fill sweep, live member usage, and any admin catalog
+# actions — there's no way to know that total in advance, so this reads
+# PPT's own X-RateLimit-Daily-Remaining header live after every call rather
+# than tracking a locally-computed count that could drift from reality.
+CATALOG_PRICE_SWEEP_HOUR = 23
+CATALOG_PRICE_SWEEP_MINUTE = 15
+# How many of the newest sets get first crack at the budget before anything
+# else does, regardless of how stale those cards are (they're never LESS
+# eligible for it, only more).
+CATALOG_PRICE_SWEEP_RECENT_SETS = int(os.getenv("CATALOG_PRICE_SWEEP_RECENT_SETS", "8"))
+# Backstop against a header-parsing miss or a runaway candidate list — not
+# the real budget control, which is the live remaining-credits check below.
+# 1 credit/card makes the daily allowance itself a natural ceiling.
+CATALOG_PRICE_SWEEP_MAX_CARDS = int(os.getenv("CATALOG_PRICE_SWEEP_MAX_CARDS", "20000"))
+# Stop once PPT reports this many credits or fewer left today. Default 0:
+# this is the last scheduled consumer before the daily reset, so there's
+# nothing later today to hold a reserve back for.
+CATALOG_PRICE_SWEEP_RESERVE_CREDITS = int(os.getenv("CATALOG_PRICE_SWEEP_RESERVE_CREDITS", "0"))
+CATALOG_PRICE_SWEEP_RATE_WAIT_S = float(os.getenv("CATALOG_PRICE_SWEEP_RATE_WAIT_S", "30"))
+CATALOG_PRICE_SWEEP_RATE_RETRIES = int(os.getenv("CATALOG_PRICE_SWEEP_RATE_RETRIES", "2"))
+
+
+async def _run_catalog_price_sweep(app) -> dict:
+    """Refresh catalog card prices until the candidates or the daily PPT
+    budget run out, whichever comes first. Never raises."""
+    summary = {"candidates": 0, "refreshed": 0, "cleared": 0, "skipped": 0,
+              "credits": 0, "stopped": None}
+    if not price_sources.pokemonpricetracker_available():
+        logger.info("Catalog price sweep: PokemonPriceTracker not configured — skipping")
+        return summary
+    pool = app.state.db
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            sets = await price_sources.fetch_ppt_sets(client, language="english")
+        recent_set_ids = [s["id"] for s in sets[:CATALOG_PRICE_SWEEP_RECENT_SETS]]
+
+        candidates = await catalog.select_price_refresh_candidates(
+            pool, CATALOG_GAME, "english", recent_set_ids, CATALOG_PRICE_SWEEP_MAX_CARDS)
+        summary["candidates"] = len(candidates)
+        if not candidates:
+            logger.info("Catalog price sweep: no refreshable cards (need a "
+                        "verified tcgplayer_id) — nothing to do")
+            return summary
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for card in candidates:
+                prices, status, daily_remaining = {}, "error", None
+                for attempt in range(CATALOG_PRICE_SWEEP_RATE_RETRIES + 1):
+                    prices, status, daily_remaining = await price_sources.fetch_ppt_card_prices(
+                        client, card["tcgplayer_id"])
+                    if status != "rate_limited" or attempt >= CATALOG_PRICE_SWEEP_RATE_RETRIES:
+                        break
+                    wait = CATALOG_PRICE_SWEEP_RATE_WAIT_S * (2 ** attempt)
+                    logger.warning("Catalog price sweep: rate limited on %r — waiting "
+                                   "%.0fs (retry %d/%d)", card["name"], wait,
+                                   attempt + 1, CATALOG_PRICE_SWEEP_RATE_RETRIES)
+                    await asyncio.sleep(wait)
+
+                if status == "rate_limited":
+                    summary["stopped"] = "rate_limited"
+                    logger.warning("Catalog price sweep: stopped — still rate limited "
+                                   "at %r after backing off", card["name"])
+                    break
+
+                # Every attempt that wasn't rate-limited spent the 1 credit
+                # fetch_ppt_card_prices is built to cost, whether or not PPT
+                # had a price to give back — same accounting the tracker's
+                # own ingest uses for this same call.
+                summary["credits"] += 1
+                if status == "error":
+                    # The call itself failed (no usable response) — unlike
+                    # "empty", PPT hasn't actually told us anything, so the
+                    # existing stored price is left alone rather than cleared.
+                    summary["skipped"] += 1
+                else:
+                    raw_price = (prices or {}).get("market")
+                    if raw_price is None:
+                        raw_price = (prices or {}).get("low")
+                    await catalog.update_card_price(pool, card["id"], raw_price,
+                                                    "pokemonpricetracker")
+                    if raw_price is not None:
+                        summary["refreshed"] += 1
+                    else:
+                        summary["cleared"] += 1
+
+                if (daily_remaining is not None
+                        and daily_remaining <= CATALOG_PRICE_SWEEP_RESERVE_CREDITS):
+                    summary["stopped"] = "budget"
+                    logger.info("Catalog price sweep: stopping — %d credit(s) left "
+                                "today (reserve %d)", daily_remaining,
+                                CATALOG_PRICE_SWEEP_RESERVE_CREDITS)
+                    break
+    except Exception:
+        logger.exception("Catalog price sweep failed")
+        summary["stopped"] = "error"
+        return summary
+
+    logger.info("Catalog price sweep: %d/%d candidate(s) processed — %d refreshed, "
+                "%d cleared, %d skipped, ~%d credit(s) spent%s",
+                summary["refreshed"] + summary["cleared"] + summary["skipped"],
+                summary["candidates"], summary["refreshed"], summary["cleared"],
+                summary["skipped"], summary["credits"],
+                f" — stopped ({summary['stopped']})" if summary["stopped"] else "")
+    return summary
+
+
+def _seconds_until_next_catalog_price_sweep() -> float:
+    eastern = ZoneInfo("America/New_York")
+    now = datetime.now(eastern)
+    target = now.replace(hour=CATALOG_PRICE_SWEEP_HOUR, minute=CATALOG_PRICE_SWEEP_MINUTE,
+                         second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
+
+
+async def _catalog_price_sweep_scheduler(app: FastAPI) -> None:
+    while True:
+        wait_s = _seconds_until_next_catalog_price_sweep()
+        logger.info("Catalog price sweep: next run in %.0f min (11:15pm America/New_York)",
+                    wait_s / 60)
+        await asyncio.sleep(wait_s)
+        try:
+            await _run_catalog_price_sweep(app)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Catalog price sweep scheduler failed — retrying tomorrow")
+
+
 @app.get("/catalog", response_class=HTMLResponse)
 async def catalog_page(request: Request):
     user = request.session.get("user")
@@ -2208,6 +2355,7 @@ async def catalog_page(request: Request):
         # Drives rel="sponsored" and the disclosure line. Both must appear
         # only when the eBay links actually carry EPN tracking.
         "ebay_affiliate": catalog.ebay_affiliate_enabled(),
+        "refresh_min_age_hours": CATALOG_MANUAL_REFRESH_MIN_AGE_HOURS,
     })
 
 
@@ -2320,6 +2468,85 @@ async def api_catalog_stock(request: Request, user=Depends(require_admin)):
                             detail=f"The request for {set_id} failed — see logs.")
     return JSONResponse({"set_id": set_id, "language": language, **stats},
                         headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/catalog/refresh-cards")
+@limiter.limit("30/hour")
+async def api_catalog_refresh_cards(request: Request, user=Depends(get_current_user_or_guest)):
+    """Refresh up to 10 specific cards' prices right now — open to every
+    Nexus Playground viewer (member or guest), not just admins.
+
+    Same 1-credit-per-card pinned lookup the nightly price sweep uses
+    (price_sources.fetch_ppt_card_prices). The cost-control isn't the
+    Depends() gate here — it's CATALOG_MANUAL_REFRESH_MIN_AGE_HOURS below: a
+    card priced more recently than that can't be picked again, by anyone, so
+    the total possible spend is capped by the size of the catalog rather than
+    by how many people ask.
+    """
+    body = await request.json()
+    raw_ids = body.get("ids") or []
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise HTTPException(status_code=400, detail="Pick at least one card")
+    if len(raw_ids) > 10:
+        raise HTTPException(status_code=400, detail="Refresh at most 10 cards at a time")
+    try:
+        ids = [int(i) for i in raw_ids]
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid card id")
+
+    if not price_sources.pokemonpricetracker_available():
+        raise HTTPException(status_code=503,
+                            detail="PokemonPriceTracker isn't configured, so cards can't be refreshed.")
+
+    language = price_sources.ppt_language(body.get("language"))
+    pool = request.app.state.db
+    rows = await catalog.get_cards_by_id(pool, CATALOG_GAME, language, ids)
+    found = {r["id"]: r for r in rows}
+    min_age = timedelta(hours=CATALOG_MANUAL_REFRESH_MIN_AGE_HOURS)
+
+    results = []
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for card_id in ids:
+            row = found.get(card_id)
+            if not row:
+                results.append({"id": card_id, "status": "not_found"})
+                continue
+            if not row["tcgplayer_verified"] or not row["tcgplayer_id"]:
+                # No safe pinned lookup available for this card (see
+                # select_price_refresh_candidates) — it only picks up a fresh
+                # price the next time its whole set is stocked or refreshed.
+                results.append({"id": card_id, "status": "unverified", "name": row["name"]})
+                continue
+            priced_at = row["priced_at"]
+            if priced_at is not None:
+                # priced_at is stored tz-aware (TIMESTAMPTZ); compare in UTC.
+                now = datetime.now(priced_at.tzinfo) if priced_at.tzinfo else datetime.utcnow()
+                if now - priced_at < min_age:
+                    # Never trust the client's checkbox-disabling alone — this
+                    # is the actual enforcement, re-checked against the DB.
+                    results.append({"id": card_id, "status": "too_recent", "name": row["name"]})
+                    continue
+
+            prices, status, _daily_remaining = await price_sources.fetch_ppt_card_prices(
+                client, row["tcgplayer_id"])
+            if status == "rate_limited":
+                results.append({"id": card_id, "status": "rate_limited", "name": row["name"]})
+                break
+            if status == "error":
+                results.append({"id": card_id, "status": "error", "name": row["name"]})
+                continue
+
+            raw_price = (prices or {}).get("market")
+            if raw_price is None:
+                raw_price = (prices or {}).get("low")
+            await catalog.update_card_price(pool, card_id, raw_price, "pokemonpricetracker")
+            results.append({
+                "id": card_id, "status": status, "name": row["name"],
+                "raw_price": raw_price,
+                "priced_at": datetime.utcnow().isoformat() + "Z" if raw_price is not None else None,
+            })
+
+    return JSONResponse({"results": results}, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/catalog/backfill")

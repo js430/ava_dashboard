@@ -413,7 +413,7 @@ async def run_ppt_ingest(pool) -> dict:
 
             prices, status = {}, "error"
             for attempt in range(PPT_RATE_RETRIES + 1):
-                prices, status = await price_sources.fetch_ppt_card_prices(client, tcg_id)
+                prices, status, _daily_remaining = await price_sources.fetch_ppt_card_prices(client, tcg_id)
                 if status != "rate_limited" or attempt >= PPT_RATE_RETRIES:
                     break
                 wait = PPT_RATE_WAIT_S * (2 ** attempt)

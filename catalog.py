@@ -302,6 +302,79 @@ async def upsert_set_cards(pool, game: str, language: str, set_id: str,
     return {"cards": len(rows), "priced": priced}
 
 
+async def select_price_refresh_candidates(pool, game: str, language: str,
+                                          priority_set_ids, limit: int) -> list:
+    """Cards due for a price refresh, newest-priority-sets first, then oldest
+    price first: [{id, tcgplayer_id, name, set_id}].
+
+    Only cards with a VERIFIED tcgplayer_id qualify — same gate the catalog's
+    buy links use (see `tcgplayer_url`). Without a real TCGplayer id there's
+    no cheap pinned lookup, only an expensive search, which this per-card
+    sweep isn't built to pay for; those cards catch up next time their set is
+    stocked or refreshed instead.
+
+    `priority_set_ids` (e.g. the newest N sets) sort first as a group; within
+    each half, the longest-unpriced card sorts first. A single ORDER BY
+    produces both tiers at once: cards outside the priority group never sort
+    ahead of one inside it, no matter how stale.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, tcgplayer_id, card_name, set_id
+            FROM catalog_cards
+            WHERE game = $1 AND language = $2
+              AND tcgplayer_id <> '' AND tcgplayer_verified = TRUE
+            ORDER BY (set_id = ANY($3::TEXT[])) DESC,
+                     priced_at ASC NULLS FIRST, id ASC
+            LIMIT $4
+            """,
+            game, language, list(priority_set_ids or ()), limit)
+    return [{"id": r["id"], "tcgplayer_id": r["tcgplayer_id"],
+             "name": r["card_name"], "set_id": r["set_id"]} for r in rows]
+
+
+async def get_cards_by_id(pool, game: str, language: str, ids) -> list:
+    """Specific catalog_cards rows by primary key, for the "refresh these
+    cards now" action: [{id, tcgplayer_id, tcgplayer_verified, name,
+    priced_at}]. `game`/`language` scope it to the same table the id column
+    is otherwise never enough to disambiguate on its own — belt-and-braces
+    against an id from a different game/language slipping through.
+    """
+    ids = [int(i) for i in (ids or ())]
+    if not ids:
+        return []
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, tcgplayer_id, tcgplayer_verified, card_name, priced_at "
+            "FROM catalog_cards WHERE game = $1 AND language = $2 AND id = ANY($3::INT[])",
+            game, language, ids)
+    return [{"id": r["id"], "tcgplayer_id": r["tcgplayer_id"],
+             "tcgplayer_verified": r["tcgplayer_verified"], "name": r["card_name"],
+             "priced_at": r["priced_at"]} for r in rows]
+
+
+async def update_card_price(pool, card_id: int, raw_price, price_source: str) -> None:
+    """Write a single card's refreshed price by primary key.
+
+    Same "the new response is truth" rule as `upsert_set_cards`: a None
+    price CLEARS the stored price and priced_at rather than leaving a stale
+    number looking current.
+    """
+    price = _as_numeric(raw_price)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE catalog_cards
+            SET raw_price = $1::NUMERIC,
+                price_source = $2,
+                priced_at = CASE WHEN $1::NUMERIC IS NULL THEN NULL ELSE NOW() END,
+                refreshed_at = NOW()
+            WHERE id = $3
+            """,
+            price, price_source if price is not None else None, card_id)
+
+
 def _build_filters(game: str, language: str, set_ids=None, rarities=None,
                    min_price=None, max_price=None, search: str = "",
                    priced_only: bool = False) -> tuple:
@@ -397,7 +470,7 @@ async def query_cards(pool, *, game: str, language: str = "english",
 
     page_params = params + [limit, offset]
     page_sql = (
-        "SELECT set_id, set_name, card_name, card_number, rarity, tcgplayer_id, "
+        "SELECT id, set_id, set_name, card_name, card_number, rarity, tcgplayer_id, "
         "       tcgplayer_verified, raw_price, price_source, priced_at, refreshed_at "
         f"FROM catalog_cards WHERE {where_sql} "
         f"ORDER BY {order_by} "
@@ -415,6 +488,7 @@ async def query_cards(pool, *, game: str, language: str = "english",
     return {
         **({"facets": facets} if facets is not None else {}),
         "cards": [{
+            "id": r["id"],
             "set_id": r["set_id"],
             "set_name": r["set_name"],
             "name": r["card_name"],

@@ -370,27 +370,51 @@ async def _ppt_get(client: httpx.AsyncClient, path: str, params: dict,
     return data, resp
 
 
+def _ppt_daily_remaining(resp) -> int | None:
+    """Parse `X-RateLimit-Daily-Remaining` off a PPT response, or None if
+    absent/unparseable. Present on both 200 and 429 responses, so callers
+    that spend a shared daily budget can track it after every call without
+    a separate 'check my balance' request (PPT doesn't offer one)."""
+    if resp is None:
+        return None
+    raw = resp.headers.get("X-RateLimit-Daily-Remaining")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 async def fetch_ppt_card_prices(client: httpx.AsyncClient, tcgplayer_id: str,
                                 language: str = PPT_DEFAULT_LANGUAGE) -> tuple:
-    """({low, market, high}, status) — ungraded prices for ONE card.
+    """({low, market, high}, status, daily_remaining) — ungraded prices for
+    ONE card.
 
     Deliberately the cheapest per-card refresh available: pinned by
     tcgPlayerId so no search is needed, and WITHOUT includeEbay, which bills a
     second credit per card for graded data the tracker doesn't store. One card
     in, one credit out.
 
+    `daily_remaining` is PPT's own count of credits left today (None if the
+    header was missing) — the only way to know it, since PPT has no separate
+    balance-check endpoint. Lets a caller spending down a shared daily budget
+    (the catalog price sweep) stop before it runs the account dry, without
+    guessing from a locally-tracked count that daytime traffic could throw off.
+
     Separate from fetch_pokemonpricetracker, which builds full graded quotes
     for the calculator and costs considerably more per card.
     """
     tcg_id = str(tcgplayer_id or "").strip()
     if not tcg_id:
-        return {}, "error"
+        return {}, "error", None
     rows, resp = await _ppt_get(client, "/cards",
                                 {"tcgPlayerId": tcg_id, "limit": 1,
                                  "language": ppt_language(language)},
                                 f"card-prices({tcg_id})")
+    daily_remaining = _ppt_daily_remaining(resp)
     if not rows:
-        return {}, _ppt_empty_status(resp)
+        return {}, _ppt_empty_status(resp), daily_remaining
 
     prices = (rows[0] or {}).get("prices") or {}
 
@@ -405,8 +429,8 @@ async def fetch_ppt_card_prices(client: httpx.AsyncClient, tcgplayer_id: str,
     if out["market"] is None and out["low"] is None and out["high"] is None:
         # A 200 with a row but no usable numbers — the call happened and was
         # billed, so this is 'empty', not an error.
-        return out, "empty"
-    return out, "ok"
+        return out, "empty", daily_remaining
+    return out, "ok", daily_remaining
 
 
 async def resolve_ppt_tcgplayer_id(client: httpx.AsyncClient, name: str,
