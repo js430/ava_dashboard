@@ -17,9 +17,14 @@ three handle almost everything automatically:
   0. Anything whose name says "promo" -> the Promos group, before any other
      rule gets a chance to claim it.
   1. An explicit name in SET_ERAS below.
-  2. An era PREFIX on the name — PokemonPriceTracker labels its sets like
-     "SWSH: Crown Zenith" and "ME: Ascended Heroes", so a set released next
-     year lands in the right era without this file being touched.
+  2. Whatever comes after the FIRST colon, if the name has one — PPT uses a
+     colon for two different things, and both resolve here without this file
+     being touched: a release code ("SV10: Destined Rivals", "SWSH12: Silver
+     Tempest") or a parent-set label ("Scarlet & Violet: Destined Rivals").
+     Either way the part after the colon is usually a real set name, tried
+     against SET_ERAS first; only if THAT misses does the part before the
+     colon get tried as a short era code (SV, SV10, SWSH12, SV3.5, ...) via
+     ERA_PREFIXES.
   3. A keyword rule for the McDonald's / POP / Trainer Kit groups.
 
 Anything still unmatched falls into "Other" rather than being guessed at — a
@@ -164,8 +169,12 @@ for _era, _names in _ERA_SETS.items():
     for _n in _names:
         SET_ERAS[_norm(_n)] = _era
 
-# "SWSH: Crown Zenith" -> ("swsh", "Crown Zenith")
-_PREFIX_RE = re.compile(r"^\s*([A-Za-z]{2,5})\s*:\s*(.+)$")
+# The part before a colon, when it's short enough to be a release code rather
+# than a full set name — "SV10" and "SWSH12.5" match, "Scarlet & Violet" and
+# "Generations" don't (too long, so they're left for the after-colon lookup
+# instead). Trailing digits/dots are consumed but not captured: ERA_PREFIXES
+# keys on the bare letters ("sv", "swsh"), not the numbered variant.
+_PREFIX_CODE_RE = re.compile(r"^([A-Za-z]{2,5})[\d.]*$")
 
 # Promos are matched BEFORE anything else (see era_for_set) so they stay their
 # own group instead of being absorbed into the series named in their title.
@@ -186,20 +195,20 @@ def era_for_set(set_name: str) -> str:
     if not raw:
         return FALLBACK_ERA
 
-    # Strip a vendor prefix up front ("SWSH: Crown Zenith" -> "Crown Zenith"),
-    # keeping both forms: the full name for an exact lookup, the remainder for
-    # keyword tests.
-    prefix, rest = "", raw
-    m = _PREFIX_RE.match(raw)
-    if m:
-        prefix, rest = m.group(1).lower(), m.group(2)
+    # Split on the FIRST colon, if any. PPT uses one for two different
+    # things — "SV10: Destined Rivals" (release code : set name) and
+    # "Scarlet & Violet: Destined Rivals" (parent set : subset) — and in
+    # both cases the text after it is usually a real set/subset name, so
+    # it's tried as its own lookup below regardless of what precedes it.
+    left, _, right = raw.partition(":")
+    left, right = left.strip(), right.strip()
 
     # 0. Promos are STANDALONE, ahead of everything else. A Black Star Promos
     #    set isn't a main-series expansion, so it doesn't belong inside one —
     #    "SWSH Black Star Promos" groups with the other promos, not with Sword
     #    & Shield. This runs first precisely so a series name in the title
     #    can't pull it back into that series.
-    if any(n in _norm(rest) or n in _norm(raw) for n in _PROMO_NEEDLES):
+    if any(n in _norm(right) or n in _norm(raw) for n in _PROMO_NEEDLES):
         return "promos"
 
     # 1. Whole name, as given.
@@ -207,18 +216,24 @@ def era_for_set(set_name: str) -> str:
     if hit:
         return hit
 
-    # 2. The remainder after the prefix — a known set beats a prefix guess —
-    #    then the prefix itself, which is what makes future sets classify on
-    #    their own.
-    if m:
-        hit = SET_ERAS.get(_norm(rest))
+    # 2. Text after the colon — a known set/subset name beats a prefix-code
+    #    guess — then the code before the colon, which is what makes future
+    #    sets classify on their own without this file being touched, then
+    #    (parent-set form, e.g. "Generations: Radiant Collection" where only
+    #    the parent "Generations" is listed) the text before the colon.
+    if right:
+        hit = SET_ERAS.get(_norm(right))
         if hit:
             return hit
-        if prefix in ERA_PREFIXES:
-            return ERA_PREFIXES[prefix]
+        m = _PREFIX_CODE_RE.match(left)
+        if m and m.group(1).lower() in ERA_PREFIXES:
+            return ERA_PREFIXES[m.group(1).lower()]
+        hit = SET_ERAS.get(_norm(left))
+        if hit:
+            return hit
 
     # 3. Keyword rules for the remaining misc groups.
-    flat = _norm(rest)
+    flat = _norm(raw)
     for era, needles in _KEYWORD_RULES:
         if any(n in flat for n in needles):
             return era
