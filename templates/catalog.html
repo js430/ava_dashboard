@@ -268,6 +268,11 @@
                   onclick="refreshSelectedCards()">Refresh selected</button>
           <span class="hint" id="refreshMsg"></span>
         </div>
+        <div class="hint" style="padding:0 16px 10px">
+          Check up to 10 cards to refresh their price right now. Cards priced within
+          the last {{ refresh_min_age_hours }} hours can't be selected &mdash; their
+          checkbox is grayed out until that window passes.
+        </div>
         <div class="table-wrap">
           <table class="rows">
             <thead>
