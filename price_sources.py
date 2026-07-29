@@ -234,12 +234,17 @@ def _ppt_grade_price(entry: dict):
 
 
 def _ppt_empty_status(resp) -> str:
-    """Why an empty row list came back: 'rate_limited' | 'error' | 'empty'.
+    """Why an empty row list came back:
+    'rate_limited' | 'forbidden' | 'error' | 'empty'.
 
-    Three genuinely different outcomes that all arrive as an empty list, and
+    Four genuinely different outcomes that all arrive as an empty list, and
     callers act differently on each:
       rate_limited — 429. Temporary; back off and resume where we stopped.
-      error        — no response at all, or a non-200 that isn't a 429.
+      forbidden    — 403. The account's plan doesn't include this endpoint
+                     (e.g. /population is Business-only) — permanent until
+                     the plan changes, so a caller should stop retrying
+                     rather than re-checking on every request.
+      error        — no response at all, or another non-200 status.
       empty        — a clean 200 with no rows. PPT simply has nothing for this
                      query, and it cost no per-card credits, so retrying later
                      is nearly free.
@@ -249,6 +254,8 @@ def _ppt_empty_status(resp) -> str:
     code = getattr(resp, "status_code", None)
     if code == 429:
         return "rate_limited"
+    if code == 403:
+        return "forbidden"
     if code != 200:
         return "error"
     return "empty"
@@ -431,6 +438,36 @@ async def fetch_ppt_card_prices(client: httpx.AsyncClient, tcgplayer_id: str,
         # billed, so this is 'empty', not an error.
         return out, "empty", daily_remaining
     return out, "ok", daily_remaining
+
+
+async def fetch_ppt_population(client: httpx.AsyncClient, tcgplayer_id: str,
+                               language: str = PPT_DEFAULT_LANGUAGE) -> tuple:
+    """(population_dict, status) — GemRate grading-population data for ONE
+    card, pinned by tcgPlayerId. 2 credits/card, billed regardless of how
+    much population data comes back.
+
+    Business-plan only — a 403 from PPT means the account's plan doesn't
+    include this endpoint at all (documented on this endpoint specifically,
+    not just a generic rejection), so it's surfaced as its own 'forbidden'
+    status via _ppt_empty_status rather than folded into 'error'. Callers
+    should treat 'forbidden' as a standing condition — stop asking for a
+    while — rather than retrying the next card.
+
+    Returns the raw `data` object from PPT (population-by-grader breakdown,
+    combined totals, gem rates, match confidence) unmodified — the shape has
+    open-ended per-grader keys (BGS carries g9_5/pristine/perfect that PSA
+    doesn't), so this is stored and served as-is rather than forced into
+    fixed columns.
+    """
+    tcg_id = str(tcgplayer_id or "").strip()
+    if not tcg_id:
+        return None, "error"
+    rows, resp = await _ppt_get(client, "/population",
+                                {"tcgPlayerId": tcg_id, "language": ppt_language(language)},
+                                f"population({tcg_id})")
+    if not rows:
+        return None, _ppt_empty_status(resp)
+    return rows[0], "ok"
 
 
 async def resolve_ppt_tcgplayer_id(client: httpx.AsyncClient, name: str,

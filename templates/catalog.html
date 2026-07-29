@@ -264,20 +264,30 @@
             <option value="set_newest">Recently stocked</option>
           </select>
           <button class="btn btn-plain btn-sm" id="resetBtn" onclick="clearFilters()">Reset</button>
+          {% if not is_guest %}
           <button class="btn btn-plain btn-sm" id="refreshSelectedBtn" disabled
                   onclick="refreshSelectedCards()">Refresh selected</button>
           <span class="hint" id="refreshMsg"></span>
+          {% endif %}
         </div>
+        {% if is_guest %}
+        <div class="hint guest-note" style="padding:0 16px 10px">
+          <strong>Guest account restriction:</strong> showing the newest {{ guest_catalog_visible_sets }}
+          stocked set(s) only, and manual price refresh is Discord-members-only.
+          <a href="/login">Sign in with Discord</a> for the full catalog.
+        </div>
+        {% else %}
         <div class="hint" style="padding:0 16px 10px">
           Check up to 10 cards to refresh their price right now. Cards priced within
           the last {{ refresh_min_age_hours }} hours can't be selected &mdash; their
           checkbox is grayed out until that window passes.
         </div>
+        {% endif %}
         <div class="table-wrap">
           <table class="rows">
             <thead>
               <tr>
-                <th class="check-col"></th>
+                {% if not is_guest %}<th class="check-col"></th>{% endif %}
                 <th class="col-card">Card</th>
                 <th class="col-set">Set</th>
                 <th class="col-rarity">Rarity</th>
@@ -288,7 +298,7 @@
                    sits under the column it acts on, and on a phone that's one
                    column of controls instead of a panel pushed off-screen. -->
               <tr class="filter-row">
-                <th class="check-col"></th>
+                {% if not is_guest %}<th class="check-col"></th>{% endif %}
                 <th>
                   <input type="text" id="qSearch" class="th-input"
                          placeholder="Search name or number&hellip;"
@@ -415,6 +425,7 @@
 // True only when EBAY_AFFILIATE_PARAMS is configured server-side.
 const EBAY_AFFILIATE = {{ 'true' if ebay_affiliate else 'false' }};
 const IS_ADMIN = {{ 'true' if is_admin else 'false' }};
+const IS_GUEST = {{ 'true' if is_guest else 'false' }};
 const MAX_REFRESH_SELECTION = 10;
 // Mirrors CATALOG_MANUAL_REFRESH_MIN_AGE_HOURS server-side — a card priced
 // more recently than this can't be selected. Kept in one place (the env var)
@@ -877,7 +888,7 @@ async function loadCards(){
             title="Look up ${esc(c.name)} on ${where}">${esc(c.name)}</a>`
       : `<span class="cname">${esc(c.name)}</span>`;
     const eligible = refreshEligible(c);
-    const checkCell = `<td class="check-col"><input type="checkbox" class="row-check" data-id="${c.id}"
+    const checkCell = IS_GUEST ? '' : `<td class="check-col"><input type="checkbox" class="row-check" data-id="${c.id}"
           ${selectedCards.has(c.id) ? 'checked' : ''} ${eligible.ok ? '' : 'disabled'}
           title="${esc(eligible.reason)}" onchange="onCardCheck(this)"></td>`;
     return `<tr>

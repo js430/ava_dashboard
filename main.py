@@ -1,5 +1,6 @@
 import os
 import io
+import time
 import math
 import hmac
 import asyncio
@@ -37,6 +38,7 @@ import grading_tiers
 import grading_sets
 import catalog
 import card_eras
+import population
 
 load_dotenv()
 
@@ -188,6 +190,11 @@ async def lifespan(app: FastAPI):
         await catalog.ensure_catalog_schema(app.state.db)
     except Exception:
         logger.exception("Catalog schema ensure failed — /catalog may be unavailable")
+    try:
+        await population.ensure_population_schema(app.state.db)
+    except Exception:
+        logger.exception("Population schema ensure failed — grading calculator population "
+                         "reports may be unavailable")
     scheduler_task = asyncio.create_task(_card_tracker_daily_scheduler(app))
     # Background, never awaited: seeding the catalog must not delay startup or
     # take the app down if PPT is unreachable.
@@ -1635,6 +1642,13 @@ async def api_import_run(request: Request):
 # JustTCG watchlist. Open to members (same gate as the map/dashboard); the
 # vendor-backed lookups spend paid quota, so they keep a per-IP rate limit.
 
+# Guest tier: Market Prices, Your Costs, and What You'd Net all collapse to
+# PSA 10 only — a product-scope restriction (sign in with Discord for every
+# grade/grader), not a cost-control one, since /quotes already fetches every
+# grade in a single PPT call regardless of what's shown afterward.
+GUEST_GRADING_GRADES = ("raw", "psa_10")
+
+
 @app.get("/grading-calculator", response_class=HTMLResponse)
 async def grading_calculator_page(request: Request):
     user = request.session.get("user")
@@ -1656,6 +1670,49 @@ async def grading_calculator_page(request: Request):
     })
 
 
+# ---- Grading calculator: population report (GemRate via PPT) ----
+# Business-plan only — see price_sources.fetch_ppt_population. A confirmed
+# 403 means the account's PPT plan doesn't cover this endpoint at all, a
+# standing account-level condition rather than a per-card one, so further
+# attempts are suppressed for a while instead of retried on every lookup.
+POPULATION_UNAVAILABLE_COOLDOWN_S = float(os.getenv("POPULATION_UNAVAILABLE_COOLDOWN_S", "3600"))
+_population_unavailable_until = 0.0
+
+
+async def _get_population(pool, tcgplayer_id: str, language: str):
+    """Cached population report for one card, refreshing if the cache is
+    missing or more than a week old (population.CACHE_MAX_AGE). None if
+    unavailable for any reason — never raises, since this is a value-add on
+    top of the price lookup, not something that should break it."""
+    global _population_unavailable_until
+    if not tcgplayer_id or not price_sources.pokemonpricetracker_available():
+        return None
+
+    cached, fresh = await population.get_cached(pool, tcgplayer_id, language)
+    if fresh:
+        return cached
+    if time.time() < _population_unavailable_until:
+        # Confirmed unavailable (403) recently — don't spend a call finding
+        # that out again. Stale cache, if any, still beats showing nothing.
+        return cached
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            data, status = await price_sources.fetch_ppt_population(client, tcgplayer_id, language)
+    except Exception:
+        logger.exception("Population lookup failed for tcgPlayerId=%s", tcgplayer_id)
+        return cached
+
+    if status == "ok" and data:
+        await population.upsert(pool, tcgplayer_id, language, data)
+        return data
+    if status == "forbidden":
+        _population_unavailable_until = time.time() + POPULATION_UNAVAILABLE_COOLDOWN_S
+        logger.warning("Population data unavailable (PPT 403 — Business plan required). "
+                       "Not retrying for %d minutes.", int(POPULATION_UNAVAILABLE_COOLDOWN_S // 60))
+    return cached  # stale cache, if any, beats nothing
+
+
 @app.get("/api/grading-calculator/quotes")
 @limiter.limit("20/minute")
 async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
@@ -1672,24 +1729,43 @@ async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
     if game not in ("pokemon", "one_piece"):
         raise HTTPException(status_code=400, detail="Unknown game")
 
+    tcg_id = (tcgplayer_id or "").strip()[:32]
+    language = price_sources.ppt_language(language)
     card = price_sources.CardRef(game=game, name=name[:120],
                                  set_name=(set_name or "").strip()[:120],
                                  card_number=(card_number or "").strip()[:40],
-                                 tcgplayer_id=(tcgplayer_id or "").strip()[:32] or None,
-                                 language=price_sources.ppt_language(language))
+                                 tcgplayer_id=tcg_id or None,
+                                 language=language)
     try:
         result = await price_sources.fetch_all(card)
     except Exception:
         logger.exception("Graded quote lookup failed for %r", card.query())
         raise HTTPException(status_code=502, detail="Price lookup failed")
 
+    # Only when the card came from the PPT-backed picker (a real tcgPlayerId
+    # pins the exact printing) and only for Pokemon — PPT has no One Piece
+    # coverage at all, population included.
+    pop = None
+    if tcg_id and game == "pokemon":
+        pop = await _get_population(request.app.state.db, tcg_id, language)
+
+    quotes_out = {g: q.to_dict() for g, q in result["quotes"].items()}
+    all_out = [q.to_dict() for q in result["all"]]
+    if user.get("guest"):
+        # Guest tier: PSA 10 only (see GUEST_GRADING_GRADES). Enforced here,
+        # not just hidden in the UI — a guest reading the raw response
+        # shouldn't see prices for grades they can't otherwise act on.
+        quotes_out = {g: q for g, q in quotes_out.items() if g in GUEST_GRADING_GRADES}
+        all_out = [q for q in all_out if q.get("grade") in GUEST_GRADING_GRADES]
+
     return JSONResponse({
         "card_key": card.key(),
         "query": card.query(),
         "sources_used": result["sources"],
         "sources_configured": price_sources.configured_sources(),
-        "quotes": {g: q.to_dict() for g, q in result["quotes"].items()},
-        "all": [q.to_dict() for q in result["all"]],
+        "quotes": quotes_out,
+        "all": all_out,
+        "population": pop,
     }, headers={"Cache-Control": "no-store"})
 
 
@@ -1719,18 +1795,25 @@ async def api_grading_calc(request: Request, user=Depends(get_current_user_or_gu
         sale_fee_pct=min(max(_num(c.get("sale_fee_pct"), 0.0), 0.0), 0.9),
         sale_ship=_num(c.get("sale_ship"), 0.0),
     )
-    # "What you'd net" reports on whichever grading company is picked in Your
-    # costs, filtered to the SAME "lowest grade shown" threshold as the Market
-    # Prices slider — so the two panels always agree on which grades are in
-    # view instead of the net cards being frozen at a fixed top-two. Falls
-    # back to PSA's full range when no company is selected ("Custom / other"),
-    # matching PSA 10/9's existing role as the no-company default.
-    company = (body.get("company") or "").strip().lower()
-    min_grade = _num(body.get("min_grade"), 8.0)
-    min_grade = min(max(min_grade, 1.0), 8.0)
-    all_grades = (grading_tiers.GRADING_COMPANIES.get(company, {}).get("all_grades")
-                 or grading_tiers.GRADING_COMPANIES["psa"]["all_grades"])
-    report_grades = [g for g in all_grades if price_sources.GRADE_LEVEL.get(g, 0) >= min_grade]
+    if user.get("guest"):
+        # Guest tier: PSA 10 only, regardless of what the client sends —
+        # never trust the client for a restriction that matters.
+        grade_prices = {g: v for g, v in grade_prices.items() if g in GUEST_GRADING_GRADES}
+        report_grades = ["psa_10"]
+    else:
+        # "What you'd net" reports on whichever grading company is picked in
+        # Your costs, filtered to the SAME "lowest grade shown" threshold as
+        # the Market Prices slider — so the two panels always agree on which
+        # grades are in view instead of the net cards being frozen at a fixed
+        # top-two. Falls back to PSA's full range when no company is selected
+        # ("Custom / other"), matching PSA 10/9's existing role as the
+        # no-company default.
+        company = (body.get("company") or "").strip().lower()
+        min_grade = _num(body.get("min_grade"), 8.0)
+        min_grade = min(max(min_grade, 1.0), 8.0)
+        all_grades = (grading_tiers.GRADING_COMPANIES.get(company, {}).get("all_grades")
+                     or grading_tiers.GRADING_COMPANIES["psa"]["all_grades"])
+        report_grades = [g for g in all_grades if price_sources.GRADE_LEVEL.get(g, 0) >= min_grade]
     try:
         r = grading_roi.evaluate(raw_price, grade_prices, costs, grades=report_grades)
     except ValueError as exc:
@@ -1876,6 +1959,32 @@ async def api_grading_set_cards(request: Request, game: str, set_id: str,
 # but no prices at all, so OP cards would sit in a price-filtered table with
 # nothing to filter on. See MEMORY.md.
 CATALOG_GAME = "pokemon"
+
+# Guest tier: catalog browsing is capped to the newest N stocked sets, and
+# the manual per-card refresh is Discord-members-only. Neither restriction
+# applies to a real Discord session (member or admin) — only to `is_guest`.
+GUEST_CATALOG_VISIBLE_SETS = int(os.getenv("GUEST_CATALOG_VISIBLE_SETS", "3"))
+
+
+async def _guest_visible_set_ids(pool, language: str) -> list:
+    """The newest GUEST_CATALOG_VISIBLE_SETS STOCKED sets, newest-by-release
+    first — the guest tier's catalog ceiling. Same "walk PPT's own
+    newest-first list, keep only what's actually stocked" pattern as
+    select_backfill_window, just capped much smaller."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            sets = await price_sources.fetch_ppt_sets(client, language=language)
+    except Exception:
+        logger.exception("Guest catalog restriction: couldn't fetch the PPT set list")
+        sets = []
+    have = await catalog.cached_set_ids(pool, CATALOG_GAME, language)
+    out = []
+    for s in sets:
+        if s.get("id") in have:
+            out.append(s["id"])
+        if len(out) >= GUEST_CATALOG_VISIBLE_SETS:
+            break
+    return out
 
 
 def _csv_list(raw: str, *, max_items: int = 40, max_len: int = 120) -> list:
@@ -2356,6 +2465,7 @@ async def catalog_page(request: Request):
         # only when the eBay links actually carry EPN tracking.
         "ebay_affiliate": catalog.ebay_affiliate_enabled(),
         "refresh_min_age_hours": CATALOG_MANUAL_REFRESH_MIN_AGE_HOURS,
+        "guest_catalog_visible_sets": GUEST_CATALOG_VISIBLE_SETS,
     })
 
 
@@ -2370,10 +2480,13 @@ async def api_catalog_cards(request: Request, sets: str = "", rarities: str = ""
                             user=Depends(get_current_user_or_guest)):
     """Filtered, paginated catalog rows. Pure DB read — spends no vendor quota,
     which is why it carries a generous rate limit."""
+    language = price_sources.ppt_language(language)
+    restrict_set_ids = (await _guest_visible_set_ids(request.app.state.db, language)
+                        if user.get("guest") else None)
     result = await catalog.query_cards(
         request.app.state.db,
         game=CATALOG_GAME,
-        language=price_sources.ppt_language(language),
+        language=language,
         set_ids=_csv_list(sets),
         rarities=_csv_list(rarities),
         min_price=_opt_price(min_price),
@@ -2389,6 +2502,9 @@ async def api_catalog_cards(request: Request, sets: str = "", rarities: str = ""
         # round-trip: one query set, so the options can never disagree with
         # the rows being shown.
         with_facets=True,
+        # Guest tier's "newest N sets only" ceiling — None (no restriction)
+        # for a real Discord session.
+        restrict_set_ids=restrict_set_ids,
     )
     if result.get("facets"):
         card_eras.annotate(result["facets"]["sets"], name_key="set_name")
@@ -2406,7 +2522,11 @@ async def api_catalog_facets(request: Request, language: str = "english",
     is complete. The set list is cached for a day in price_sources.
     """
     language = price_sources.ppt_language(language)
-    data = await catalog.facets(request.app.state.db, CATALOG_GAME, language)
+    restrict_set_ids = (await _guest_visible_set_ids(request.app.state.db, language)
+                        if user.get("guest") else None)
+    data = await catalog.facets(request.app.state.db, CATALOG_GAME, language,
+                               restrict_set_ids=restrict_set_ids)
+    data["is_guest_restricted"] = restrict_set_ids is not None
 
     available = []
     if price_sources.pokemonpricetracker_available():
@@ -2473,16 +2593,21 @@ async def api_catalog_stock(request: Request, user=Depends(require_admin)):
 @app.post("/api/catalog/refresh-cards")
 @limiter.limit("30/hour")
 async def api_catalog_refresh_cards(request: Request, user=Depends(get_current_user_or_guest)):
-    """Refresh up to 10 specific cards' prices right now — open to every
-    Nexus Playground viewer (member or guest), not just admins.
+    """Refresh up to 10 specific cards' prices right now — open to Discord
+    members and admins, but NOT the guest tier (guests get the catalog
+    read-only, restricted to the newest few sets).
 
     Same 1-credit-per-card pinned lookup the nightly price sweep uses
-    (price_sources.fetch_ppt_card_prices). The cost-control isn't the
-    Depends() gate here — it's CATALOG_MANUAL_REFRESH_MIN_AGE_HOURS below: a
-    card priced more recently than that can't be picked again, by anyone, so
-    the total possible spend is capped by the size of the catalog rather than
-    by how many people ask.
+    (price_sources.fetch_ppt_card_prices). For members, the cost-control
+    isn't the Depends() gate — it's CATALOG_MANUAL_REFRESH_MIN_AGE_HOURS
+    below: a card priced more recently than that can't be picked again, by
+    anyone, so the total possible spend is capped by the size of the catalog
+    rather than by how many people ask.
     """
+    if user.get("guest"):
+        raise HTTPException(status_code=403,
+                            detail="Refreshing prices requires a Discord account — "
+                                   "sign in to use this.")
     body = await request.json()
     raw_ids = body.get("ids") or []
     if not isinstance(raw_ids, list) or not raw_ids:

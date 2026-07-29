@@ -377,7 +377,7 @@ async def update_card_price(pool, card_id: int, raw_price, price_source: str) ->
 
 def _build_filters(game: str, language: str, set_ids=None, rarities=None,
                    min_price=None, max_price=None, search: str = "",
-                   priced_only: bool = False) -> tuple:
+                   priced_only: bool = False, restrict_set_ids=None) -> tuple:
     """(where_sql, params). Every value is a bind parameter, never inlined."""
     params = [game, language]
     where = ["game = $1", "language = $2"]
@@ -386,6 +386,13 @@ def _build_filters(game: str, language: str, set_ids=None, rarities=None,
         params.append(value)
         where.append(template.format(n=len(params)))
 
+    if restrict_set_ids is not None:
+        # A hard ceiling (the guest tier's "3 newest sets only"), ANDed on
+        # regardless of the caller's own set_ids filter below. Checked for
+        # `is not None` rather than truthiness — an empty list here means
+        # "nothing allowed" (e.g. nothing stocked yet), not "no restriction",
+        # and must still produce a real (if unmatchable) clause.
+        add("set_id = ANY(${n}::TEXT[])", list(restrict_set_ids))
     if set_ids:
         add("set_id = ANY(${n}::TEXT[])", list(set_ids))
     if rarities:
@@ -414,7 +421,8 @@ def _build_filters(game: str, language: str, set_ids=None, rarities=None,
 
 
 async def _facet_counts(conn, game, language, set_ids, rarities,
-                        min_price, max_price, search, priced_only) -> dict:
+                        min_price, max_price, search, priced_only,
+                        restrict_set_ids=None) -> dict:
     """Option counts for the set and rarity filters, so each narrows the other.
 
     THE RULE: a facet's counts are computed with every filter applied EXCEPT
@@ -423,13 +431,21 @@ async def _facet_counts(conn, game, language, set_ids, rarities,
     leave only that rarity listed — you could never select a second, and the
     filter would look broken.
 
+    `restrict_set_ids` is NOT a user choice like `set_ids` — it's a
+    permission ceiling (the guest tier's "3 newest sets only"), so unlike
+    the set selection it applies to BOTH facets, including the set facet's
+    own count: a guest's set picker must never offer a set outside the
+    ceiling just because "ignore the set selection" would otherwise show it.
+
     Options that match nothing are simply absent; the caller re-adds anything
     currently selected so a choice can always be undone.
     """
     rarity_where, rarity_params = _build_filters(
-        game, language, set_ids, None, min_price, max_price, search, priced_only)
+        game, language, set_ids, None, min_price, max_price, search, priced_only,
+        restrict_set_ids)
     set_where, set_params = _build_filters(
-        game, language, None, rarities, min_price, max_price, search, priced_only)
+        game, language, None, rarities, min_price, max_price, search, priced_only,
+        restrict_set_ids)
 
     rarity_rows = await conn.fetch(
         f"SELECT rarity, COUNT(*) AS n FROM catalog_cards "
@@ -451,7 +467,7 @@ async def query_cards(pool, *, game: str, language: str = "english",
                       set_ids=None, rarities=None, min_price=None, max_price=None,
                       search: str = "", priced_only: bool = False,
                       sort: str = DEFAULT_SORT, limit: int = 50, offset: int = 0,
-                      with_facets: bool = False) -> dict:
+                      with_facets: bool = False, restrict_set_ids=None) -> dict:
     """One page of catalog rows plus the unpaginated total.
 
     `total` is what drives the pager, so it's counted under the same filters
@@ -460,13 +476,17 @@ async def query_cards(pool, *, game: str, language: str = "english",
     `with_facets` adds per-filter option counts so the set and rarity
     dropdowns can narrow each other — see _facet_counts for the one rule that
     makes faceted filtering work.
+
+    `restrict_set_ids`, when not None, is a hard ceiling ANDed on regardless
+    of `set_ids` — the guest tier's "3 newest sets only" — see _build_filters.
     """
     order_by = SORT_COLUMNS.get(sort, SORT_COLUMNS[DEFAULT_SORT])
     limit = max(1, min(int(limit or 50), MAX_PAGE_SIZE))
     offset = max(0, int(offset or 0))
 
     where_sql, params = _build_filters(game, language, set_ids, rarities,
-                                       min_price, max_price, search, priced_only)
+                                       min_price, max_price, search, priced_only,
+                                       restrict_set_ids)
 
     page_params = params + [limit, offset]
     page_sql = (
@@ -483,7 +503,7 @@ async def query_cards(pool, *, game: str, language: str = "english",
         total = await conn.fetchval(count_sql, *params)
         facets = await _facet_counts(
             conn, game, language, set_ids, rarities, min_price, max_price,
-            search, priced_only) if with_facets else None
+            search, priced_only, restrict_set_ids) if with_facets else None
 
     return {
         **({"facets": facets} if facets is not None else {}),
@@ -510,30 +530,42 @@ async def query_cards(pool, *, game: str, language: str = "english",
     }
 
 
-async def facets(pool, game: str, language: str = "english") -> dict:
+async def facets(pool, game: str, language: str = "english",
+                 restrict_set_ids=None) -> dict:
     """Filter options, derived from what's actually cached.
 
     Rarities and price bounds come from the rows themselves, so the UI can
     never offer a filter that matches nothing. `sets` doubles as the coverage
     report — it's exactly the list of sets stocked so far.
+
+    `restrict_set_ids`, when not None, is the guest tier's "newest N sets
+    only" ceiling — every count and bound here narrows to it, the same way
+    the actual card rows do in query_cards, so a guest's rarity list and
+    price range never leak sets they can't otherwise see.
     """
+    where = "game = $1 AND language = $2"
+    params = [game, language]
+    if restrict_set_ids is not None:
+        params.append(list(restrict_set_ids))
+        where += f" AND set_id = ANY(${len(params)}::TEXT[])"
+
     async with pool.acquire() as conn:
         rarity_rows = await conn.fetch(
-            "SELECT rarity, COUNT(*) AS n FROM catalog_cards "
-            "WHERE game = $1 AND language = $2 AND rarity <> '' "
-            "GROUP BY rarity ORDER BY n DESC, rarity ASC",
-            game, language)
+            f"SELECT rarity, COUNT(*) AS n FROM catalog_cards "
+            f"WHERE {where} AND rarity <> '' "
+            f"GROUP BY rarity ORDER BY n DESC, rarity ASC",
+            *params)
         set_rows = await conn.fetch(
-            "SELECT set_id, MAX(set_name) AS set_name, COUNT(*) AS cards, "
-            "       COUNT(raw_price) AS priced, MAX(refreshed_at) AS refreshed_at "
-            "FROM catalog_cards WHERE game = $1 AND language = $2 "
-            "GROUP BY set_id ORDER BY MAX(set_name) ASC",
-            game, language)
+            f"SELECT set_id, MAX(set_name) AS set_name, COUNT(*) AS cards, "
+            f"       COUNT(raw_price) AS priced, MAX(refreshed_at) AS refreshed_at "
+            f"FROM catalog_cards WHERE {where} "
+            f"GROUP BY set_id ORDER BY MAX(set_name) ASC",
+            *params)
         bounds = await conn.fetchrow(
-            "SELECT MIN(raw_price) AS lo, MAX(raw_price) AS hi, "
-            "       COUNT(*) AS cards, COUNT(raw_price) AS priced "
-            "FROM catalog_cards WHERE game = $1 AND language = $2",
-            game, language)
+            f"SELECT MIN(raw_price) AS lo, MAX(raw_price) AS hi, "
+            f"       COUNT(*) AS cards, COUNT(raw_price) AS priced "
+            f"FROM catalog_cards WHERE {where}",
+            *params)
 
     return {
         "rarities": [{"rarity": r["rarity"], "count": int(r["n"])} for r in rarity_rows],
