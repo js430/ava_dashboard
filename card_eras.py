@@ -11,21 +11,24 @@ that series would put a promo set among the boosters.
 
 ADDING A NEW SET
 ----------------
-Usually you don't have to. Sets are classified in four passes, and the first
-three handle almost everything automatically:
+Usually you don't have to. Sets are classified in five passes, and the first
+four handle almost everything automatically:
 
   0. Anything whose name says "promo" -> the Promos group, before any other
      rule gets a chance to claim it.
   1. An explicit name in SET_ERAS below.
-  2. Whatever comes after the FIRST colon, if the name has one — PPT uses a
-     colon for two different things, and both resolve here without this file
-     being touched: a release code ("SV10: Destined Rivals", "SWSH12: Silver
-     Tempest") or a parent-set label ("Scarlet & Violet: Destined Rivals").
-     Either way the part after the colon is usually a real set name, tried
-     against SET_ERAS first; only if THAT misses does the part before the
-     colon get tried as a short era code (SV, SV10, SWSH12, SV3.5, ...) via
-     ERA_PREFIXES.
-  3. A keyword rule for the McDonald's / POP / Trainer Kit groups.
+  2. A registered release code before a colon, a dash, or nothing but
+     whitespace — vendors use all three: "SV10: Destined Rivals",
+     "XY - Ancient Origins", "XY Base Set". ERA_PREFIXES resolves the code
+     (SV, XY, SWSH, SM, ...) directly; the code wins over trying to look up
+     whatever follows it, which is what correctly sends "XY Base Set" to the
+     XY era instead of colliding with the unrelated vintage "Base Set"
+     (1998) entry under `original`.
+  3. Colon fallback for names #2 doesn't cover — a parent-set label
+     ("Scarlet & Violet: Destined Rivals", "Generations: Radiant
+     Collection") where the part before OR after the colon is a real,
+     already-listed set name rather than a short code.
+  4. A keyword rule for the McDonald's / POP / Trainer Kit groups.
 
 Anything still unmatched falls into "Other" rather than being guessed at — a
 set in the wrong era is worse than one in an obvious catch-all. If a new set
@@ -169,12 +172,43 @@ for _era, _names in _ERA_SETS.items():
     for _n in _names:
         SET_ERAS[_norm(_n)] = _era
 
-# The part before a colon, when it's short enough to be a release code rather
-# than a full set name — "SV10" and "SWSH12.5" match, "Scarlet & Violet" and
-# "Generations" don't (too long, so they're left for the after-colon lookup
-# instead). Trailing digits/dots are consumed but not captured: ERA_PREFIXES
-# keys on the bare letters ("sv", "swsh"), not the numbered variant.
-_PREFIX_CODE_RE = re.compile(r"^([A-Za-z]{2,5})[\d.]*$")
+# A release code before a colon, a dash, or (rarer) nothing but whitespace —
+# vendors use all three: "SV10: Destined Rivals", "XY - Ancient Origins",
+# "XY Base Set". Tried in that order; trailing digits/dots after the code are
+# consumed but not captured (ERA_PREFIXES keys on "sv"/"xy", not "sv10"). Each
+# pattern requires the WHOLE remainder to be the set name (anchored with
+# `$`), so a genuine full name like "Scarlet & Violet: Destined Rivals" or
+# "Team Up" never matches here — "Scarlet" and "Team" aren't 2-5 letters
+# followed immediately by one of these separators, they're followed by more
+# letters. The colon fallback for those lives separately, below.
+_CODE_SEPARATOR_RES = [
+    re.compile(r"^([A-Za-z]{2,5})[\d.]*\s*:\s*(.+)$"),
+    re.compile(r"^([A-Za-z]{2,5})[\d.]*\s*-\s*(.+)$"),
+    re.compile(r"^([A-Za-z]{2,5})[\d.]*\s+(.+)$"),
+]
+
+
+def _era_from_code_prefix(raw: str):
+    """Era key if `raw` starts with a REGISTERED era code before one of the
+    three separators above, else None.
+
+    Requiring the code to already be a key in ERA_PREFIXES is what keeps the
+    permissive bare-space pattern from misfiring on an ordinary name that
+    happens to start with a short word — "Team Up" extracts "Team", which
+    isn't a registered code, so the whole function falls through to the
+    other passes in era_for_set instead of guessing.
+
+    The code is trusted directly rather than also checking what follows it
+    against SET_ERAS — which is what correctly resolves "XY Base Set" /
+    "SM Base Set" (that era's OWN foundational release) instead of colliding
+    with the unrelated vintage "Base Set" (1998) entry filed under
+    `original`.
+    """
+    for pattern in _CODE_SEPARATOR_RES:
+        m = pattern.match(raw)
+        if m and m.group(1).lower() in ERA_PREFIXES:
+            return ERA_PREFIXES[m.group(1).lower()]
+    return None
 
 # Promos are matched BEFORE anything else (see era_for_set) so they stay their
 # own group instead of being absorbed into the series named in their title.
@@ -216,23 +250,27 @@ def era_for_set(set_name: str) -> str:
     if hit:
         return hit
 
-    # 2. Text after the colon — a known set/subset name beats a prefix-code
-    #    guess — then the code before the colon, which is what makes future
-    #    sets classify on their own without this file being touched, then
-    #    (parent-set form, e.g. "Generations: Radiant Collection" where only
-    #    the parent "Generations" is listed) the text before the colon.
+    # 2. A registered release code before a colon, dash, or bare space —
+    #    "SV10: Destined Rivals", "XY - Ancient Origins", "XY Base Set" —
+    #    which is what makes future sets in a known era self-classify
+    #    without this file being touched.
+    era = _era_from_code_prefix(raw)
+    if era:
+        return era
+
+    # 3. Colon fallback for names #2 doesn't cover: a known set/subset name
+    #    after the colon beats an unresolved guess — then (parent-set form,
+    #    e.g. "Generations: Radiant Collection" where only the parent
+    #    "Generations" is listed) the text before the colon.
     if right:
         hit = SET_ERAS.get(_norm(right))
         if hit:
             return hit
-        m = _PREFIX_CODE_RE.match(left)
-        if m and m.group(1).lower() in ERA_PREFIXES:
-            return ERA_PREFIXES[m.group(1).lower()]
         hit = SET_ERAS.get(_norm(left))
         if hit:
             return hit
 
-    # 3. Keyword rules for the remaining misc groups.
+    # 4. Keyword rules for the remaining misc groups.
     flat = _norm(raw)
     for era, needles in _KEYWORD_RULES:
         if any(n in flat for n in needles):
