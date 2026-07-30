@@ -72,6 +72,32 @@
     .lede { font-size: 14px; }
     .feat { gap: 16px; }
   }
+  .tiers { margin-top: 32px; padding-top: 26px; border-top: 1px solid #241f3d; text-align: left; }
+  .tiers-title { font-size: 12px; color: #8b85ad; letter-spacing: .06em; text-transform: uppercase;
+                 text-align: center; margin-bottom: 16px; }
+  .tier-groups { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; align-items: stretch; }
+  .tier-group {
+    background: rgba(88,101,242,.05); border: 1px solid #241f3d; border-radius: 14px;
+    padding: 14px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .tier-group-label { font-size: 11px; color: #8b85ad; letter-spacing: .06em; text-transform: uppercase;
+                       padding: 0 2px; }
+  .tier-card { background: #1a1830; border: 1px solid #2a254a; border-radius: 12px; padding: 14px 16px;
+               flex: 1; }
+  .tier-card-highlight { border-color: #5865F2; }
+  .tier-name { font-size: 13.5px; font-weight: 600; color: #fff; margin-bottom: 6px;
+               display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .tier-name a { color: #a5b4fc; }
+  .tier-desc { font-size: 12px; color: #9791b8; line-height: 1.55; }
+  .tier-desc a { color: #a5b4fc; }
+  .tier-list { list-style: none; margin-top: 8px; }
+  .tier-list li { font-size: 12px; color: #9791b8; line-height: 1.55; padding-left: 14px; position: relative; }
+  .tier-list li::before { content: "\2013"; position: absolute; left: 0; color: #6f6a8f; }
+  .soon-badge { font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+                color: #b9b4d4; background: #241f3d; border-radius: 6px; padding: 2px 7px; }
+  @media (max-width: 520px) {
+    .tier-groups { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
@@ -110,6 +136,50 @@
     <p class="signin-note">
       <a href="/signin">Sign in with an account instead</a>
     </p>
+
+    <div class="tiers">
+      <div class="tiers-title">Access tiers</div>
+      <div class="tier-groups">
+        <div class="tier-group">
+          <div class="tier-group-label">In the Discord server</div>
+          <div class="tier-card">
+            <div class="tier-name">No role yet</div>
+            <div class="tier-desc">
+              Join the <a href="{{ discord_invite_url }}" target="_blank" rel="noopener">community Discord</a>.
+              Until you pick up a role below, this is the same restricted access as a guest:
+            </div>
+            <ul class="tier-list">
+              <li>Card Catalog: newest {{ guest_catalog_visible_sets }} stocked sets only, no manual price refresh</li>
+              <li>Grading Calculator: PSA 10 prices only</li>
+            </ul>
+          </div>
+          <div class="tier-card tier-card-highlight">
+            <div class="tier-name">Intel or Monitor role</div>
+            <div class="tier-desc">
+              Upgrade in the server's <strong>get-access</strong> channel. Removes every restriction above and
+              unlocks the full restock dashboard, store maps, and analytics for DC, Maryland, and Virginia.
+            </div>
+          </div>
+        </div>
+        <div class="tier-group">
+          <div class="tier-group-label">Without Discord</div>
+          <div class="tier-card">
+            <div class="tier-name">Guest</div>
+            <div class="tier-desc">No Discord account needed &mdash; same restricted access as a no-role Discord member:</div>
+            <ul class="tier-list">
+              <li>Card Catalog: newest {{ guest_catalog_visible_sets }} stocked sets only, no manual price refresh</li>
+              <li>Grading Calculator: PSA 10 prices only</li>
+            </ul>
+          </div>
+          <div class="tier-card tier-card-soon">
+            <div class="tier-name">Paid subscription <span class="soon-badge">Coming soon</span></div>
+            <div class="tier-desc">
+              A standalone account, no Discord required, with unrestricted access to every Nexus Playground tool.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </body>
 </html>

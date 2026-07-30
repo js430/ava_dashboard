@@ -299,6 +299,13 @@ ACTIVE_INFORMANT_ROLE_ID = os.getenv("ACTIVE_INFORMANT_ROLE_ID", "")
 ADMIN_USER_IDS           = {
     int(uid) for uid in os.getenv("ADMIN_USER_IDS", "").split(",") if uid.strip()
 }
+# Where a demo/no-role Discord account goes to get the community role — the
+# sample pages' existing "Get premium access" CTA, and now also the Nexus
+# Playground guest-tier disclaimers extended to demo accounts.
+DEMO_UPGRADE_URL = os.getenv(
+    "DEMO_UPGRADE_URL", "https://discord.com/channels/1406738815854317658/1502114854335549470")
+# The community server itself — shown on the landing page's access-tiers breakdown.
+DISCORD_INVITE_URL = os.getenv("DISCORD_INVITE_URL", "https://discord.gg/paRbvUmtVS")
 
 # LOOKBACK_ROLE_WEEKS: comma-separated role_id:max_position pairs.
 # Positions 1-8 = weeks, 9-12 = 3m/4m/5m/6m (91/120/150/180 days).
@@ -525,32 +532,51 @@ def is_guest(request: Request) -> bool:
 
 
 def get_current_user_or_guest(request: Request):
-    """Like `get_current_user`, but a guest session also passes.
+    """Like `get_current_user`, but a guest session — OR a role-less Discord
+    ("demo"/"sample") session — also passes, both at the guest tier.
+
+    A demo session's real user dict is returned (not the anonymous
+    GUEST_USER placeholder) with `guest: True` added, so every existing
+    guest-tier restriction downstream (they all key off `user.get("guest")`)
+    applies to demo accounts automatically, while logging/audit still sees
+    their real Discord identity.
 
     Only wired into the Grading Calculator and Card Catalog APIs — every
-    other endpoint keeps `get_current_user` and stays closed to guests.
-    A role-less Discord ("sample") session is NOT granted playground access
-    by this — guest is a separate, narrower tier, not a superset of sample.
+    other endpoint keeps `get_current_user`, which still closes the door on
+    both guest and demo sessions; the main dashboard stays members-only.
     """
     user = request.session.get("user")
-    if user and not is_demo(request):
+    if user:
+        if is_demo(request):
+            return {**user, "guest": True}
         return user
     if is_guest(request):
         return GUEST_USER
-    if user:
-        raise HTTPException(status_code=403, detail="Live data requires the member role.")
     raise HTTPException(status_code=401, detail="Not authenticated")
 
 
 def _viewer_context(request: Request, user) -> dict:
-    """Common template vars for a page open to both members and guests.
-    `user` is the session's Discord user dict, or None for a guest."""
+    """Common template vars for a page open to full members, guests (no
+    Discord identity), and demo/role-less Discord accounts — the latter two
+    both render as the guest tier (`is_guest: True`) here. `user` is the
+    session's Discord user dict, or None for a guest.
+
+    This only backs the two Nexus Playground pages, which extend guest-tier
+    access to demo accounts — the main dashboard's `is_demo` check (redirect
+    to /sample) is untouched and lives in its own routes.
+    """
     if user is None:
         return {"username": GUEST_USER["username"], "avatar": None, "user_id": None,
-                "is_admin": False, "is_mod": False, "is_guest": True}
+                "is_admin": False, "is_mod": False, "is_guest": True,
+                "upgrade_url": DEMO_UPGRADE_URL}
+    if is_demo(request):
+        return {"username": user["username"], "avatar": user.get("avatar"),
+                "user_id": user["id"], "is_admin": False, "is_mod": False, "is_guest": True,
+                "upgrade_url": DEMO_UPGRADE_URL}
     return {"username": user["username"], "avatar": user.get("avatar"),
             "user_id": user["id"], "is_admin": int(user["id"]) in ADMIN_USER_IDS,
-            "is_mod": request.session.get("mod", False), "is_guest": False}
+            "is_mod": request.session.get("mod", False), "is_guest": False,
+            "upgrade_url": DEMO_UPGRADE_URL}
 
 async def terms_current(request: Request, user: dict) -> bool:
     """Return True if user accepted terms within the last 30 days."""
@@ -639,6 +665,9 @@ async def index(request: Request):
             "base_url": PUBLIC_BASE_URL,
             "og_title": OG_TITLE,
             "og_description": OG_DESCRIPTION,
+            "discord_invite_url": DISCORD_INVITE_URL,
+            "upgrade_url": DEMO_UPGRADE_URL,
+            "guest_catalog_visible_sets": GUEST_CATALOG_VISIBLE_SETS,
         })
     if is_demo(request):
         return RedirectResponse("/sample")
@@ -673,7 +702,7 @@ async def sample_page(request: Request):
         "username": user["username"],
         "avatar": user.get("avatar"),
         "user_id": user["id"],
-        "upgrade_url": os.getenv("DEMO_UPGRADE_URL", "https://discord.com/channels/1406738815854317658/1502114854335549470"),
+        "upgrade_url": DEMO_UPGRADE_URL,
     })
 
 @app.get("/sample-status", response_class=HTMLResponse)
@@ -690,7 +719,7 @@ async def sample_status_page(request: Request):
         "username": user["username"],
         "avatar": user.get("avatar"),
         "user_id": user["id"],
-        "upgrade_url": os.getenv("DEMO_UPGRADE_URL", "https://discord.com/channels/1406738815854317658/1502114854335549470"),
+        "upgrade_url": DEMO_UPGRADE_URL,
     })
 
 @app.get("/sample-map", response_class=HTMLResponse)
@@ -708,7 +737,7 @@ async def sample_map_page(request: Request):
         "username": user["username"],
         "avatar": user.get("avatar"),
         "user_id": user["id"],
-        "upgrade_url": os.getenv("DEMO_UPGRADE_URL", "https://discord.com/channels/1406738815854317658/1502114854335549470"),
+        "upgrade_url": DEMO_UPGRADE_URL,
     })
 
 @app.get("/terms", response_class=HTMLResponse)
@@ -1651,10 +1680,11 @@ GUEST_GRADING_GRADES = ("raw", "psa_10")
 
 @app.get("/grading-calculator", response_class=HTMLResponse)
 async def grading_calculator_page(request: Request):
+    # Demo/role-less Discord accounts reach this page too (guest-tier access,
+    # see _viewer_context) rather than bouncing to /sample like the main
+    # dashboard — Nexus Playground is intentionally open wider than that.
     user = request.session.get("user")
     if user:
-        if is_demo(request):
-            return RedirectResponse("/sample")
         if not await terms_current(request, user):
             return RedirectResponse("/terms")
     elif not is_guest(request):
@@ -2450,10 +2480,11 @@ async def _catalog_price_sweep_scheduler(app: FastAPI) -> None:
 
 @app.get("/catalog", response_class=HTMLResponse)
 async def catalog_page(request: Request):
+    # Demo/role-less Discord accounts reach this page too (guest-tier access,
+    # see _viewer_context) rather than bouncing to /sample like the main
+    # dashboard — Nexus Playground is intentionally open wider than that.
     user = request.session.get("user")
     if user:
-        if is_demo(request):
-            return RedirectResponse("/sample")
         if not await terms_current(request, user):
             return RedirectResponse("/terms")
     elif not is_guest(request):

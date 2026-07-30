@@ -237,7 +237,7 @@
       </div>
     </div>
     <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">&#127769;</button>
-    {% if is_guest %}
+    {% if is_guest and not user_id %}
     <a href="/login">Sign in with Discord</a>
     {% else %}
     <a href="/logout">Log out</a>
@@ -270,11 +270,17 @@
           <span class="hint" id="refreshMsg"></span>
           {% endif %}
         </div>
-        {% if is_guest %}
+        {% if is_guest and not user_id %}
         <div class="hint guest-note" style="padding:0 16px 10px">
           <strong>Guest account restriction:</strong> showing the newest {{ guest_catalog_visible_sets }}
           stocked set(s) only, and manual price refresh is Discord-members-only.
           <a href="/login">Sign in with Discord</a> for the full catalog.
+        </div>
+        {% elif is_guest %}
+        <div class="hint guest-note" style="padding:0 16px 10px">
+          <strong>Limited access:</strong> showing the newest {{ guest_catalog_visible_sets }}
+          stocked set(s) only, and manual price refresh requires the community role.
+          <a href="{{ upgrade_url }}" target="_blank" rel="noopener">Get full access</a> for the complete catalog.
         </div>
         {% else %}
         <div class="hint" style="padding:0 16px 10px">

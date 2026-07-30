@@ -220,7 +220,7 @@
       </div>
     </div>
     <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">&#127769;</button>
-    {% if is_guest %}
+    {% if is_guest and not user_id %}
     <a href="/login">Sign in with Discord</a>
     {% else %}
     <a href="/logout">Log out</a>
@@ -360,10 +360,15 @@
               <div class="scanned-strip-badges" id="scannedStripBadges"></div>
             </div>
           </div>
-          {% if is_guest %}
+          {% if is_guest and not user_id %}
           <div class="hint guest-note">
             <strong>Guest account restriction:</strong> PSA 10 only.
             <a href="/login">Sign in with Discord</a> for every grade and grader.
+          </div>
+          {% elif is_guest %}
+          <div class="hint guest-note">
+            <strong>Limited access:</strong> PSA 10 only.
+            <a href="{{ upgrade_url }}" target="_blank" rel="noopener">Get full access</a> for every grade and grader.
           </div>
           {% else %}
           <div class="grade-filter-row">
@@ -399,10 +404,15 @@
       <div class="card">
         <div class="card-head"><span class="card-title">Your costs</span></div>
         <div class="card-body">
-          {% if is_guest %}
+          {% if is_guest and not user_id %}
           <div class="hint guest-note">
             <strong>Guest account restriction:</strong> PSA 10 only.
             <a href="/login">Sign in with Discord</a> for every grade and grader.
+          </div>
+          {% elif is_guest %}
+          <div class="hint guest-note">
+            <strong>Limited access:</strong> PSA 10 only.
+            <a href="{{ upgrade_url }}" target="_blank" rel="noopener">Get full access</a> for every grade and grader.
           </div>
           {% endif %}
           <div class="row">
