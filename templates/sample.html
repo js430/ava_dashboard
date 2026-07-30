@@ -22,6 +22,7 @@
   .header-user { font-size: 12px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
   .header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
   .logout { font-size: 12px; color: #888; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; white-space: nowrap; }
+  .logout.active { background: #5865F2; color: #fff; border-color: #5865F2; }
 
   .main { padding: 16px; max-width: 1200px; margin: 0 auto; }
 
@@ -92,6 +93,7 @@
   html[data-theme="dark"] .header { background: #1c1c1f; border-bottom-color: #303033; }
   html[data-theme="dark"] .header-title { color: #f0f0f0; }
   html[data-theme="dark"] .logout { color: #bbbbc5; border-color: #383838; background: #252528; }
+  html[data-theme="dark"] .logout.active { background: #5865F2; color: #fff; border-color: #5865F2; }
   html[data-theme="dark"] .promo, html[data-theme="dark"] .controls, html[data-theme="dark"] .table-card { background: #1c1c1f; border-color: #303033; }
   html[data-theme="dark"] .promo-title { color: #f0f0f0; }
   html[data-theme="dark"] .btn-group button { background: #252528; border-color: #383838; color: #ccc; }
@@ -121,8 +123,11 @@
     </div>
   </div>
   <div class="header-right">
+    <a href="/sample" class="logout active">Dashboard</a>
     <a href="/sample-map" class="logout">Map</a>
     <a href="/sample-status" class="logout">Status</a>
+    <a href="/grading-calculator" class="logout">Grading Calculator</a>
+    <a href="/catalog" class="logout">Card Catalog</a>
     <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
     <a href="/logout" class="logout">Log out</a>
   </div>

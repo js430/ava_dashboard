@@ -199,6 +199,8 @@
     {% if not is_guest %}
     <a href="/">Dashboard</a>
     <a href="/map">Map</a>
+    {% elif user_id %}
+    <a href="/sample">Dashboard</a>
     {% endif %}
     {% if is_admin %}
     <div class="nav-group">
