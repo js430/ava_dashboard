@@ -365,12 +365,15 @@
           {% if is_guest and not user_id %}
           <div class="hint guest-note">
             <strong>Guest account restriction:</strong> PSA 10 only.
-            <a href="/login">Sign in with Discord</a> for every grade and grader.
+            <a href="/login">Sign in with Discord</a> for every grade and grader, or sign up for the
+            paid tier (coming soon via Stripe) for full access without a Discord account.
           </div>
           {% elif is_guest %}
           <div class="hint guest-note">
-            <strong>Limited access:</strong> PSA 10 only.
-            <a href="{{ upgrade_url }}" target="_blank" rel="noopener">Get full access</a> for every grade and grader.
+            <strong>Limited access:</strong> PSA 10 only. Get the <strong>Intel</strong> or
+            <strong>Monitor</strong> role in the server's
+            <a href="{{ upgrade_url }}" target="_blank" rel="noopener">get-access channel</a>
+            for every grade and grader.
           </div>
           {% else %}
           <div class="grade-filter-row">
@@ -409,12 +412,15 @@
           {% if is_guest and not user_id %}
           <div class="hint guest-note">
             <strong>Guest account restriction:</strong> PSA 10 only.
-            <a href="/login">Sign in with Discord</a> for every grade and grader.
+            <a href="/login">Sign in with Discord</a> for every grade and grader, or sign up for the
+            paid tier (coming soon via Stripe) for full access without a Discord account.
           </div>
           {% elif is_guest %}
           <div class="hint guest-note">
-            <strong>Limited access:</strong> PSA 10 only.
-            <a href="{{ upgrade_url }}" target="_blank" rel="noopener">Get full access</a> for every grade and grader.
+            <strong>Limited access:</strong> PSA 10 only. Get the <strong>Intel</strong> or
+            <strong>Monitor</strong> role in the server's
+            <a href="{{ upgrade_url }}" target="_blank" rel="noopener">get-access channel</a>
+            for every grade and grader.
           </div>
           {% endif %}
           <div class="row">

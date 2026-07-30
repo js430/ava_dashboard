@@ -276,13 +276,16 @@
         <div class="hint guest-note" style="padding:0 16px 10px">
           <strong>Guest account restriction:</strong> showing the newest {{ guest_catalog_visible_sets }}
           stocked set(s) only, and manual price refresh is Discord-members-only.
-          <a href="/login">Sign in with Discord</a> for the full catalog.
+          <a href="/login">Sign in with Discord</a> for the full catalog, or sign up for the paid
+          tier (coming soon via Stripe) for full access without a Discord account.
         </div>
         {% elif is_guest %}
         <div class="hint guest-note" style="padding:0 16px 10px">
           <strong>Limited access:</strong> showing the newest {{ guest_catalog_visible_sets }}
-          stocked set(s) only, and manual price refresh requires the community role.
-          <a href="{{ upgrade_url }}" target="_blank" rel="noopener">Get full access</a> for the complete catalog.
+          stocked set(s) only, and manual price refresh requires a premium role. Get the
+          <strong>Intel</strong> or <strong>Monitor</strong> role in the server's
+          <a href="{{ upgrade_url }}" target="_blank" rel="noopener">get-access channel</a> for the
+          complete catalog.
         </div>
         {% else %}
         <div class="hint" style="padding:0 16px 10px">
