@@ -1993,10 +1993,14 @@ CATALOG_GAME = "pokemon"
 # the manual per-card refresh is Discord-members-only. Neither restriction
 # applies to a real Discord session (member or admin) — only to `is_guest`.
 GUEST_CATALOG_VISIBLE_SETS = int(os.getenv("GUEST_CATALOG_VISIBLE_SETS", "3"))
+# Era keys that aren't a main-series expansion era — promos, novelty/kit
+# groups, and the unclassified catch-all. The guest window should count only
+# main sets (Mega Evolution, Scarlet & Violet, ...), never one of these.
+GUEST_CATALOG_NON_MAIN_ERAS = {"promos", "mcdonalds", "pop", "trainer_kits", "other"}
 
 
 async def _guest_visible_set_ids(pool, language: str) -> list:
-    """The newest GUEST_CATALOG_VISIBLE_SETS RELEASED and STOCKED sets,
+    """The newest GUEST_CATALOG_VISIBLE_SETS RELEASED, STOCKED, main-era sets,
     newest-by-release first — the guest tier's catalog ceiling. Same "walk
     PPT's own newest-first list, keep only what's actually stocked" pattern
     as select_backfill_window, just capped much smaller.
@@ -2004,7 +2008,9 @@ async def _guest_visible_set_ids(pool, language: str) -> list:
     A set can show up stocked (preview/pre-release cards already priced)
     before its actual release date, so an undated or future-dated set is
     skipped here even if it's already in `have` — the guest window should
-    never include a set that hasn't come out yet.
+    never include a set that hasn't come out yet. Promos and other
+    non-main-era groups (see GUEST_CATALOG_NON_MAIN_ERAS) are skipped too —
+    the window is meant to read as "the last 3 main sets".
     """
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -2018,6 +2024,8 @@ async def _guest_visible_set_ids(pool, language: str) -> list:
     for s in sets:
         released = s.get("released") or ""
         if not released or released > today:
+            continue
+        if card_eras.era_for_set(s.get("name") or s.get("id")) in GUEST_CATALOG_NON_MAIN_ERAS:
             continue
         if s.get("id") in have:
             out.append(s["id"])
