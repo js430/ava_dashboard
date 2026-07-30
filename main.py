@@ -228,8 +228,7 @@ PUBLIC_BASE_URL = os.getenv(
     "PUBLIC_BASE_URL", "https://www.nexuscardco.com").rstrip("/")
 OG_TITLE = "Nexus Card Co — Restock Dashboard"
 OG_DESCRIPTION = ("Historical restock data, store maps, card prices and analytics "
-                  "for the Nexus Card Co community — NOVA, RVA, Tidewater and the "
-                  "wider DMV.")
+                  "for the TCG community, built around our Discord server.")
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 if os.path.isdir(STATIC_DIR):
