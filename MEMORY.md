@@ -3,6 +3,70 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-07-30 — Inventory: sports-card pick tool, admin-only, unrelated to restocks
+
+**Decided:** `/inventory` — a standalone sports-card inventory / eBay pick
+tool for one seller (a friend of the maintainer's), built as a page on this
+dashboard for deploy convenience. `inventory.py` + `inv_*` tables. **Unrelated
+to the restock-tracking data this app otherwise reads** — no join, no shared
+meaning, just sharing this app's DB and Discord auth because it's convenient.
+Admin-only (`require_admin`), like the card tracker — this is single-seller
+tooling, not a member-facing feature, so it does NOT follow the newer
+guest-open pattern `/catalog` and `/grading-calculator` use.
+
+**Core design (from the requester's own spec, not derived here): SKU-as-
+address.** eBay's Custom Label (SKU) field rides along on the sold order and
+packing slip for free. Make the SKU the storage bin code, and the pick
+location arrives with the sale — no lookup, no sync, no DB hit at pick time.
+Bin-level addressing, not slot-level: a bin holds ~25 cards with no internal
+order, so pulling one doesn't require renumbering the rest. A bin's SKU is
+therefore **shared by every card in it** — deliberate, not a bug; eBay's
+Custom Label has no uniqueness requirement.
+
+**Bin occupancy is COMPUTED, never a stored counter.**
+`COUNT(cards WHERE bin_id = X AND status IN ('available','listed','sold'))`.
+That's what makes "free the bin slot on `picked`, not on `sold`" free: a
+status change is what the COUNT sees, with nothing to keep in sync and no way
+for a counter to drift from the cards table. Verified directly: 2 cards
+marked `sold` still occupy their bin (occupied=2); marking one `picked` drops
+it to 1 with no other write.
+
+**Status transitions are enforced in code, not a DB CHECK constraint** —
+`inventory.validate_transition()` / `_TRANSITIONS` — specifically so a
+rejected move gets an actionable message ("can't move available -> picked;
+allowed: listed, sold, at_grader, on_consignment") instead of a generic
+constraint failure. `shipped` is terminal; `sold`→`picked`→`shipped` cannot be
+skipped; `returned` re-enters only via `available` ("restow as new" — no
+attempt to reconstruct the old address).
+
+**Fill pointer is sequential-fill per zone, auto-creating a bin when the zone
+is full.** `assign_bin()`: lowest-seq active bin under capacity wins; if none,
+create the next bin in sequence at the default capacity. Verified: fills
+bin 1 to capacity before touching bin 2; once every bin in a zone is full,
+creates a new one; two zones (`STD`, `PREM`) fill completely independently.
+Zones seeded once at startup (`DEFAULT_ZONES`) and never overwritten on
+redeploy, so a seller who renames a zone later isn't silently reverted.
+
+**NOT built, and nothing here fakes it:** eBay OAuth + Sell Inventory API
+sync, photo intake through a vision model, checklist-database resolution
+(year+set+number → canonical fields), Fulfillment API polling for the pick
+queue. Intake is manual entry. `needs_location` and `cant_find` are real
+flags with working queries and UI, but nothing populates `needs_location`
+yet — that's the seam an eBay poller would write into, per the design notes
+("listings created outside the tool ... drop anything without a valid
+location SKU into a Needs Location inbox").
+
+**Every status change is logged to `inv_events`, append-only.** An audit
+trail for "where did this go" is cheap to write now and expensive to
+reconstruct later if skipped.
+
+**Not yet verified:** never run against live Postgres. The transition table
+and the fill-pointer are unit-tested against a fake pool (12 legal + 6 illegal
+transition cases; 6 fill-pointer scenarios including the sold/picked
+occupancy behavior); the routes and real asyncpg queries are not.
+
+---
+
 ## 2026-07-27 — Card tracker: Pokémon prices move to PPT, resolved free off the catalog
 
 **Decided:** The nightly ingest is split by game. **Pokémon** prices come from

@@ -41,6 +41,7 @@ import grading_sets
 import catalog
 import card_eras
 import population
+import inventory
 
 load_dotenv()
 
@@ -197,6 +198,10 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Population schema ensure failed — grading calculator population "
                          "reports may be unavailable")
+    try:
+        await inventory.ensure_inventory_schema(app.state.db)
+    except Exception:
+        logger.exception("Inventory schema ensure failed — /inventory may be unavailable")
     scheduler_task = asyncio.create_task(_card_tracker_daily_scheduler(app))
     # Background, never awaited: seeding the catalog must not delay startup or
     # take the app down if PPT is unreachable.
@@ -1307,6 +1312,162 @@ def require_admin(request: Request) -> dict:
     if int(user["id"]) not in ADMIN_USER_IDS:
         raise HTTPException(status_code=403, detail="Not authorized")
     return user
+
+# ---- Sports card inventory / eBay pick tool (admin-only) ----
+# Unrelated to the restock-tracking data this app otherwise reads — a
+# standalone single-seller tool sharing this app's DB and auth for
+# convenience. See inventory.py for the SKU-as-address design. Manual intake
+# only: eBay sync and photo-to-metadata extraction are not built yet, and
+# nothing here fakes them.
+
+@app.get("/inventory", response_class=HTMLResponse)
+async def inventory_page(request: Request):
+    user = request.session.get("user")
+    if not user:
+        return RedirectResponse("/login")
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return templates.TemplateResponse("inventory.html", {
+        "request": request,
+        "username": user["username"],
+        "avatar": user.get("avatar"),
+        "user_id": user["id"],
+        "is_admin": True,
+        "is_mod": request.session.get("mod", False),
+        "statuses": inventory.STATUSES,
+    })
+
+
+@app.get("/api/inventory/zones")
+async def api_inventory_zones(request: Request, user=Depends(require_admin)):
+    """Zones with their bins and computed occupancy — the overview grid."""
+    zones = await inventory.list_zones_with_bins(request.app.state.db)
+    return JSONResponse({"zones": zones}, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/inventory/cards")
+async def api_inventory_cards(request: Request, status: str = "", bin_id: int = 0,
+                              search: str = "", user=Depends(require_admin)):
+    """Card list, optionally filtered by status / bin / a loose text search
+    across player, set and card number — card naming is chaos, per the design
+    notes, so this is intentionally forgiving rather than an exact match."""
+    where = ["1=1"]
+    params = []
+    if status:
+        if status not in inventory.STATUSES:
+            raise HTTPException(status_code=400, detail="Unknown status")
+        params.append(status)
+        where.append(f"c.status = ${len(params)}")
+    if bin_id:
+        params.append(bin_id)
+        where.append(f"c.bin_id = ${len(params)}")
+    if search:
+        params.append(f"%{search.strip()[:80]}%")
+        where.append(
+            f"(c.player ILIKE ${len(params)} OR c.set_name ILIKE ${len(params)} "
+            f"OR c.card_number ILIKE ${len(params)})")
+    query = (
+        "SELECT c.id, c.status, c.needs_location, c.cant_find, c.player, c.year, "
+        "c.manufacturer, c.set_name, c.card_number, c.parallel, c.features, c.sport, "
+        "c.is_graded, c.grading_company, c.grade, c.cert_number, c.price, "
+        "c.ebay_listing_id, c.ebay_sku, c.notes, b.code AS bin_code, "
+        "c.created_at, c.updated_at "
+        "FROM inv_cards c LEFT JOIN inv_bins b ON b.id = c.bin_id "
+        f"WHERE {' AND '.join(where)} ORDER BY c.updated_at DESC LIMIT 200")
+    async with request.app.state.db.acquire() as conn:
+        rows = await conn.fetch(query, *params)
+
+    def _row(r):
+        d = dict(r)
+        d["price"] = float(d["price"]) if d["price"] is not None else None
+        d["created_at"] = d["created_at"].isoformat() if d["created_at"] else None
+        d["updated_at"] = d["updated_at"].isoformat() if d["updated_at"] else None
+        return d
+    return JSONResponse({"cards": [_row(r) for r in rows]},
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/inventory/cards")
+async def api_inventory_create_card(request: Request, user=Depends(require_admin)):
+    """Manual intake: create a card and immediately stow it into a zone's
+    fill-pointer bin. One call, matching "capture location at photo time" —
+    there's no unassigned/unstowed state to leave a card sitting in."""
+    body = await request.json()
+    zone_id = body.get("zone_id")
+    if not zone_id:
+        raise HTTPException(status_code=400, detail="zone_id is required")
+
+    def _s(key, limit=120):
+        return str(body.get(key) or "").strip()[:limit]
+
+    price = body.get("price")
+    try:
+        price = float(price) if price not in (None, "") else None
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="price must be a number")
+
+    pool = request.app.state.db
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO inv_cards (player, year, manufacturer, set_name, card_number,
+                parallel, features, sport, is_graded, grading_company, grade,
+                cert_number, price, notes)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+            RETURNING id
+            """,
+            _s("player"), _s("year", 10), _s("manufacturer"), _s("set_name"),
+            _s("card_number", 40), _s("parallel"), _s("features", 300), _s("sport", 40),
+            bool(body.get("is_graded")), _s("grading_company", 40), _s("grade", 20),
+            _s("cert_number", 40), price, _s("notes", 500))
+        card_id = row["id"]
+        await inventory.log_event(conn, card_id, "created", to_status="available",
+                                  actor=str(user["id"]))
+
+    try:
+        b = await inventory.stow_card(pool, card_id, int(zone_id), actor=str(user["id"]))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse({"id": card_id, "bin": b}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/inventory/cards/{card_id}/status")
+async def api_inventory_set_status(request: Request, card_id: int,
+                                   user=Depends(require_admin)):
+    body = await request.json()
+    to_status = str(body.get("status") or "").strip()
+    try:
+        await inventory.set_status(request.app.state.db, card_id, to_status,
+                                   actor=str(user["id"]), note=str(body.get("note") or "")[:300])
+    except inventory.TransitionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/inventory/cards/{card_id}/cant-find")
+async def api_inventory_cant_find(request: Request, card_id: int,
+                                  user=Depends(require_admin)):
+    """Fast cancel path from the pick queue — flags the card for review rather
+    than blocking or guessing."""
+    body = await request.json()
+    await inventory.flag_cant_find(request.app.state.db, card_id, actor=str(user["id"]),
+                                   note=str(body.get("note") or "")[:300])
+    return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/inventory/pick-queue")
+async def api_inventory_pick_queue(request: Request, user=Depends(require_admin)):
+    groups = await inventory.pick_queue(request.app.state.db)
+    return JSONResponse({"groups": groups}, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/inventory/needs-location")
+async def api_inventory_needs_location(request: Request, user=Depends(require_admin)):
+    cards = await inventory.needs_location_inbox(request.app.state.db)
+    return JSONResponse({"cards": cards}, headers={"Cache-Control": "no-store"})
+
 
 @app.get("/card-tracker", response_class=HTMLResponse)
 async def card_tracker_page(request: Request):

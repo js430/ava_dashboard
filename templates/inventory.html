@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/brand/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/brand/icon-180.png">
+<script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Inventory — Restock Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .header-title { font-size: 16px; font-weight: 600; }
+  .header-sub { font-size: 12px; color: #999; margin-top: 1px; }
+  .nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; }
+  .nav a:hover { background: #f4f4f5; }
+  .theme-toggle { font-size: 16px; background: #f4f4f5; border: 1px solid #ddd; border-radius: 6px; padding: 4px 8px; cursor: pointer; line-height: 1; }
+
+  .main { padding: 14px; max-width: 900px; margin: 0 auto; }
+
+  /* Tabs stand in for nav on this page — it's one tool, used standing up in a
+     storage room, so everything stays on one screen instead of routing
+     between pages. Tap targets sized for a thumb, not a cursor. */
+  .tabs { display: flex; gap: 6px; margin-bottom: 14px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .tab { flex: 0 0 auto; font-size: 14px; font-weight: 600; color: #555; background: #fff; border: 1px solid #ddd; border-radius: 10px; padding: 12px 16px; cursor: pointer; white-space: nowrap; }
+  .tab.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .badge { display: inline-block; min-width: 18px; padding: 1px 5px; border-radius: 9px; background: rgba(0,0,0,.12); font-size: 11px; margin-left: 5px; }
+  .tab.active .badge { background: rgba(255,255,255,.25); }
+
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  .card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
+  .card-head { padding: 12px 14px; border-bottom: 1px solid #e4e4e7; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .card-body { padding: 14px; }
+  .sub { font-size: 12px; color: #888; }
+  .hint { font-size: 12px; color: #aaa; line-height: 1.5; }
+
+  /* ── Zones / bins ── */
+  .zone-block { margin-bottom: 18px; }
+  .zone-title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: #666; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+  .zone-note { font-size: 11px; color: #aaa; font-weight: 400; text-transform: none; letter-spacing: 0; }
+  .bin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
+  .bin { border: 1px solid #ddd; border-radius: 10px; padding: 10px 8px; text-align: center; background: #fafafa; }
+  .bin-code { font-size: 13px; font-weight: 700; }
+  .bin-fill { font-size: 12px; color: #888; margin-top: 3px; }
+  .bin-bar { height: 5px; border-radius: 3px; background: #e4e4e7; margin-top: 6px; overflow: hidden; }
+  .bin-bar-fill { height: 100%; background: #16a34a; }
+  .bin.full { border-color: #f59e0b; background: #fffbeb; }
+  .bin.full .bin-bar-fill { background: #f59e0b; }
+
+  /* ── Buttons / inputs, oversized on purpose ── */
+  .btn { font-size: 14px; font-weight: 600; height: 44px; padding: 0 18px; border: none; border-radius: 10px; background: #5865F2; color: #fff; cursor: pointer; }
+  .btn:disabled { opacity: .55; cursor: not-allowed; }
+  .btn-plain { background: #fff; color: #333; border: 1px solid #ddd; }
+  .btn-danger { background: #dc2626; }
+  .btn-sm { height: 36px; padding: 0 12px; font-size: 13px; }
+  .btn-block { width: 100%; }
+  label.f-label { font-size: 12px; color: #888; margin-bottom: 5px; display: block; }
+  input[type=text], input[type=number], select, textarea {
+    width: 100%; font-size: 15px; height: 44px; padding: 0 12px; border: 1px solid #ddd;
+    border-radius: 10px; background: #fff; color: #111; font-family: inherit;
+  }
+  textarea { height: auto; padding: 10px 12px; min-height: 70px; resize: vertical; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid #5865F2; outline-offset: -1px; }
+  .frow { margin-bottom: 12px; }
+  .frow-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .frow-3 { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 10px; }
+  .check-row { display: flex; align-items: center; gap: 8px; font-size: 14px; padding: 6px 0; }
+  .check-row input { width: auto; height: auto; accent-color: #5865F2; }
+
+  /* ── Zone picker (stow) ── */
+  .zone-pick { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-top: 4px; }
+  .zone-pick button { text-align: left; border: 2px solid #ddd; border-radius: 12px; padding: 14px; background: #fff; cursor: pointer; }
+  .zone-pick button.chosen { border-color: #5865F2; background: #eef0ff; }
+  .zone-pick .zn { font-size: 14px; font-weight: 700; }
+  .zone-pick .zd { font-size: 12px; color: #888; margin-top: 3px; }
+
+  /* ── Card list ── */
+  .clist { display: flex; flex-direction: column; gap: 8px; }
+  .crow { border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px; display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }
+  .crow-main { min-width: 0; }
+  .crow-title { font-size: 14px; font-weight: 600; }
+  .crow-sub { font-size: 12px; color: #888; margin-top: 2px; }
+  .crow-bin { font-size: 12px; font-weight: 700; color: #5865F2; margin-top: 4px; }
+  .status-chip { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 8px; white-space: nowrap; }
+  .st-available { background: #dcfce7; color: #166534; }
+  .st-listed { background: #dbeafe; color: #1e40af; }
+  .st-sold { background: #fef9c3; color: #854d0e; }
+  .st-picked { background: #ede9fe; color: #5b21b6; }
+  .st-shipped { background: #f3f4f6; color: #374151; }
+  .st-at_grader { background: #ffedd5; color: #9a3412; }
+  .st-on_consignment { background: #ffedd5; color: #9a3412; }
+  .st-returned { background: #fee2e2; color: #991b1b; }
+  .cantfind-chip { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 8px; background: #fee2e2; color: #991b1b; margin-left: 6px; }
+
+  /* ── Pick queue ── */
+  .pickgroup { border: 1px solid #e4e4e7; border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
+  .pickgroup-head { background: #eef0ff; padding: 10px 14px; font-size: 14px; font-weight: 700; color: #4752d4; display: flex; justify-content: space-between; align-items: center; }
+  .pickcard { padding: 12px 14px; border-top: 1px solid #f0f0f0; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .pickcard-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+  .filter-bar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .filter-bar select, .filter-bar input { flex: 1; min-width: 140px; }
+
+  .empty { text-align: center; padding: 30px 14px; color: #999; font-size: 13px; }
+  .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: #111; color: #fff; font-size: 13px; padding: 10px 16px; border-radius: 8px; z-index: 999; opacity: 0; pointer-events: none; transition: opacity .2s; }
+  .toast.show { opacity: 1; }
+  .toast.err { background: #dc2626; }
+
+  html[data-theme="dark"] { color-scheme: dark; }
+  html[data-theme="dark"] body { background: #111113; color: #f0f0f0; }
+  html[data-theme="dark"] .header { background: #1c1c1f; border-bottom-color: #303033; }
+  html[data-theme="dark"] .nav a { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
+  html[data-theme="dark"] .tab { background: #1c1c1f; border-color: #303033; color: #bbbbc5; }
+  html[data-theme="dark"] .tab.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .card-head { border-bottom-color: #303033; }
+  html[data-theme="dark"] .bin { background: #232326; border-color: #383838; }
+  html[data-theme="dark"] .bin.full { background: #2a2010; border-color: #f59e0b; }
+  html[data-theme="dark"] input, html[data-theme="dark"] select, html[data-theme="dark"] textarea { background: #252528; border-color: #383838; color: #f0f0f0; }
+  html[data-theme="dark"] .btn-plain { background: #252528; border-color: #383838; color: #e0e0e0; }
+  html[data-theme="dark"] .zone-pick button { background: #1c1c1f; border-color: #383838; }
+  html[data-theme="dark"] .zone-pick button.chosen { background: #23234a; border-color: #5865F2; }
+  html[data-theme="dark"] .crow { border-color: #303033; }
+  html[data-theme="dark"] .pickgroup { border-color: #303033; }
+  html[data-theme="dark"] .pickgroup-head { background: #23234a; }
+  html[data-theme="dark"] .pickcard { border-top-color: #2a2a2d; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="header-title">Inventory</div>
+    <div class="header-sub">Stow, track, pick — sports card inventory</div>
+  </div>
+  <div class="nav">
+    <a href="/">Dashboard</a>
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">&#127769;</button>
+    <a href="/logout">Log out</a>
+  </div>
+</div>
+
+<div class="main">
+  <div class="tabs">
+    <button class="tab active" data-tab="bins" onclick="showTab('bins')">Bins</button>
+    <button class="tab" data-tab="intake" onclick="showTab('intake')">Add card</button>
+    <button class="tab" data-tab="cards" onclick="showTab('cards')">All cards</button>
+    <button class="tab" data-tab="pick" onclick="showTab('pick')">Pick queue<span class="badge" id="pickBadge">0</span></button>
+    <button class="tab" data-tab="needs" onclick="showTab('needs')">Needs location<span class="badge" id="needsBadge">0</span></button>
+  </div>
+
+  <!-- ── Bins overview ── -->
+  <div class="panel active" id="panel-bins">
+    <div class="card">
+      <div class="card-head">Zones &amp; bins<span class="sub" id="binsSummary" style="margin-left:auto"></span></div>
+      <div class="card-body" id="zonesWrap"><div class="hint">Loading&hellip;</div></div>
+    </div>
+  </div>
+
+  <!-- ── Intake ── -->
+  <div class="panel" id="panel-intake">
+    <div class="card">
+      <div class="card-head">Add a card</div>
+      <div class="card-body">
+        <div class="hint" style="margin-bottom:14px">
+          Manual entry for now &mdash; photo intake with automatic field extraction
+          isn't built yet. Fill in what you know; player, year and card number matter
+          most for finding it again later.
+        </div>
+
+        <div class="frow"><label class="f-label" for="f_player">Player</label>
+          <input type="text" id="f_player" placeholder="Ja'Marr Chase"></div>
+        <div class="frow frow-3">
+          <div><label class="f-label" for="f_year">Year</label><input type="text" id="f_year" placeholder="2021"></div>
+          <div><label class="f-label" for="f_mfr">Manufacturer</label><input type="text" id="f_mfr" placeholder="Panini"></div>
+          <div><label class="f-label" for="f_sport">Sport</label><input type="text" id="f_sport" placeholder="Football"></div>
+        </div>
+        <div class="frow frow-2">
+          <div><label class="f-label" for="f_set">Set</label><input type="text" id="f_set" placeholder="Prizm"></div>
+          <div><label class="f-label" for="f_num">Card #</label><input type="text" id="f_num" placeholder="143"></div>
+        </div>
+        <div class="frow frow-2">
+          <div><label class="f-label" for="f_parallel">Parallel</label><input type="text" id="f_parallel" placeholder="Silver"></div>
+          <div><label class="f-label" for="f_price">List price ($)</label><input type="number" id="f_price" min="0" step="0.01"></div>
+        </div>
+        <div class="frow"><label class="f-label" for="f_features">Features</label>
+          <input type="text" id="f_features" placeholder="auto, /25, rookie"></div>
+
+        <div class="frow">
+          <label class="check-row"><input type="checkbox" id="f_graded" onchange="toggleGraded()"> Graded</label>
+        </div>
+        <div class="frow frow-3" id="gradedFields" style="display:none">
+          <div><label class="f-label" for="f_gco">Grader</label><input type="text" id="f_gco" placeholder="PSA"></div>
+          <div><label class="f-label" for="f_grade">Grade</label><input type="text" id="f_grade" placeholder="10"></div>
+          <div><label class="f-label" for="f_cert">Cert #</label><input type="text" id="f_cert" placeholder=""></div>
+        </div>
+
+        <div class="frow"><label class="f-label" for="f_notes">Notes</label>
+          <textarea id="f_notes" placeholder="Optional"></textarea></div>
+
+        <div class="frow">
+          <label class="f-label">Zone &mdash; picks the next open bin automatically</label>
+          <div class="zone-pick" id="zonePick"></div>
+        </div>
+
+        <button class="btn btn-block" id="addCardBtn" onclick="submitIntake()">Add &amp; stow</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── All cards ── -->
+  <div class="panel" id="panel-cards">
+    <div class="card">
+      <div class="card-body">
+        <div class="filter-bar">
+          <input type="text" id="cardSearch" placeholder="Search player, set, card #&hellip;" oninput="scheduleCardLoad()">
+          <select id="statusFilter" onchange="loadCards()">
+            <option value="">All statuses</option>
+            {% for s in statuses %}<option value="{{ s }}">{{ s.replace('_',' ')|title }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="clist" id="cardList"><div class="hint">Loading&hellip;</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Pick queue ── -->
+  <div class="panel" id="panel-pick">
+    <div class="card">
+      <div class="card-head">
+        Pick queue
+        <span class="sub" style="margin-left:auto">Sold, not yet picked &mdash; grouped by bin</span>
+      </div>
+      <div class="card-body" id="pickWrap"><div class="hint">Loading&hellip;</div></div>
+    </div>
+  </div>
+
+  <!-- ── Needs location ── -->
+  <div class="panel" id="panel-needs">
+    <div class="card">
+      <div class="card-head">Needs location</div>
+      <div class="card-body">
+        <div class="hint" style="margin-bottom:12px">
+          Where listings created outside this tool land &mdash; once an eBay sync
+          exists, anything published without a recognized bin SKU shows up here
+          instead of being guessed at. Empty until that sync is built.
+        </div>
+        <div id="needsWrap"><div class="hint">Loading&hellip;</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let zonesCache = [];
+let chosenZoneId = null;
+let cardLoadTimer = null;
+
+function showToast(msg, isErr){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (isErr ? ' err' : '');
+  clearTimeout(t._hideTimer);
+  t._hideTimer = setTimeout(() => { t.className = 'toast'; }, 2600);
+}
+
+function esc(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function showTab(name){
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + name));
+  if (name === 'bins') loadZones();
+  if (name === 'cards') loadCards();
+  if (name === 'pick') loadPickQueue();
+  if (name === 'needs') loadNeedsLocation();
+}
+
+// ── Bins ──────────────────────────────────────────────────────────────
+async function loadZones(){
+  let d;
+  try {
+    const r = await fetch('/api/inventory/zones');
+    if (!r.ok) throw new Error();
+    d = await r.json();
+  } catch(e) {
+    document.getElementById('zonesWrap').innerHTML = '<div class="hint">Couldn’t load zones.</div>';
+    return;
+  }
+  zonesCache = d.zones || [];
+  renderZoneWrap();
+  renderZonePicker();
+
+  let totalOcc = 0, totalCap = 0;
+  zonesCache.forEach(z => z.bins.forEach(b => { totalOcc += b.occupied; totalCap += b.capacity; }));
+  document.getElementById('binsSummary').textContent =
+    totalCap ? `${totalOcc.toLocaleString()} / ${totalCap.toLocaleString()} slots filled` : '';
+}
+
+function renderZoneWrap(){
+  const wrap = document.getElementById('zonesWrap');
+  if (!zonesCache.length){ wrap.innerHTML = '<div class="hint">No zones configured.</div>'; return; }
+  wrap.innerHTML = zonesCache.map(z => `
+    <div class="zone-block">
+      <div class="zone-title">${esc(z.label)} <span class="zone-note">${esc(z.note || '')}</span></div>
+      <div class="bin-grid">
+        ${z.bins.length ? z.bins.map(b => {
+            const pct = b.capacity ? Math.min(100, Math.round(100 * b.occupied / b.capacity)) : 0;
+            return `<div class="bin ${b.full ? 'full' : ''}">
+              <div class="bin-code">${esc(b.code)}</div>
+              <div class="bin-fill">${b.occupied}/${b.capacity}</div>
+              <div class="bin-bar"><div class="bin-bar-fill" style="width:${pct}%"></div></div>
+            </div>`;
+          }).join('')
+          : '<div class="hint">No bins yet &mdash; adding a card to this zone creates the first one.</div>'}
+      </div>
+    </div>`).join('');
+}
+
+function renderZonePicker(){
+  const el = document.getElementById('zonePick');
+  el.innerHTML = zonesCache.map(z => {
+    const next = (z.bins.find(b => b.is_active && b.occupied < b.capacity) || {}).code
+      || `next ${z.code}-# (new bin)`;
+    return `<button type="button" class="${chosenZoneId === z.id ? 'chosen' : ''}"
+              onclick="chooseZone(${z.id})">
+        <div class="zn">${esc(z.label)}</div>
+        <div class="zd">Next: ${esc(next)}</div>
+      </button>`;
+  }).join('');
+  if (chosenZoneId == null && zonesCache.length) chosenZoneId = zonesCache[0].id;
+}
+
+function chooseZone(id){
+  chosenZoneId = id;
+  renderZonePicker();
+}
+
+// ── Intake ──────────────────────────────────────────────────────────────
+function toggleGraded(){
+  document.getElementById('gradedFields').style.display =
+    document.getElementById('f_graded').checked ? 'grid' : 'none';
+}
+
+async function submitIntake(){
+  if (chosenZoneId == null){ showToast('Pick a zone first', true); return; }
+  const player = document.getElementById('f_player').value.trim();
+  if (!player){ showToast('Player name is required', true); return; }
+
+  const body = {
+    zone_id: chosenZoneId,
+    player, year: document.getElementById('f_year').value.trim(),
+    manufacturer: document.getElementById('f_mfr').value.trim(),
+    sport: document.getElementById('f_sport').value.trim(),
+    set_name: document.getElementById('f_set').value.trim(),
+    card_number: document.getElementById('f_num').value.trim(),
+    parallel: document.getElementById('f_parallel').value.trim(),
+    features: document.getElementById('f_features').value.trim(),
+    price: document.getElementById('f_price').value,
+    is_graded: document.getElementById('f_graded').checked,
+    grading_company: document.getElementById('f_gco').value.trim(),
+    grade: document.getElementById('f_grade').value.trim(),
+    cert_number: document.getElementById('f_cert').value.trim(),
+    notes: document.getElementById('f_notes').value.trim(),
+  };
+
+  const btn = document.getElementById('addCardBtn');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/inventory/cards', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if (!r.ok){ showToast(d.detail || 'Couldn’t add the card', true); return; }
+    showToast(`Stowed in ${d.bin.code}`);
+    ['f_player','f_year','f_mfr','f_sport','f_set','f_num','f_parallel','f_price',
+     'f_features','f_gco','f_grade','f_cert','f_notes'].forEach(id => {
+      document.getElementById(id).value = '';
+    });
+    document.getElementById('f_graded').checked = false;
+    toggleGraded();
+    await loadZones();     // fill pointer / occupancy just changed
+  } catch(e) {
+    showToast('Network error', true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── All cards ──────────────────────────────────────────────────────────
+function scheduleCardLoad(){
+  clearTimeout(cardLoadTimer);
+  cardLoadTimer = setTimeout(loadCards, 250);
+}
+
+const STATUS_ACTIONS = {
+  available: [['listed', 'Mark listed'], ['at_grader', 'Send to grader'], ['on_consignment', 'Consignment']],
+  listed: [['sold', 'Mark sold'], ['available', 'Unlist']],
+  sold: [['picked', 'Mark picked'], ['available', 'Cancel sale']],
+  picked: [['shipped', 'Mark shipped'], ['available', "Can't find it"]],
+  at_grader: [['available', 'Back from grader']],
+  on_consignment: [['available', 'Returned']],
+  returned: [['available', 'Restow']],
+  shipped: [],
+};
+
+async function loadCards(){
+  const status = document.getElementById('statusFilter').value;
+  const search = document.getElementById('cardSearch').value.trim();
+  const params = new URLSearchParams();
+  if (status) params.set('status', status);
+  if (search) params.set('search', search);
+  let d;
+  try {
+    const r = await fetch('/api/inventory/cards?' + params);
+    if (!r.ok) throw new Error();
+    d = await r.json();
+  } catch(e) {
+    document.getElementById('cardList').innerHTML = '<div class="hint">Couldn’t load cards.</div>';
+    return;
+  }
+  const list = document.getElementById('cardList');
+  if (!d.cards.length){ list.innerHTML = '<div class="empty">No cards match.</div>'; return; }
+  list.innerHTML = d.cards.map(c => {
+    const title = [c.year, c.manufacturer, c.set_name, c.player].filter(Boolean).join(' ') || '(unnamed card)';
+    const sub = [c.card_number ? '#' + c.card_number : '', c.parallel, c.features].filter(Boolean).join(' · ');
+    const actions = (STATUS_ACTIONS[c.status] || []).map(([to, label]) =>
+      `<button class="btn btn-plain btn-sm" onclick="changeStatus(${c.id}, '${to}')">${esc(label)}</button>`).join('');
+    return `<div class="crow">
+        <div class="crow-main">
+          <div class="crow-title">${esc(title)}</div>
+          ${sub ? `<div class="crow-sub">${esc(sub)}</div>` : ''}
+          <div class="crow-bin">${c.bin_code ? esc(c.bin_code) : 'unassigned'}</div>
+          <div style="margin-top:6px">
+            <span class="status-chip st-${esc(c.status)}">${esc(c.status.replace('_',' '))}</span>
+            ${c.cant_find ? '<span class="cantfind-chip">Can’t find</span>' : ''}
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0">${actions}</div>
+      </div>`;
+  }).join('');
+}
+
+async function changeStatus(cardId, toStatus){
+  try {
+    const r = await fetch(`/api/inventory/cards/${cardId}/status`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ status: toStatus })
+    });
+    const d = await r.json();
+    if (!r.ok){ showToast(d.detail || 'That move isn’t allowed', true); return; }
+    showToast('Updated');
+    loadCards(); loadPickQueue(); loadZones();
+  } catch(e) { showToast('Network error', true); }
+}
+
+// ── Pick queue ──────────────────────────────────────────────────────────
+async function loadPickQueue(){
+  let d;
+  try {
+    const r = await fetch('/api/inventory/pick-queue');
+    if (!r.ok) throw new Error();
+    d = await r.json();
+  } catch(e) {
+    document.getElementById('pickWrap').innerHTML = '<div class="hint">Couldn’t load the pick queue.</div>';
+    return;
+  }
+  const groups = d.groups || [];
+  const totalCards = groups.reduce((n, g) => n + g.cards.length, 0);
+  document.getElementById('pickBadge').textContent = totalCards;
+
+  const wrap = document.getElementById('pickWrap');
+  if (!groups.length){ wrap.innerHTML = '<div class="empty">Nothing waiting to be picked.</div>'; return; }
+  wrap.innerHTML = groups.map(g => `
+    <div class="pickgroup">
+      <div class="pickgroup-head"><span>${esc(g.bin_code)}</span><span>${g.cards.length} card${g.cards.length === 1 ? '' : 's'}</span></div>
+      ${g.cards.map(c => {
+        const title = [c.year, c.set_name, c.player].filter(Boolean).join(' ') || '(unnamed card)';
+        return `<div class="pickcard">
+            <div>
+              <div class="crow-title">${esc(title)}</div>
+              <div class="crow-sub">${c.card_number ? '#' + esc(c.card_number) : ''} ${esc(c.parallel || '')}</div>
+              ${c.cant_find ? '<span class="cantfind-chip">Flagged can’t find</span>' : ''}
+            </div>
+            <div class="pickcard-actions">
+              <button class="btn btn-sm" onclick="changeStatus(${c.id}, 'picked')">Picked</button>
+              <button class="btn btn-plain btn-sm btn-danger" style="color:#dc2626;border-color:#fca5a5"
+                onclick="cantFind(${c.id})">Can’t find</button>
+            </div>
+          </div>`;
+      }).join('')}
+    </div>`).join('');
+}
+
+async function cantFind(cardId){
+  try {
+    const r = await fetch(`/api/inventory/cards/${cardId}/cant-find`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+    });
+    if (!r.ok) throw new Error();
+    showToast('Flagged — review before it ships');
+    loadPickQueue();
+  } catch(e) { showToast('Network error', true); }
+}
+
+// ── Needs location ──────────────────────────────────────────────────────
+async function loadNeedsLocation(){
+  let d;
+  try {
+    const r = await fetch('/api/inventory/needs-location');
+    if (!r.ok) throw new Error();
+    d = await r.json();
+  } catch(e) {
+    document.getElementById('needsWrap').innerHTML = '<div class="hint">Couldn’t load.</div>';
+    return;
+  }
+  document.getElementById('needsBadge').textContent = (d.cards || []).length;
+  const wrap = document.getElementById('needsWrap');
+  if (!d.cards.length){ wrap.innerHTML = '<div class="empty">Nothing needs a location.</div>'; return; }
+  wrap.innerHTML = '<div class="clist">' + d.cards.map(c => `
+    <div class="crow"><div class="crow-main">
+      <div class="crow-title">${esc([c.year, c.set_name, c.player].filter(Boolean).join(' '))}</div>
+      <div class="crow-sub">${c.card_number ? '#' + esc(c.card_number) : ''} ${c.ebay_listing_id ? '· listing ' + esc(c.ebay_listing_id) : ''}</div>
+    </div></div>`).join('') + '</div>';
+}
+
+// ── Badges on load, so the tab counts are right before the user clicks in ──
+(async function(){
+  loadZones();
+  try {
+    const r = await fetch('/api/inventory/pick-queue');
+    if (r.ok){ const d = await r.json();
+      document.getElementById('pickBadge').textContent =
+        (d.groups || []).reduce((n, g) => n + g.cards.length, 0); }
+  } catch(e){}
+  try {
+    const r = await fetch('/api/inventory/needs-location');
+    if (r.ok){ const d = await r.json();
+      document.getElementById('needsBadge').textContent = (d.cards || []).length; }
+  } catch(e){}
+})();
+
+(function(){
+  var btn = document.getElementById('themeToggle');
+  function upd(){
+    var d = document.documentElement.getAttribute('data-theme') === 'dark';
+    btn.textContent = d ? '☀️' : '🌙';
+    btn.title = d ? 'Light mode' : 'Dark mode';
+  }
+  window.toggleTheme = function(){
+    var d = document.documentElement.getAttribute('data-theme') === 'dark';
+    var n = d ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', n);
+    localStorage.setItem('theme', n);
+    upd();
+  };
+  upd();
+})();
+</script>
+</body>
+</html>
