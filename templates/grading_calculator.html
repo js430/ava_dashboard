@@ -469,6 +469,13 @@
 </div>
 
 <script>
+// Escapes vendor-supplied text (set/card names) before it goes into
+// innerHTML — those strings come from PokemonPriceTracker, not from this
+// app, so they're not trusted to be free of markup.
+function esc(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
 // Guest tier's restriction is which cards can be looked up (last 3 main
 // sets — see the Set dropdown disclaimer and _guest_grading_allowed in
 // main.py), not which grades are shown for one they're allowed to.
@@ -488,6 +495,9 @@ const GRADERS = {{ grading_companies | tojson }};
 // Hardcoded set lists (grading_sets.py). Cards within a set are fetched on
 // demand from the catalog API when a set is chosen.
 const SETS = {{ grading_sets | tojson }};
+// Proof this page actually rendered — sent back on /scan so the guest photo
+// scanner can't be hit directly by a script that skips loading the page.
+const SCAN_TOKEN = {{ scan_token | tojson }};
 
 let quotes = {};
 let calcTimer = null;
@@ -509,7 +519,7 @@ const setListCache = {};
 function renderSetOptions(list){
   const sel = document.getElementById('setSelect');
   sel.innerHTML = '<option value="">Choose a set&hellip;</option>' + list.map(s =>
-    `<option value="${String(s.id).replace(/"/g,'&quot;')}">${s.name}${s.year ? ' (' + s.year + ')' : ''}</option>`).join('');
+    `<option value="${esc(s.id)}">${esc(s.name)}${s.year ? ' (' + esc(s.year) + ')' : ''}</option>`).join('');
 }
 
 // Language only applies to Pokemon (PPT's parameter); hidden for One Piece.
@@ -584,8 +594,8 @@ async function onSetChange(){
       return;
     }
     c.innerHTML = '<option value="">Choose a card&hellip;</option>' + setCards.map((card, i) => {
-      const meta = [card.card_number, card.variant].filter(Boolean).join(' · ');
-      return `<option value="${i}">${card.name}${meta ? '  —  ' + meta : ''}</option>`;
+      const meta = esc([card.card_number, card.variant].filter(Boolean).join(' · '));
+      return `<option value="${i}">${esc(card.name)}${meta ? '  —  ' + meta : ''}</option>`;
     }).join('');
     c.disabled = false;
     status.textContent = `${setCards.length} cards loaded`
@@ -847,7 +857,7 @@ function renderPopulation(pop){
     const top = (d.g10 != null) ? `${d.g10.toLocaleString()} at 10`
       : (d.g9_5 != null) ? `${d.g9_5.toLocaleString()} at 9.5` : '';
     return `<div class="pop-row">
-      <span class="pop-grader">${String(g)}</span>
+      <span class="pop-grader">${esc(g)}</span>
       <span class="pop-total">${(d.totalPopulation || 0).toLocaleString()} total</span>
       <span class="pop-gem">${gemRate}</span>
       <span class="pop-top">${top}</span>
@@ -1238,7 +1248,7 @@ async function identifyScannedCard(){
   try {
     const resp = await fetch('/api/grading-calculator/scan', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ image: scanCapturedDataUrl })
+      body: JSON.stringify({ image: scanCapturedDataUrl, scan_token: SCAN_TOKEN })
     });
     data = await resp.json();
     if (!resp.ok || data.error){

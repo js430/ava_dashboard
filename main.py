@@ -22,11 +22,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from anthropic import AsyncAnthropic
 from PIL import Image
 from dotenv import load_dotenv
+from content_size_limit_asgi import ContentSizeLimitMiddleware
 
 from card_tracker import (ensure_card_tracker_schema, sync_watchlist, run_ingest,
                           run_ppt_ingest, run_scoring, MAX_TRACKED_CARDS)
@@ -237,8 +239,23 @@ else:
     logger.warning("No static/ directory — brand assets will 404")
 
 # ---- Rate limiter ----
-# Key on the trusted client IP (not the spoofable left-most XFF entry).
-limiter = Limiter(key_func=get_real_ip)
+def rate_limit_key(request: Request) -> str:
+    """Key an authenticated request on its Discord user id — stable regardless
+    of IP — rather than get_real_ip(). Railway's edge header behavior
+    (X-Real-IP / X-Forwarded-For) isn't guaranteed trustworthy in every
+    deployment/rollout state, so a limit keyed on IP alone can be bypassed by
+    rotating the header on every request; a real Discord identity can't be
+    rotated the same way. Guests have no identity yet, so they still fall
+    back to IP here — the guest tier's actual cost control against IP
+    spoofing is the scan endpoint's own global + per-IP daily counters
+    (_guest_scan_take), not this rate limiter.
+    """
+    user = request.session.get("user")
+    if user and user.get("id"):
+        return f"user:{user['id']}"
+    return f"ip:{get_real_ip(request)}"
+
+limiter = Limiter(key_func=rate_limit_key)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -273,6 +290,26 @@ app.add_middleware(
     https_only=os.getenv("HTTPS_ONLY", "true").lower() != "false",
     same_site="lax",            # "lax" required for OAuth redirect flow
 )
+
+
+class RequestTooLarge(StarletteHTTPException):
+    """ContentSizeLimitMiddleware instantiates its exception_cls with a single
+    positional message string — this adapts that to a real HTTPException so
+    FastAPI's default handling turns it into a proper 413 response, instead
+    of an unhandled 500."""
+    def __init__(self, message: str):
+        super().__init__(status_code=413, detail=message)
+
+
+MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_BYTES", str(10 * 1024 * 1024)))
+# Global, every route — not just the photo scanner. A client-supplied
+# Content-Length header was never authoritative (it can be false or absent
+# entirely with chunked transfer-encoding); this counts actual bytes off the
+# ASGI receive stream as they arrive and aborts before the body is fully
+# buffered, regardless of what the request claims about its own size.
+app.add_middleware(ContentSizeLimitMiddleware,
+                   max_content_size=MAX_REQUEST_BODY_BYTES,
+                   exception_cls=RequestTooLarge)
 
 templates = Jinja2Templates(directory="templates")
 
@@ -464,19 +501,41 @@ ALLOWED_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/
 # so it can't carry a cost control on its own. In-process like the catalog
 # backfill's trackers — a redeploy resets it, which is the generous direction.
 GUEST_SCAN_DAILY_LIMIT = int(os.getenv("GUEST_SCAN_DAILY_LIMIT", "5"))
+# Independent backstop: bounds TOTAL guest-scan spend across every guest
+# combined, regardless of source IP. The per-IP cap above only holds if the
+# client's IP is trustworthy (see get_real_ip / rate_limit_key) — Railway's
+# edge header behavior isn't guaranteed to hold across every deployment and
+# rollout state, so this is the real ceiling on worst-case daily Anthropic
+# spend if IP-keying is ever defeated: default 500/day * ~1-1.5c ≈ $5-7.50.
+GUEST_SCAN_GLOBAL_DAILY_LIMIT = int(os.getenv("GUEST_SCAN_GLOBAL_DAILY_LIMIT", "500"))
 _guest_scan_counts: dict[str, tuple[str, int]] = {}
+_guest_scan_global_count = ["", 0]   # [day, count] — mutable holder, no `global` needed
 
 
-def _guest_scan_take(ip: str) -> bool:
-    """Consume one of today's guest scans for `ip`. False if none remain."""
+def _guest_scan_take(ip: str) -> tuple[bool, str]:
+    """Consume one of today's guest scans for `ip`, checked against both the
+    per-IP cap and the global cap. Returns (allowed, reason) — reason is ""
+    when allowed, else "global" or "per_ip" for the caller's error message.
+    The global cap is checked first since it's the one that still holds even
+    if `ip` isn't a trustworthy key at all.
+    """
     today = datetime.utcnow().date().isoformat()
+
+    if _guest_scan_global_count[0] != today:
+        _guest_scan_global_count[0] = today
+        _guest_scan_global_count[1] = 0
+    if _guest_scan_global_count[1] >= GUEST_SCAN_GLOBAL_DAILY_LIMIT:
+        return False, "global"
+
     day, count = _guest_scan_counts.get(ip, (today, 0))
     if day != today:
         count = 0
     if count >= GUEST_SCAN_DAILY_LIMIT:
-        return False
+        return False, "per_ip"
+
     _guest_scan_counts[ip] = (today, count + 1)
-    return True
+    _guest_scan_global_count[1] += 1
+    return True, ""
 
 # ---- OAuth state helpers (stateless HMAC — no session cookie required) ----
 # This avoids browser SameSite/ITP issues where the session cookie is not sent
@@ -498,6 +557,36 @@ def verify_oauth_state(state: str | None) -> bool:
         nonce, sig = state.rsplit(".", 1)
         expected = hmac.new(_oauth_secret(), nonce.encode(), hashlib.sha256).hexdigest()
         return secrets.compare_digest(sig, expected)
+    except Exception:
+        return False
+
+# ---- Scan-page proof token (lightweight anti-automation friction) ----
+# Not a CAPTCHA — no external service or account to provision. A signed,
+# short-lived token minted only when the Grading Calculator page itself
+# renders, which the client echoes back on /scan. A script hitting /scan
+# directly (never having rendered the page) has no valid token to send.
+# Reuses SESSION_SECRET like the OAuth state token above, with a distinct
+# purpose tag baked into the signed message so one token can never be
+# replayed as the other. Deliberately reusable within its window (not
+# single-use) — a real guest scanning several cards in one visit shouldn't
+# need to reload between each one; the actual per-scan cost control is
+# _guest_scan_take above, not this token.
+SCAN_TOKEN_MAX_AGE_S = int(os.getenv("SCAN_TOKEN_MAX_AGE_S", str(30 * 60)))
+
+def make_scan_token() -> str:
+    ts = str(int(time.time()))
+    sig = hmac.new(_oauth_secret(), f"scan.{ts}".encode(), hashlib.sha256).hexdigest()
+    return f"{ts}.{sig}"
+
+def verify_scan_token(token: str | None) -> bool:
+    if not token or "." not in token:
+        return False
+    try:
+        ts, sig = token.split(".", 1)
+        expected = hmac.new(_oauth_secret(), f"scan.{ts}".encode(), hashlib.sha256).hexdigest()
+        if not secrets.compare_digest(sig, expected):
+            return False
+        return (time.time() - int(ts)) <= SCAN_TOKEN_MAX_AGE_S
     except Exception:
         return False
 
@@ -1705,6 +1794,10 @@ async def grading_calculator_page(request: Request):
         "grade_levels": price_sources.GRADE_LEVEL,
         "grading_companies": grading_tiers.GRADING_COMPANIES,
         "grading_sets": grading_sets.GRADING_SETS,
+        # Proof-of-page-load token for the guest-tier scan quota — see
+        # make_scan_token. Harmless to hand to non-guests too; only a guest
+        # request is actually checked against it.
+        "scan_token": make_scan_token(),
     })
 
 
@@ -1771,15 +1864,28 @@ async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
     language = price_sources.ppt_language(language)
     set_name_clean = (set_name or "").strip()[:120]
 
-    if user.get("guest") and not await _guest_grading_allowed(
-            request.app.state.db, game, language, set_name_clean):
-        # Blocks the manual "enter a card" box and the photo scanner too —
-        # neither goes through the Set dropdown, so this is the one place
-        # that actually enforces the guest tier's set restriction.
-        raise HTTPException(
-            status_code=403,
-            detail="That card's set isn't available on the guest tier — pick a card from the "
-                   "Set dropdown, or sign in with Discord for the full set list.")
+    if user.get("guest") and game == "pokemon":
+        if tcg_id:
+            # A pinned tcgPlayerId skips name/set matching entirely inside
+            # PPT's own lookup (see fetch_pokemonpricetracker) — trusting the
+            # client's set_name here would let a guest claim an allowed set
+            # while the id itself pulls real prices for a card in a
+            # different one. Check the id's ACTUAL set from our own cache.
+            real_set_id = await catalog.set_id_for_tcgplayer_id(
+                request.app.state.db, game, language, tcg_id)
+            allowed = bool(real_set_id) and await _guest_grading_allowed(
+                request.app.state.db, game, language, real_set_id)
+        else:
+            allowed = await _guest_grading_allowed(
+                request.app.state.db, game, language, set_name_clean)
+        if not allowed:
+            # Blocks the manual "enter a card" box and the photo scanner too —
+            # neither goes through the Set dropdown, so this is the one place
+            # that actually enforces the guest tier's set restriction.
+            raise HTTPException(
+                status_code=403,
+                detail="That card's set isn't available on the guest tier — pick a card from the "
+                       "Set dropdown, or sign in with Discord for the full set list.")
 
     card = price_sources.CardRef(game=game, name=name[:120],
                                  set_name=set_name_clean,
@@ -3520,21 +3626,35 @@ async def api_grading_scan(request: Request, user=Depends(get_current_user_or_gu
     same PPT/catalog set-and-card lists the picker already uses, so a scan
     result and a manual pick go through identical matching logic.
 
-    Guests get a metered daily allowance instead of the member's per-minute
-    limit — this is the one call in Nexus Playground that spends real Claude
-    API money per request, and a guest has no Discord identity to attribute
-    abuse to, only an IP.
-    """
-    if user.get("guest") and not _guest_scan_take(get_real_ip(request)):
-        raise HTTPException(
-            status_code=429,
-            detail=f"Guests get {GUEST_SCAN_DAILY_LIMIT} free scans a day — "
-                   "sign in with Discord for unlimited use.")
-    content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Request body too large (max 10 MB)")
+    Guests get a metered daily allowance (per-IP AND a global daily ceiling —
+    see _guest_scan_take) instead of the member's per-minute limit — this is
+    the one call in Nexus Playground that spends real Claude API money per
+    request, and a guest has no Discord identity to attribute abuse to. A
+    scan-page-proof token (see make_scan_token) is also required for guests,
+    so a script hitting this endpoint directly without ever rendering the
+    page can't spend the quota at all.
 
+    Request body size is enforced globally by ContentSizeLimitMiddleware, not
+    here — a client-supplied Content-Length header was never authoritative.
+    """
     body = await request.json()
+
+    if user.get("guest"):
+        if not verify_scan_token(body.get("scan_token")):
+            raise HTTPException(status_code=403,
+                                detail="Please reload the page and try again.")
+        allowed, reason = _guest_scan_take(get_real_ip(request))
+        if not allowed:
+            if reason == "global":
+                raise HTTPException(
+                    status_code=429,
+                    detail="Free guest scans are fully booked for today — try again "
+                           "tomorrow, or sign in with Discord for unlimited use.")
+            raise HTTPException(
+                status_code=429,
+                detail=f"Guests get {GUEST_SCAN_DAILY_LIMIT} free scans a day — "
+                       "sign in with Discord for unlimited use.")
+
     image_data = body.get("image")
     if not image_data:
         raise HTTPException(status_code=400, detail="No image provided")

@@ -334,6 +334,24 @@ async def select_price_refresh_candidates(pool, game: str, language: str,
              "name": r["card_name"], "set_id": r["set_id"]} for r in rows]
 
 
+async def set_id_for_tcgplayer_id(pool, game: str, language: str, tcgplayer_id: str):
+    """The set a tcgplayer_id actually belongs to, per our own cache — or None
+    if we've never seen it. A pinned tcgPlayerId lookup skips name/set
+    matching entirely (see fetch_pokemonpricetracker), so a caller enforcing
+    a set-based restriction can't trust a client-supplied set name/id
+    alongside one; this is the authoritative source to check instead.
+    """
+    tcgplayer_id = (tcgplayer_id or "").strip()
+    if not tcgplayer_id:
+        return None
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT set_id FROM catalog_cards WHERE game = $1 AND language = $2 "
+            "AND tcgplayer_id = $3 LIMIT 1",
+            game, language, tcgplayer_id)
+    return row["set_id"] if row else None
+
+
 async def get_cards_by_id(pool, game: str, language: str, ids) -> list:
     """Specific catalog_cards rows by primary key, for the "refresh these
     cards now" action: [{id, tcgplayer_id, tcgplayer_verified, name,

@@ -9,3 +9,4 @@ starlette==0.37.2
 anthropic==0.52.0
 Pillow==11.2.1
 slowapi==0.1.9
+content-size-limit-asgi==0.1.5
