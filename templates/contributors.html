@@ -172,6 +172,7 @@
         {% if is_admin %}<a href="/card-tracker">Tracker</a>{% endif %}
         <a href="/grading-calculator">Grading Calculator</a>
         <a href="/catalog">Card Catalog</a>
+        {% if request.session.get('inventory_access', False) %}<a href="/inventory">Inventory</a>{% endif %}
       </div>
     </div>
     <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>

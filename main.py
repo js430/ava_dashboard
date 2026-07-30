@@ -332,6 +332,10 @@ MOD_ROLE_IDS             = {r.strip() for r in os.getenv("MOD_ROLE_IDS", "140675
 # invite-network page beyond admins. It is deliberately NOT MOD_ROLE_IDS — adding
 # a role here does not grant any of the mod-only pages (those stay on MOD_ROLE_IDS).
 ALL_MODS_ROLE_IDS        = {r.strip() for r in os.getenv("ALL_MODS_ROLE_IDS", "1481770294367748228,1406753334051737631").split(",") if r.strip()}
+# Separate from every other role set on purpose: grants ONLY /inventory (the
+# single-seller pick tool), not the card tracker or any admin page. Someone
+# with this role but not an admin must not gain require_admin's wider reach.
+INVENTORY_ROLE_IDS       = {r.strip() for r in os.getenv("INVENTORY_ROLE_IDS", "1528530585960710338").split(",") if r.strip()}
 GOOGLE_MAPS_API_KEY      = os.getenv("GOOGLE_MAPS_API_KEY", "")
 ANTHROPIC_API_KEY        = os.getenv("ANTHROPIC_API_KEY", "")
 # Reused across requests instead of constructing a client per scan.
@@ -949,6 +953,7 @@ async def callback(request: Request, code: str = None, error: str = None, state:
     request.session["member"] = is_member
     request.session["mod"] = bool(MOD_ROLE_IDS & set(member_roles)) or is_admin_user
     request.session["all_mods"] = bool(ALL_MODS_ROLE_IDS & set(member_roles)) or is_admin_user
+    request.session["inventory_access"] = bool(INVENTORY_ROLE_IDS & set(member_roles)) or is_admin_user
     if is_member:
         request.session["max_position"] = _get_max_position(member_roles)
 
@@ -1313,33 +1318,49 @@ def require_admin(request: Request) -> dict:
         raise HTTPException(status_code=403, detail="Not authorized")
     return user
 
-# ---- Sports card inventory / eBay pick tool (admin-only) ----
+def require_inventory_access(request: Request) -> dict:
+    """Gate for /inventory: admins, plus INVENTORY_ROLE_IDS via the
+    'inventory_access' session flag set at login. Deliberately separate from
+    require_admin — this role must open ONLY the pick tool, not the card
+    tracker or any admin page."""
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if int(user["id"]) not in ADMIN_USER_IDS and not request.session.get("inventory_access", False):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return user
+
+# ---- Sports card inventory / eBay pick tool ----
 # Unrelated to the restock-tracking data this app otherwise reads — a
 # standalone single-seller tool sharing this app's DB and auth for
 # convenience. See inventory.py for the SKU-as-address design. Manual intake
 # only: eBay sync and photo-to-metadata extraction are not built yet, and
 # nothing here fakes them.
+#
+# Access: admins, plus INVENTORY_ROLE_IDS (require_inventory_access). That
+# role opens ONLY this page — not the card tracker or any admin page.
 
 @app.get("/inventory", response_class=HTMLResponse)
 async def inventory_page(request: Request):
     user = request.session.get("user")
     if not user:
         return RedirectResponse("/login")
-    if int(user["id"]) not in ADMIN_USER_IDS:
+    is_admin_user = int(user["id"]) in ADMIN_USER_IDS
+    if not is_admin_user and not request.session.get("inventory_access", False):
         raise HTTPException(status_code=403, detail="Not authorized")
     return templates.TemplateResponse("inventory.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
         "user_id": user["id"],
-        "is_admin": True,
+        "is_admin": is_admin_user,
         "is_mod": request.session.get("mod", False),
         "statuses": inventory.STATUSES,
     })
 
 
 @app.get("/api/inventory/zones")
-async def api_inventory_zones(request: Request, user=Depends(require_admin)):
+async def api_inventory_zones(request: Request, user=Depends(require_inventory_access)):
     """Zones with their bins and computed occupancy — the overview grid."""
     zones = await inventory.list_zones_with_bins(request.app.state.db)
     return JSONResponse({"zones": zones}, headers={"Cache-Control": "no-store"})
@@ -1347,7 +1368,7 @@ async def api_inventory_zones(request: Request, user=Depends(require_admin)):
 
 @app.get("/api/inventory/cards")
 async def api_inventory_cards(request: Request, status: str = "", bin_id: int = 0,
-                              search: str = "", user=Depends(require_admin)):
+                              search: str = "", user=Depends(require_inventory_access)):
     """Card list, optionally filtered by status / bin / a loose text search
     across player, set and card number — card naming is chaos, per the design
     notes, so this is intentionally forgiving rather than an exact match."""
@@ -1388,7 +1409,7 @@ async def api_inventory_cards(request: Request, status: str = "", bin_id: int = 
 
 
 @app.post("/api/inventory/cards")
-async def api_inventory_create_card(request: Request, user=Depends(require_admin)):
+async def api_inventory_create_card(request: Request, user=Depends(require_inventory_access)):
     """Manual intake: create a card and immediately stow it into a zone's
     fill-pointer bin. One call, matching "capture location at photo time" —
     there's no unassigned/unstowed state to leave a card sitting in."""
@@ -1433,7 +1454,7 @@ async def api_inventory_create_card(request: Request, user=Depends(require_admin
 
 @app.post("/api/inventory/cards/{card_id}/status")
 async def api_inventory_set_status(request: Request, card_id: int,
-                                   user=Depends(require_admin)):
+                                   user=Depends(require_inventory_access)):
     body = await request.json()
     to_status = str(body.get("status") or "").strip()
     try:
@@ -1448,7 +1469,7 @@ async def api_inventory_set_status(request: Request, card_id: int,
 
 @app.post("/api/inventory/cards/{card_id}/cant-find")
 async def api_inventory_cant_find(request: Request, card_id: int,
-                                  user=Depends(require_admin)):
+                                  user=Depends(require_inventory_access)):
     """Fast cancel path from the pick queue — flags the card for review rather
     than blocking or guessing."""
     body = await request.json()
@@ -1458,13 +1479,13 @@ async def api_inventory_cant_find(request: Request, card_id: int,
 
 
 @app.get("/api/inventory/pick-queue")
-async def api_inventory_pick_queue(request: Request, user=Depends(require_admin)):
+async def api_inventory_pick_queue(request: Request, user=Depends(require_inventory_access)):
     groups = await inventory.pick_queue(request.app.state.db)
     return JSONResponse({"groups": groups}, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/inventory/needs-location")
-async def api_inventory_needs_location(request: Request, user=Depends(require_admin)):
+async def api_inventory_needs_location(request: Request, user=Depends(require_inventory_access)):
     cards = await inventory.needs_location_inbox(request.app.state.db)
     return JSONResponse({"cards": cards}, headers={"Cache-Control": "no-store"})
 

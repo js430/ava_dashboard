@@ -65,6 +65,33 @@ and the fill-pointer are unit-tested against a fake pool (12 legal + 6 illegal
 transition cases; 6 fill-pointer scenarios including the sold/picked
 occupancy behavior); the routes and real asyncpg queries are not.
 
+**2026-07-30, same day:** opened `/inventory` to a second Discord role
+(`INVENTORY_ROLE_IDS`, default `1528530585960710338`) without widening
+`require_admin`. New `require_inventory_access()` gate, separate from
+`require_admin`, checking a session flag (`inventory_access`) set at login
+alongside the existing `mod` / `all_mods` flags — same pattern, own role set.
+**Deliberately not reusing or extending `require_admin`**: that function
+gates the card tracker too, and this role must open only the pick tool.
+Verified the two gates diverge correctly for a non-admin holder of the role
+(opens `require_inventory_access`, `require_admin` still False) before
+wiring all 7 inventory API routes plus the page route to the new gate.
+
+**Nav link added to the 11 templates carrying the real Nexus Playground
+dropdown**, gated on `request.session.get('inventory_access', False)` read
+directly in Jinja rather than a new per-route context variable — `request`
+is already passed to every `TemplateResponse`, and the flag already covers
+admins (`role OR is_admin_user`, set once at login), so one condition serves
+both cases. Deliberately reading the session in the template instead of
+touching 16 route handlers' context dicts individually, given how much of
+`main.py` has changed outside this session — a template-only diff was the
+safer edit. **Skipped `sample*.html`, `guest_home.html`, `landing.html`** on
+purpose: those are demo/anonymous surfaces that never go through the real
+Discord role flow, and they already omit the Tracker link for the same
+reason — Inventory follows that existing precedent rather than setting a new
+one. Verified against real `request.session`-shaped objects in three states
+(flag True, flag False, key absent entirely) that the link shows only when
+access is actually granted and never raises on a missing key.
+
 ---
 
 ## 2026-07-27 — Card tracker: Pokémon prices move to PPT, resolved free off the catalog
