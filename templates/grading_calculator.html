@@ -317,6 +317,20 @@
               <select id="setSelect" onchange="onSetChange()"><option value="">Choose a set&hellip;</option></select>
             </div>
           </div>
+          {% if is_guest and not user_id %}
+          <div class="hint guest-note">
+            <strong>Guest account restriction:</strong> showing the last 3 main sets only.
+            <a href="/login">Sign in with Discord</a> for the full set list, or sign up for the
+            paid tier (coming soon via Stripe) for full access without a Discord account.
+          </div>
+          {% elif is_guest %}
+          <div class="hint guest-note">
+            <strong>Limited access:</strong> showing the last 3 main sets only. Get the
+            <strong>Intel</strong> or <strong>Monitor</strong> role in the server's
+            <a href="{{ upgrade_url }}" target="_blank" rel="noopener">get-access channel</a>
+            for the full set list.
+          </div>
+          {% endif %}
           <div class="row">
             <div style="flex:1">
               <label class="label" for="cardSelect">Card</label>
@@ -362,26 +376,11 @@
               <div class="scanned-strip-badges" id="scannedStripBadges"></div>
             </div>
           </div>
-          {% if is_guest and not user_id %}
-          <div class="hint guest-note">
-            <strong>Guest account restriction:</strong> PSA 10 only.
-            <a href="/login">Sign in with Discord</a> for every grade and grader, or sign up for the
-            paid tier (coming soon via Stripe) for full access without a Discord account.
-          </div>
-          {% elif is_guest %}
-          <div class="hint guest-note">
-            <strong>Limited access:</strong> PSA 10 only. Get the <strong>Intel</strong> or
-            <strong>Monitor</strong> role in the server's
-            <a href="{{ upgrade_url }}" target="_blank" rel="noopener">get-access channel</a>
-            for every grade and grader.
-          </div>
-          {% else %}
           <div class="grade-filter-row">
             <label for="minGradeSlider">Lowest grade shown</label>
             <input type="range" id="minGradeSlider" min="1" max="8" step="1" value="8" oninput="applyGradeFilter()">
             <span class="grade-filter-value" id="minGradeLabel">8</span>
           </div>
-          {% endif %}
           <table class="grades">
             <thead>
               <tr>
@@ -409,32 +408,12 @@
       <div class="card">
         <div class="card-head"><span class="card-title">Your costs</span></div>
         <div class="card-body">
-          {% if is_guest and not user_id %}
-          <div class="hint guest-note">
-            <strong>Guest account restriction:</strong> PSA 10 only.
-            <a href="/login">Sign in with Discord</a> for every grade and grader, or sign up for the
-            paid tier (coming soon via Stripe) for full access without a Discord account.
-          </div>
-          {% elif is_guest %}
-          <div class="hint guest-note">
-            <strong>Limited access:</strong> PSA 10 only. Get the <strong>Intel</strong> or
-            <strong>Monitor</strong> role in the server's
-            <a href="{{ upgrade_url }}" target="_blank" rel="noopener">get-access channel</a>
-            for every grade and grader.
-          </div>
-          {% endif %}
           <div class="row">
             <div><label class="label" for="gradeCompany">Grader</label>
-              {% if is_guest %}
-              <select id="gradeCompany" disabled>
-                <option value="psa" selected>PSA</option>
-              </select>
-              {% else %}
               <select id="gradeCompany" onchange="onCompanyChange()">
                 <option value="">Custom / other</option>
                 {% for cid, c in grading_companies.items() %}<option value="{{ cid }}">{{ c.label }}</option>{% endfor %}
               </select>
-              {% endif %}
             </div>
             <div><label class="label" for="gradeTier">Tier</label>
               <select id="gradeTier" onchange="onTierChange()"><option value="">&mdash;</option></select>
@@ -490,13 +469,12 @@
 </div>
 
 <script>
-const IS_GUEST = {{ 'true' if is_guest else 'false' }};
-// Guest tier: Market Prices collapses to raw + PSA 10 only — see
-// GUEST_GRADING_GRADES in main.py, which enforces the same restriction on
-// the /quotes and /calc responses regardless of what this list says.
+// Guest tier's restriction is which cards can be looked up (last 3 main
+// sets — see the Set dropdown disclaimer and _guest_grading_allowed in
+// main.py), not which grades are shown for one they're allowed to.
 const ALL_GRADES = ['raw','psa_1','psa_2','psa_3','psa_4','psa_5','psa_6','psa_7',
   'psa_8','psa_9','psa_10','bgs_9_5','bgs_10','cgc_9','cgc_10','sgc_10','tag_9','tag_10'];
-const GRADES = IS_GUEST ? ['raw', 'psa_10'] : ALL_GRADES;
+const GRADES = ALL_GRADES;
 const LABELS = {{ grade_labels | tojson }};
 // Numeric rank per grade, for the "lowest grade shown" slider — a row stays
 // visible when its level >= the slider value (raw's level is 0, always shown).
@@ -771,8 +749,6 @@ function buildRows(){
 // Hides grade rows below the slider's minimum. Toggles visibility only — never
 // rebuilds the table — so prices the user typed in stay put while sliding.
 function applyGradeFilter(){
-  // Guests have no slider (see the template) — GRADES is already collapsed
-  // to raw + PSA 10, so there's nothing left to filter by threshold.
   const slider = document.getElementById('minGradeSlider');
   if (slider){
     const min = +slider.value;
@@ -815,7 +791,13 @@ async function lookup(){
       language: currentLanguage()
     });
     const resp = await fetch('/api/grading-calculator/quotes?' + params);
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    if (!resp.ok) {
+      // Surface the server's reason (e.g. the guest-tier set restriction)
+      // instead of a generic failure message, when it sent one.
+      let detail = '';
+      try { detail = (await resp.json()).detail || ''; } catch(e){}
+      throw new Error(detail || ('HTTP ' + resp.status));
+    }
     const d = await resp.json();
     quotes = d.quotes || {};
     buildRows();
@@ -827,7 +809,9 @@ async function lookup(){
     refreshTier();
     scheduleCalc();
   } catch(e){
-    status.textContent = 'Lookup failed. Enter prices by hand below.';
+    status.textContent = e.message && e.message !== 'HTTP 502'
+      ? e.message
+      : 'Lookup failed. Enter prices by hand below.';
     renderPopulation(null);
   } finally {
     btn.disabled = false;

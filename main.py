@@ -1670,11 +1670,20 @@ async def api_import_run(request: Request):
 # JustTCG watchlist. Open to members (same gate as the map/dashboard); the
 # vendor-backed lookups spend paid quota, so they keep a per-IP rate limit.
 
-# Guest tier: Market Prices, Your Costs, and What You'd Net all collapse to
-# PSA 10 only — a product-scope restriction (sign in with Discord for every
-# grade/grader), not a cost-control one, since /quotes already fetches every
-# grade in a single PPT call regardless of what's shown afterward.
-GUEST_GRADING_GRADES = ("raw", "psa_10")
+# Guest tier: same "last 3 main sets" ceiling as the Catalog, not a grade/
+# grader restriction — every grade is shown for whatever card a guest is
+# allowed to look up at all. Enforced at /sets, /set-cards, and /quotes so a
+# manual card-name entry or the photo scanner can't reach a card outside the
+# window just because the Set dropdown wasn't used to get there.
+async def _guest_grading_allowed(pool, game: str, language: str, set_name: str) -> bool:
+    if game != "pokemon":
+        return True
+    visible = await _guest_visible_set_ids(pool, language)
+    return _norm_set_name(set_name) in {_norm_set_name(v) for v in visible}
+
+
+def _norm_set_name(value: str) -> str:
+    return (value or "").strip().casefold()
 
 
 @app.get("/grading-calculator", response_class=HTMLResponse)
@@ -1760,8 +1769,20 @@ async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
 
     tcg_id = (tcgplayer_id or "").strip()[:32]
     language = price_sources.ppt_language(language)
+    set_name_clean = (set_name or "").strip()[:120]
+
+    if user.get("guest") and not await _guest_grading_allowed(
+            request.app.state.db, game, language, set_name_clean):
+        # Blocks the manual "enter a card" box and the photo scanner too —
+        # neither goes through the Set dropdown, so this is the one place
+        # that actually enforces the guest tier's set restriction.
+        raise HTTPException(
+            status_code=403,
+            detail="That card's set isn't available on the guest tier — pick a card from the "
+                   "Set dropdown, or sign in with Discord for the full set list.")
+
     card = price_sources.CardRef(game=game, name=name[:120],
-                                 set_name=(set_name or "").strip()[:120],
+                                 set_name=set_name_clean,
                                  card_number=(card_number or "").strip()[:40],
                                  tcgplayer_id=tcg_id or None,
                                  language=language)
@@ -1780,12 +1801,6 @@ async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
 
     quotes_out = {g: q.to_dict() for g, q in result["quotes"].items()}
     all_out = [q.to_dict() for q in result["all"]]
-    if user.get("guest"):
-        # Guest tier: PSA 10 only (see GUEST_GRADING_GRADES). Enforced here,
-        # not just hidden in the UI — a guest reading the raw response
-        # shouldn't see prices for grades they can't otherwise act on.
-        quotes_out = {g: q for g, q in quotes_out.items() if g in GUEST_GRADING_GRADES}
-        all_out = [q for q in all_out if q.get("grade") in GUEST_GRADING_GRADES]
 
     return JSONResponse({
         "card_key": card.key(),
@@ -1824,25 +1839,21 @@ async def api_grading_calc(request: Request, user=Depends(get_current_user_or_gu
         sale_fee_pct=min(max(_num(c.get("sale_fee_pct"), 0.0), 0.0), 0.9),
         sale_ship=_num(c.get("sale_ship"), 0.0),
     )
-    if user.get("guest"):
-        # Guest tier: PSA 10 only, regardless of what the client sends —
-        # never trust the client for a restriction that matters.
-        grade_prices = {g: v for g, v in grade_prices.items() if g in GUEST_GRADING_GRADES}
-        report_grades = ["psa_10"]
-    else:
-        # "What you'd net" reports on whichever grading company is picked in
-        # Your costs, filtered to the SAME "lowest grade shown" threshold as
-        # the Market Prices slider — so the two panels always agree on which
-        # grades are in view instead of the net cards being frozen at a fixed
-        # top-two. Falls back to PSA's full range when no company is selected
-        # ("Custom / other"), matching PSA 10/9's existing role as the
-        # no-company default.
-        company = (body.get("company") or "").strip().lower()
-        min_grade = _num(body.get("min_grade"), 8.0)
-        min_grade = min(max(min_grade, 1.0), 8.0)
-        all_grades = (grading_tiers.GRADING_COMPANIES.get(company, {}).get("all_grades")
-                     or grading_tiers.GRADING_COMPANIES["psa"]["all_grades"])
-        report_grades = [g for g in all_grades if price_sources.GRADE_LEVEL.get(g, 0) >= min_grade]
+    # "What you'd net" reports on whichever grading company is picked in
+    # Your costs, filtered to the SAME "lowest grade shown" threshold as
+    # the Market Prices slider — so the two panels always agree on which
+    # grades are in view instead of the net cards being frozen at a fixed
+    # top-two. Falls back to PSA's full range when no company is selected
+    # ("Custom / other"), matching PSA 10/9's existing role as the
+    # no-company default. Same for guests as for members — the guest tier's
+    # restriction is which cards they can look up (see _guest_grading_allowed),
+    # not which grades are shown for one they're allowed to.
+    company = (body.get("company") or "").strip().lower()
+    min_grade = _num(body.get("min_grade"), 8.0)
+    min_grade = min(max(min_grade, 1.0), 8.0)
+    all_grades = (grading_tiers.GRADING_COMPANIES.get(company, {}).get("all_grades")
+                 or grading_tiers.GRADING_COMPANIES["psa"]["all_grades"])
+    report_grades = [g for g in all_grades if price_sources.GRADE_LEVEL.get(g, 0) >= min_grade]
     try:
         r = grading_roi.evaluate(raw_price, grade_prices, costs, grades=report_grades)
     except ValueError as exc:
@@ -1892,6 +1903,16 @@ async def api_grading_sets(request: Request, game: str = "pokemon",
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 sets = await price_sources.fetch_ppt_sets(client, language=language)
+            if user.get("guest"):
+                # Guest tier is capped to the same "last 3 main sets" as the
+                # Catalog. Return the filtered list even if it's empty rather
+                # than falling through to the unrestricted baked list below.
+                visible = {_norm_set_name(v)
+                          for v in await _guest_visible_set_ids(request.app.state.db, language)}
+                sets = [s for s in sets if _norm_set_name(s.get("id")) in visible]
+                return JSONResponse({"source": "pokemonpricetracker",
+                                     "language": language, "sets": sets},
+                                    headers={"Cache-Control": "no-store"})
             if sets:
                 return JSONResponse({"source": "pokemonpricetracker",
                                      "language": language, "sets": sets},
@@ -1922,6 +1943,9 @@ async def api_grading_set_cards(request: Request, game: str, set_id: str,
     if not set_id or len(set_id) > 120:
         raise HTTPException(status_code=400, detail="Invalid set")
     language = price_sources.ppt_language(language)
+
+    if user.get("guest") and not await _guest_grading_allowed(request.app.state.db, game, language, set_id):
+        raise HTTPException(status_code=403, detail="That set isn't available on the guest tier.")
 
     # Pokemon: take the card list from PPT so each card carries its
     # tcgPlayerId. A lookup can then pin the exact printing instead of
