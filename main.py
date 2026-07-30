@@ -1996,10 +1996,16 @@ GUEST_CATALOG_VISIBLE_SETS = int(os.getenv("GUEST_CATALOG_VISIBLE_SETS", "3"))
 
 
 async def _guest_visible_set_ids(pool, language: str) -> list:
-    """The newest GUEST_CATALOG_VISIBLE_SETS STOCKED sets, newest-by-release
-    first — the guest tier's catalog ceiling. Same "walk PPT's own
-    newest-first list, keep only what's actually stocked" pattern as
-    select_backfill_window, just capped much smaller."""
+    """The newest GUEST_CATALOG_VISIBLE_SETS RELEASED and STOCKED sets,
+    newest-by-release first — the guest tier's catalog ceiling. Same "walk
+    PPT's own newest-first list, keep only what's actually stocked" pattern
+    as select_backfill_window, just capped much smaller.
+
+    A set can show up stocked (preview/pre-release cards already priced)
+    before its actual release date, so an undated or future-dated set is
+    skipped here even if it's already in `have` — the guest window should
+    never include a set that hasn't come out yet.
+    """
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             sets = await price_sources.fetch_ppt_sets(client, language=language)
@@ -2007,8 +2013,12 @@ async def _guest_visible_set_ids(pool, language: str) -> list:
         logger.exception("Guest catalog restriction: couldn't fetch the PPT set list")
         sets = []
     have = await catalog.cached_set_ids(pool, CATALOG_GAME, language)
+    today = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d")
     out = []
     for s in sets:
+        released = s.get("released") or ""
+        if not released or released > today:
+            continue
         if s.get("id") in have:
             out.append(s["id"])
         if len(out) >= GUEST_CATALOG_VISIBLE_SETS:
