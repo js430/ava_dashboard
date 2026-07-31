@@ -3,6 +3,85 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-07-30 — Catalog: Japanese sets, as a multi-select alongside English
+
+**Decided:** The catalog browses English and/or Japanese, via two independent
+checkboxes (English ticked by default). Both can be on at once — they are
+separate datasets shown together, not a display toggle, because PPT prices
+the two printings as different products (`price_sources.CardRef.key()`
+already includes language for exactly this reason).
+
+**The DB needed nothing.** `catalog_cards` has had `language` in its unique
+index and every query since it was built; it was simply never exposed. The
+work was making `language` a LIST end-to-end rather than a single string.
+
+**Three traps, all closed and tested:**
+
+1. **An empty or unknown language must never become "no language filter"** —
+   that would silently merge both printings into one list.
+   `catalog._norm_languages()` always returns a non-empty allow-listed list,
+   and the WHERE clause is always `language = ANY(...)`, so the single- and
+   multi-language cases take one code path.
+2. **Facets group by `(set_id, language)`, not `set_id` alone.** A set id
+   present in both languages would otherwise collapse into one row with a
+   summed count — two genuinely different products merged. Verified against a
+   fixture where `SV: 151` exists in both.
+3. **The frontend still keys the set filter on `set_id` alone**, so the two
+   facet rows are merged back into ONE picker option (counts summed, EN/JP
+   badge only when a set is single-language). Left split, they'd render as
+   duplicate-looking entries that both toggle the same filter. Selecting that
+   option correctly returns both printings — which is what "that set" means
+   when both languages are ticked.
+
+**Language is a SCOPE, not a facet.** The "a facet never applies its own
+filter" rule still holds for set/rarity, but language applies to *both* facet
+queries — it selects the dataset rather than filtering within it.
+
+**Unticking the last language is refused** rather than showing an empty
+catalog. The server would fall back to English anyway, so an empty selection
+would make the UI lie about what it's showing.
+
+**Stocking is per-language and deliberately separate from browsing.** The
+admin panel has its own language dropdown; "stock the Japanese sets I'm
+missing" is a different question from "show me Japanese cards". Stocked-ness
+is per `(set_id, language)` — a set stocked in English says nothing about its
+Japanese printing. The bulk backfill buttons and the in-process
+`_catalog_known_empty` / `_catalog_refreshed_sets` trackers are all
+language-keyed for the same reason: one language's misses must not suppress
+the other's retries.
+
+**The startup seed stays English-only** (`CATALOG_SEED_LANGUAGES`, default
+`english`). It runs unattended on every deploy and seeding a language costs
+real credits, so Japanese is stocked deliberately from the admin panel; set
+the env var to `english,japanese` to opt in.
+
+**The nightly price sweep DOES cover both**, because a stocked Japanese set
+whose prices never refresh would go stale forever. They share the one daily
+credit budget — the existing reserve/stop guard bounds total spend, so this
+spreads the budget rather than doubling it.
+
+### Found while testing — pre-existing, NOT from this change
+
+Three suites were already failing on `main` before this work (confirmed by
+stashing). Fixtures repaired; one is a real open question:
+
+- **`trainer_kits` is now an unreachable era group.** Commit `e008919`
+  ("fix era grouping for dash- and space-separated set names") added bare-space
+  release-code matching for names like `XY Base Set` — which also catches
+  *every* real Trainer Kit name, since they all begin with an era code.
+  `XY Trainer Kit: Sylveon & Noivern` → `xy`, `EX Trainer Kit Latias` → `ex`,
+  and so on for BW/HGSS/SM/DP. Only the bare string `Trainer Kit` still
+  reaches the group. Recorded current behaviour in the test rather than
+  silently "fixing" either side — **decide whether Trainer Kits should group
+  by era (then drop the dead group from `ERA_ORDER`) or stay standalone
+  (then the keyword rule needs to run before the prefix match).**
+- `fetch_ppt_card_prices` gained a third return value (`daily_remaining`);
+  a test stub still returned two.
+- Templates now read `request.session` directly (the inventory nav gate), so
+  a fixture passing `request={}` no longer renders.
+
+---
+
 ## 2026-07-30 — Inventory: sports-card pick tool, admin-only, unrelated to restocks
 
 **Decided:** `/inventory` — a standalone sports-card inventory / eBay pick

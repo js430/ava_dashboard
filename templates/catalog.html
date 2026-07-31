@@ -51,6 +51,8 @@
   .chk-toggle:hover { text-decoration: underline; }
   .head-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #888; cursor: pointer; white-space: nowrap; }
   .head-check input { width: auto; height: auto; margin: 0; accent-color: #5865F2; }
+  .lang-group { display: inline-flex; align-items: center; gap: 10px; padding: 3px 9px; border: 1px solid #ddd; border-radius: 6px; }
+  .lang-badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 6px; background: #ede9fe; color: #5b21b6; margin-left: 6px; vertical-align: middle; }
 
   /* ── Filters, in the table header ── */
   .filter-row th { padding: 0 8px 8px; border-bottom: 1px solid #e4e4e7; vertical-align: top; }
@@ -190,6 +192,8 @@
   html[data-theme="dark"] .th-picker.on { border-color: #5865F2; color: #a5b4fc; }
   html[data-theme="dark"] .filter-row th { border-bottom-color: #303033; }
   html[data-theme="dark"] .head-check { color: #a1a1aa; }
+  html[data-theme="dark"] .lang-group { border-color: #383838; }
+  html[data-theme="dark"] .lang-badge { background: #2a2a4a; color: #a5b4fc; }
   html[data-theme="dark"] .picker { background: #1c1c1f; border-color: #383838; box-shadow: 0 8px 28px rgba(0,0,0,.5); }
   html[data-theme="dark"] .picker-list label { color: #d4d4d8; }
   html[data-theme="dark"] .picker-list label:hover { background: #2e2e32; }
@@ -256,6 +260,14 @@
         <div class="card-head">
           <span class="card-title">Cards</span>
           <span class="status" id="resultCount"></span>
+          <span class="lang-group" title="English and Japanese printings are different products with different prices. Tick both to see them together.">
+            <label class="head-check">
+              <input type="checkbox" id="langEnglish" checked> English
+            </label>
+            <label class="head-check">
+              <input type="checkbox" id="langJapanese"> Japanese
+            </label>
+          </span>
           <label class="head-check" title="Hide cards with no price on record">
             <input type="checkbox" id="qPriced"> Priced only
           </label>
@@ -370,7 +382,14 @@
           <div class="setlist" id="stockedSets"></div>
           {% if is_admin %}
           <div style="border-top:1px solid #f0f0f0; padding-top:12px; margin-top:12px">
-            <label class="label" for="stockSet">Stock a set now (admin)</label>
+            <label class="label" for="stockLang">Stock a set now (admin)</label>
+            <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px">
+              <select id="stockLang" style="width:auto" onchange="renderStockPicker()">
+                <option value="english">English sets</option>
+                <option value="japanese">Japanese sets</option>
+              </select>
+              <span class="hint" id="stockLangHint"></span>
+            </div>
             <div style="display:flex; gap:8px">
               <select id="stockSet"><option value="">Choose a set&hellip;</option></select>
               <button class="btn" id="stockBtn" onclick="stockSet()" style="flex-shrink:0">Stock</button>
@@ -384,8 +403,8 @@
                 Stock 10 more sets
               </button>
               <span class="hint" style="margin-left:6px">
-                Takes the next 10 sets that aren't stocked yet, newest first.
-                Press it again for the 10 after that.
+                Takes the next 10 sets that aren't stocked yet in the language
+                selected above, newest first. Press it again for the 10 after that.
               </span>
             </div>
             <div style="margin-top:10px">
@@ -393,9 +412,9 @@
                 Refresh 10 stocked sets
               </button>
               <span class="hint" style="margin-left:6px">
-                Re-fetches 10 already-stocked sets so any capped at the old
-                200-cards-per-set limit pick up the rest. Press again to
-                work through the next 10.
+                Re-fetches 10 already-stocked sets in the language selected
+                above, so any capped at the old 200-cards-per-set limit pick up
+                the rest. Press again to work through the next 10.
               </span>
             </div>
             <div class="warn" id="stockMsg" style="display:none"></div>
@@ -444,6 +463,28 @@ const MAX_REFRESH_SELECTION = 10;
 // and passed down, rather than hardcoded here too.
 const REFRESH_MIN_AGE_MS = {{ refresh_min_age_hours }} * 3600 * 1000;
 const PAGE_SIZE = 50;
+// English/Japanese are different products at PPT (separate prices, separate
+// catalog rows — see price_sources.CardRef.key()), so these are independent
+// datasets shown together, not a display toggle. Persisted like the theme is,
+// so nobody has to re-tick Japanese every visit.
+function currentLanguages(){
+  const out = [];
+  if (document.getElementById('langEnglish').checked) out.push('english');
+  if (document.getElementById('langJapanese').checked) out.push('japanese');
+  return out;
+}
+function saveLanguages(){
+  try { localStorage.setItem('catalogLanguages', currentLanguages().join(',')); } catch(e){}
+}
+(function restoreLanguages(){
+  let saved = null;
+  try { saved = localStorage.getItem('catalogLanguages'); } catch(e){}
+  if (saved === null) return;                 // never set — keep the HTML default
+  const langs = saved.split(',').filter(Boolean);
+  if (!langs.length) return;                  // never restore an empty selection
+  document.getElementById('langEnglish').checked = langs.includes('english');
+  document.getElementById('langJapanese').checked = langs.includes('japanese');
+})();
 let offset = 0;
 let total = 0;
 let loadTimer = null;
@@ -542,7 +583,10 @@ async function refreshSelectedCards(){
   try {
     const resp = await fetch('/api/catalog/refresh-cards', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ ids: Array.from(selectedCards) })
+      // language matters here: the card ids only resolve against catalog_cards
+      // rows in the SAME language (get_cards_by_id filters on game+language),
+      // so a mismatch would silently come back "not_found" for every id.
+      body: JSON.stringify({ ids: Array.from(selectedCards), language: currentLanguages().join(',') })
     });
     const d = await resp.json();
     if (!resp.ok){
@@ -635,6 +679,7 @@ function currentParams(){
   if (document.getElementById('qPriced').checked) p.set('priced_only', '1');
   if (selected.set.size) p.set('sets', [...selected.set].join(','));
   if (selected.rarity.size) p.set('rarities', [...selected.rarity].join(','));
+  p.set('language', currentLanguages().join(','));
   p.set('sort', document.getElementById('qSort').value);
   p.set('limit', PAGE_SIZE);
   p.set('offset', offset);
@@ -661,8 +706,22 @@ function applyFacets(f){
     pickerData[key].options = rows;
   };
 
-  merge('set', (f.sets || []).map(s => ({
-    value: s.set_id, name: s.set_name, count: s.cards, era: s.era })));
+  // Facet rows arrive per (set_id, language). Collapse to one option per
+  // set_id: the filter value is the set id, and language is filtered
+  // separately, so two rows sharing an id are one choice — left split they'd
+  // render as duplicate-looking entries that both toggle the same thing.
+  const bySetId = new Map();
+  (f.sets || []).forEach(s => {
+    const prev = bySetId.get(s.set_id);
+    if (prev){
+      prev.count += s.cards;
+      if (s.language && !prev.langs.includes(s.language)) prev.langs.push(s.language);
+    } else {
+      bySetId.set(s.set_id, { value: s.set_id, name: s.set_name, count: s.cards,
+                              era: s.era, langs: s.language ? [s.language] : [] });
+    }
+  });
+  merge('set', [...bySetId.values()]);
   merge('rarity', (f.rarities || []).map(r => ({
     value: r.rarity, name: r.rarity, count: r.count })));
 
@@ -729,10 +788,15 @@ function positionPicker(btn){
 }
 
 function optionRow(key, o){
+  // Only worth marking a set's language when both are on screen — with a
+  // single language ticked the badge would be on every row and say nothing.
+  const showLang = currentLanguages().length > 1 && o.langs && o.langs.length === 1;
+  const badge = showLang
+    ? `<span class="lang-badge">${o.langs[0] === 'japanese' ? 'JP' : 'EN'}</span>` : '';
   return `<label>
       <input type="checkbox" value="${esc(o.value)}"${selected[key].has(o.value) ? ' checked' : ''}
              onchange="togglePick('${esc(key)}', this)">
-      <span class="ck-name">${esc(o.name)}</span>
+      <span class="ck-name">${esc(o.name)}${badge}</span>
       <span class="ck-count">${o.count}</span>
     </label>`;
 }
@@ -906,7 +970,9 @@ async function loadCards(){
     return `<tr>
     ${checkCell}
     <td class="col-card">${nameCell}${c.card_number ? `<span class="cnum">${esc(c.card_number)}</span>` : ''}</td>
-    <td class="cset col-set">${esc(c.set_name || c.set_id)}</td>
+    <td class="cset col-set">${esc(c.set_name || c.set_id)}${
+      currentLanguages().length > 1 && c.language
+        ? `<span class="lang-badge">${c.language === 'japanese' ? 'JP' : 'EN'}</span>` : ''}</td>
     <td class="col-rarity">${c.rarity ? `<span class="rarity-chip">${esc(c.rarity)}</span>` : ''}</td>
     <td class="right col-price">${c.raw_price == null
         ? '<span class="price-none">no price</span>'
@@ -951,7 +1017,7 @@ function changePage(dir){
 async function loadFacets(){
   let d;
   try {
-    const resp = await fetch('/api/catalog/facets');
+    const resp = await fetch('/api/catalog/facets?language=' + currentLanguages().join(','));
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     d = await resp.json();
   } catch(e){
@@ -976,38 +1042,66 @@ async function loadFacets(){
     `${(d.total_cards || 0).toLocaleString()} cards · ${allSets.length} set(s) · `
     + `${(d.total_priced || 0).toLocaleString()} priced`;
 
+  const multiLang = currentLanguages().length > 1;
   document.getElementById('stockedSets').innerHTML = allSets.length
     ? allSets.map(s => `<div class="setrow">
-        <span class="sname">${esc(s.set_name)}</span>
+        <span class="sname">${esc(s.set_name)}${
+          multiLang && s.language
+            ? `<span class="lang-badge">${s.language === 'japanese' ? 'JP' : 'EN'}</span>` : ''}</span>
         <span class="smeta">${s.priced}/${s.cards} priced</span>
       </div>`).join('')
     : '<div class="hint">Nothing stocked yet.</div>';
 
-  // Admin picker: only sets that aren't stocked yet, so it can't be used to
-  // re-spend credits on something already cached by accident.
+  canStock = d.can_stock !== false;
+  renderStockPicker();
+}
+
+// Admin picker: only sets that aren't stocked yet, so it can't be used to
+// re-spend credits on something already cached by accident. Scoped to the
+// language chosen in the admin dropdown — that's independent of the browse
+// checkboxes above, because "stock the Japanese sets I'm missing" is a
+// different question from "show me Japanese cards".
+let canStock = true;
+function renderStockPicker(){
   const picker = document.getElementById('stockSet');
-  if (picker){
-    const have = new Set(allSets.map(s => s.set_id));
-    const missing = availableSets.filter(s => !have.has(s.id));
-    // Same era grouping as the filter, via optgroup — this list is every set
-    // PPT knows, so it's long enough that a flat dropdown is hard to use.
-    const byEra = new Map();
-    missing.forEach(s => {
-      const e = s.era || 'other';
-      if (!byEra.has(e)) byEra.set(e, []);
-      byEra.get(e).push(s);
-    });
-    const keys = eraOrder.filter(e => byEra.has(e))
-      .concat([...byEra.keys()].filter(e => !eraOrder.includes(e)));
-    picker.innerHTML = '<option value="">Choose a set…</option>' + keys.map(e =>
-      `<optgroup label="${esc(eraLabels[e] || e)}">` + byEra.get(e).map(s =>
-        `<option value="${esc(s.id)}">${esc(s.name)}${s.year ? ' (' + esc(s.year) + ')' : ''}</option>`
-      ).join('') + '</optgroup>').join('');
-    if (!d.can_stock){
-      picker.disabled = true;
-      document.getElementById('stockBtn').disabled = true;
-      showStockMsg('PokemonPriceTracker isn’t configured, so sets can’t be stocked.');
-    }
+  if (!picker) return;
+  const lang = document.getElementById('stockLang').value;
+
+  // Stocked-ness is per (set_id, language): the same set id stocked in
+  // English says nothing about whether its Japanese printing is stocked.
+  const have = new Set(allSets
+    .filter(s => (s.language || 'english') === lang)
+    .map(s => s.set_id));
+  const missing = availableSets.filter(s =>
+    (s.language || 'english') === lang && !have.has(s.id));
+
+  // Same era grouping as the filter, via optgroup — this list is every set
+  // PPT knows, so it's long enough that a flat dropdown is hard to use.
+  const byEra = new Map();
+  missing.forEach(s => {
+    const e = s.era || 'other';
+    if (!byEra.has(e)) byEra.set(e, []);
+    byEra.get(e).push(s);
+  });
+  const keys = eraOrder.filter(e => byEra.has(e))
+    .concat([...byEra.keys()].filter(e => !eraOrder.includes(e)));
+  picker.innerHTML = '<option value="">Choose a set…</option>' + keys.map(e =>
+    `<optgroup label="${esc(eraLabels[e] || e)}">` + byEra.get(e).map(s =>
+      `<option value="${esc(s.id)}">${esc(s.name)}${s.year ? ' (' + esc(s.year) + ')' : ''}</option>`
+    ).join('') + '</optgroup>').join('');
+
+  const hint = document.getElementById('stockLangHint');
+  if (hint){
+    const langLabel = lang === 'japanese' ? 'Japanese' : 'English';
+    hint.textContent = missing.length
+      ? `${missing.length} ${langLabel} set(s) not stocked yet`
+      : `Every ${langLabel} set PPT lists is already stocked`;
+  }
+
+  if (!canStock){
+    picker.disabled = true;
+    document.getElementById('stockBtn').disabled = true;
+    showStockMsg('PokemonPriceTracker isn’t configured, so sets can’t be stocked.');
   }
 }
 
@@ -1066,14 +1160,21 @@ function renderBackfill(bf){
   el.style.display = 'none';
 }
 
+function stockLangLabel(){
+  return document.getElementById('stockLang').value === 'japanese'
+    ? 'Japanese' : 'English';
+}
+
 async function runBackfill(){
+  const lang = stockLangLabel();
   await startBackfill('next', document.getElementById('backfillBtn'),
-    n => `Stocking the next ${n} set(s) — progress shows above.`);
+    n => `Stocking the next ${n} ${lang} set(s) — progress shows above.`);
 }
 
 async function runRefresh(){
+  const lang = stockLangLabel();
   await startBackfill('refresh', document.getElementById('refreshBtn'),
-    n => `Refreshing the next ${n} stocked set(s) — progress shows above.`);
+    n => `Refreshing the next ${n} stocked ${lang} set(s) — progress shows above.`);
 }
 
 async function startBackfill(mode, btn, startedMsg){
@@ -1084,7 +1185,9 @@ async function startBackfill(mode, btn, startedMsg){
       method: 'POST', headers: {'Content-Type': 'application/json'},
       // No `sets` field — the server fills in its own default batch size
       // (CATALOG_NEXT_BATCH_SETS) rather than duplicating that number here.
-      body: JSON.stringify({ mode: mode })
+      // language comes from the admin dropdown: bulk stocking is per-language.
+      body: JSON.stringify({ mode: mode,
+                             language: document.getElementById('stockLang').value })
     });
     const d = await resp.json();
     if (!resp.ok){
@@ -1117,7 +1220,10 @@ async function stockSet(){
   try {
     const resp = await fetch('/api/catalog/stock', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ set_id: setId })
+      // The admin language dropdown, NOT the browse checkboxes — stocking is
+      // a per-language action and must not depend on what's being viewed.
+      body: JSON.stringify({ set_id: setId,
+                             language: document.getElementById('stockLang').value })
     });
     const d = await resp.json();
     if (!resp.ok){
@@ -1138,6 +1244,24 @@ async function stockSet(){
   document.getElementById(id).addEventListener('input', resetAndLoad));
 document.getElementById('qPriced').addEventListener('change', resetAndLoad);
 document.getElementById('qSort').addEventListener('change', resetAndLoad);
+
+// Language checkboxes. Unticking the last one is refused rather than allowed
+// to show an empty catalog with no obvious way back — the server would fall
+// back to English anyway, so the UI would be lying about what it's showing.
+['langEnglish','langJapanese'].forEach(id =>
+  document.getElementById(id).addEventListener('change', function(){
+    if (!currentLanguages().length){ this.checked = true; return; }
+    saveLanguages();
+    // Set/rarity selections are language-scoped, so a set that just left the
+    // dataset would keep filtering invisibly. Clear them on a language change.
+    selected.set.clear();
+    selected.rarity.clear();
+    updatePickerLabel('set');
+    updatePickerLabel('rarity');
+    closePicker();
+    loadFacets();
+    resetAndLoad();
+  }));
 
 loadFacets();
 loadCards();

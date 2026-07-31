@@ -30,6 +30,11 @@ logger = logging.getLogger("dashboard.catalog")
 
 # TCGplayer product ids are plain integers. Belt-and-braces alongside the
 # `verified` flag: both must hold before a link is offered.
+# Mirrors price_sources.PPT_LANGUAGES. Duplicated rather than imported to keep
+# catalog.py free of a vendor-module dependency — it's schema + queries only.
+LANGUAGES = ("english", "japanese")
+DEFAULT_LANGUAGE = "english"
+
 _TCGPLAYER_ID_RE = re.compile(r"^\d{2,12}$")
 TCGPLAYER_PRODUCT_URL = "https://www.tcgplayer.com/product/{}"
 EBAY_SEARCH_URL = "https://www.ebay.com/sch/i.html?_nkw={}"
@@ -352,12 +357,16 @@ async def set_id_for_tcgplayer_id(pool, game: str, language: str, tcgplayer_id: 
     return row["set_id"] if row else None
 
 
-async def get_cards_by_id(pool, game: str, language: str, ids) -> list:
+async def get_cards_by_id(pool, game: str, language, ids) -> list:
     """Specific catalog_cards rows by primary key, for the "refresh these
     cards now" action: [{id, tcgplayer_id, tcgplayer_verified, name,
     priced_at}]. `game`/`language` scope it to the same table the id column
     is otherwise never enough to disambiguate on its own — belt-and-braces
     against an id from a different game/language slipping through.
+
+    `language` may be one language or a list: with both shown at once the
+    selection can legitimately span languages, and scoping to a single one
+    would report every row from the other as not_found.
     """
     ids = [int(i) for i in (ids or ())]
     if not ids:
@@ -365,8 +374,9 @@ async def get_cards_by_id(pool, game: str, language: str, ids) -> list:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, tcgplayer_id, tcgplayer_verified, card_name, priced_at "
-            "FROM catalog_cards WHERE game = $1 AND language = $2 AND id = ANY($3::INT[])",
-            game, language, ids)
+            "FROM catalog_cards WHERE game = $1 AND language = ANY($2::TEXT[]) "
+            "AND id = ANY($3::INT[])",
+            game, _norm_languages(language), ids)
     return [{"id": r["id"], "tcgplayer_id": r["tcgplayer_id"],
              "tcgplayer_verified": r["tcgplayer_verified"], "name": r["card_name"],
              "priced_at": r["priced_at"]} for r in rows]
@@ -393,12 +403,34 @@ async def update_card_price(pool, card_id: int, raw_price, price_source: str) ->
             price, price_source if price is not None else None, card_id)
 
 
-def _build_filters(game: str, language: str, set_ids=None, rarities=None,
+def _norm_languages(language) -> list:
+    """Accept a single language or a list; always return a non-empty list.
+
+    Languages are multi-select in the UI (English and/or Japanese), but every
+    caller used to pass one string. Normalising here means both shapes work
+    and no call site has to care which it holds.
+    """
+    if language is None:
+        return [DEFAULT_LANGUAGE]
+    if isinstance(language, str):
+        langs = [language]
+    else:
+        langs = list(language)
+    out = [l for l in dict.fromkeys(langs) if l in LANGUAGES]
+    return out or [DEFAULT_LANGUAGE]
+
+
+def _build_filters(game: str, language, set_ids=None, rarities=None,
                    min_price=None, max_price=None, search: str = "",
                    priced_only: bool = False, restrict_set_ids=None) -> tuple:
-    """(where_sql, params). Every value is a bind parameter, never inlined."""
-    params = [game, language]
-    where = ["game = $1", "language = $2"]
+    """(where_sql, params). Every value is a bind parameter, never inlined.
+
+    `language` may be one language or several — see _norm_languages. It is
+    always matched with = ANY(...) so the single- and multi-language cases
+    take the identical code path.
+    """
+    params = [game, _norm_languages(language)]
+    where = ["game = $1", "language = ANY($2::TEXT[])"]
 
     def add(template: str, value):
         params.append(value)
@@ -469,24 +501,32 @@ async def _facet_counts(conn, game, language, set_ids, rarities,
         f"SELECT rarity, COUNT(*) AS n FROM catalog_cards "
         f"WHERE {rarity_where} AND rarity <> '' "
         f"GROUP BY rarity ORDER BY n DESC, rarity ASC", *rarity_params)
+    # Grouped by (set_id, language), NOT set_id alone. With both languages
+    # selected a shared set_id would otherwise collapse two genuinely
+    # different products into one row with a summed count — the English and
+    # Japanese printings of a set are separate inventory at separate prices.
     set_rows = await conn.fetch(
-        f"SELECT set_id, MAX(set_name) AS set_name, COUNT(*) AS n "
+        f"SELECT set_id, language, MAX(set_name) AS set_name, COUNT(*) AS n "
         f"FROM catalog_cards WHERE {set_where} "
-        f"GROUP BY set_id ORDER BY MAX(set_name) ASC", *set_params)
+        f"GROUP BY set_id, language ORDER BY MAX(set_name) ASC", *set_params)
 
     return {
         "rarities": [{"rarity": r["rarity"], "count": int(r["n"])} for r in rarity_rows],
-        "sets": [{"set_id": r["set_id"], "set_name": r["set_name"] or r["set_id"],
+        "sets": [{"set_id": r["set_id"], "language": r["language"],
+                  "set_name": r["set_name"] or r["set_id"],
                   "cards": int(r["n"])} for r in set_rows],
     }
 
 
-async def query_cards(pool, *, game: str, language: str = "english",
+async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
                       set_ids=None, rarities=None, min_price=None, max_price=None,
                       search: str = "", priced_only: bool = False,
                       sort: str = DEFAULT_SORT, limit: int = 50, offset: int = 0,
                       with_facets: bool = False, restrict_set_ids=None) -> dict:
     """One page of catalog rows plus the unpaginated total.
+
+    `language` may be one language or a list of them (English and/or
+    Japanese) — see _norm_languages.
 
     `total` is what drives the pager, so it's counted under the same filters
     rather than inferred from the page length.
@@ -508,7 +548,8 @@ async def query_cards(pool, *, game: str, language: str = "english",
 
     page_params = params + [limit, offset]
     page_sql = (
-        "SELECT id, set_id, set_name, card_name, card_number, rarity, tcgplayer_id, "
+        "SELECT id, set_id, language, set_name, card_name, card_number, rarity, "
+        "       tcgplayer_id, "
         "       tcgplayer_verified, raw_price, price_source, priced_at, refreshed_at "
         f"FROM catalog_cards WHERE {where_sql} "
         f"ORDER BY {order_by} "
@@ -528,6 +569,10 @@ async def query_cards(pool, *, game: str, language: str = "english",
         "cards": [{
             "id": r["id"],
             "set_id": r["set_id"],
+            # Sent so the row can be labelled when both languages are shown
+            # together — otherwise two same-named printings are
+            # indistinguishable in the table.
+            "language": r["language"],
             "set_name": r["set_name"],
             "name": r["card_name"],
             "card_number": r["card_number"],
@@ -548,9 +593,11 @@ async def query_cards(pool, *, game: str, language: str = "english",
     }
 
 
-async def facets(pool, game: str, language: str = "english",
+async def facets(pool, game: str, language=DEFAULT_LANGUAGE,
                  restrict_set_ids=None) -> dict:
     """Filter options, derived from what's actually cached.
+
+    `language` may be one language or a list of them — see _norm_languages.
 
     Rarities and price bounds come from the rows themselves, so the UI can
     never offer a filter that matches nothing. `sets` doubles as the coverage
@@ -561,8 +608,8 @@ async def facets(pool, game: str, language: str = "english",
     the actual card rows do in query_cards, so a guest's rarity list and
     price range never leak sets they can't otherwise see.
     """
-    where = "game = $1 AND language = $2"
-    params = [game, language]
+    where = "game = $1 AND language = ANY($2::TEXT[])"
+    params = [game, _norm_languages(language)]
     if restrict_set_ids is not None:
         params.append(list(restrict_set_ids))
         where += f" AND set_id = ANY(${len(params)}::TEXT[])"
@@ -573,11 +620,13 @@ async def facets(pool, game: str, language: str = "english",
             f"WHERE {where} AND rarity <> '' "
             f"GROUP BY rarity ORDER BY n DESC, rarity ASC",
             *params)
+        # (set_id, language), not set_id alone — see _facet_counts. Two
+        # printings sharing a set_id must stay two rows in the coverage list.
         set_rows = await conn.fetch(
-            f"SELECT set_id, MAX(set_name) AS set_name, COUNT(*) AS cards, "
+            f"SELECT set_id, language, MAX(set_name) AS set_name, COUNT(*) AS cards, "
             f"       COUNT(raw_price) AS priced, MAX(refreshed_at) AS refreshed_at "
             f"FROM catalog_cards WHERE {where} "
-            f"GROUP BY set_id ORDER BY MAX(set_name) ASC",
+            f"GROUP BY set_id, language ORDER BY MAX(set_name) ASC",
             *params)
         bounds = await conn.fetchrow(
             f"SELECT MIN(raw_price) AS lo, MAX(raw_price) AS hi, "
@@ -589,6 +638,7 @@ async def facets(pool, game: str, language: str = "english",
         "rarities": [{"rarity": r["rarity"], "count": int(r["n"])} for r in rarity_rows],
         "sets": [{
             "set_id": r["set_id"],
+            "language": r["language"],
             "set_name": r["set_name"] or r["set_id"],
             "cards": int(r["cards"]),
             "priced": int(r["priced"]),

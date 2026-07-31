@@ -2346,6 +2346,33 @@ async def _guest_visible_set_ids(pool, language: str) -> list:
     return out
 
 
+def _language_list(raw: str) -> list:
+    """Parse the catalog's `language` query param into a list.
+
+    Accepts one language or a comma-separated pair ("english,japanese") — the
+    catalog shows them as independent checkboxes. Unknown values are dropped
+    and an empty result falls back to the default rather than becoming "no
+    language filter", which would silently mix both printings together.
+    """
+    parts = [p.strip().lower() for p in str(raw or "").split(",") if p.strip()]
+    out = [p for p in dict.fromkeys(parts) if p in price_sources.PPT_LANGUAGES]
+    return out or [price_sources.PPT_DEFAULT_LANGUAGE]
+
+
+async def _guest_visible_set_ids_multi(pool, languages) -> list:
+    """The guest ceiling across several languages, unioned.
+
+    The cap is per-language on purpose: "the newest 3 sets" means the newest
+    3 English sets AND the newest 3 Japanese ones, not 3 shared between them.
+    Anything else would make the guest window shrink just because a second
+    language was ticked.
+    """
+    out = []
+    for lang in languages:
+        out.extend(await _guest_visible_set_ids(pool, lang))
+    return list(dict.fromkeys(out))
+
+
 def _csv_list(raw: str, *, max_items: int = 40, max_len: int = 120) -> list:
     """Split a comma-separated filter param, bounded in count and length so a
     hand-crafted query can't build an enormous ANY() array."""
@@ -2441,8 +2468,12 @@ CATALOG_BACKFILL_RATE_RETRIES = int(os.getenv("CATALOG_BACKFILL_RATE_RETRIES", "
 CATALOG_MANUAL_REFRESH_MIN_AGE_HOURS = int(os.getenv("CATALOG_MANUAL_REFRESH_MIN_AGE_HOURS", "48"))
 
 
-def _catalog_known_empty(app) -> set:
-    """Set ids PPT had no data for this process run.
+def _catalog_known_empty(app, language: str = "english") -> set:
+    """Set ids PPT had no data for this process run, per language.
+
+    Keyed by language: a set id that returned nothing in Japanese says
+    nothing about its English printing, so one language's misses must not
+    suppress retries in the other.
 
     Empty sets are never written to `catalog_cards`, so without remembering
     them "the next 5 unstocked sets" would return the same empty ones on
@@ -2450,25 +2481,25 @@ def _catalog_known_empty(app) -> set:
     redeploy clears it, so a set that was empty last week gets one more try —
     which is exactly what should happen once PPT publishes it.
     """
-    known = getattr(app.state, "catalog_empty_sets", None)
-    if known is None:
-        known = set()
-        app.state.catalog_empty_sets = known
-    return known
+    store = getattr(app.state, "catalog_empty_sets", None)
+    if store is None:
+        store = {}
+        app.state.catalog_empty_sets = store
+    return store.setdefault(language, set())
 
 
-def _catalog_refreshed_sets(app) -> set:
-    """Set ids re-stocked by mode='refresh' this process run.
+def _catalog_refreshed_sets(app, language: str = "english") -> set:
+    """Set ids re-stocked by mode='refresh' this process run, per language.
 
     Same shape as `_catalog_known_empty`: in-process and cleared by a
     redeploy, so it only needs to track "already handled since the PPT
     pagination fix shipped" for the lifetime of one run, not forever.
     """
-    known = getattr(app.state, "catalog_refreshed_sets", None)
-    if known is None:
-        known = set()
-        app.state.catalog_refreshed_sets = known
-    return known
+    store = getattr(app.state, "catalog_refreshed_sets", None)
+    if store is None:
+        store = {}
+        app.state.catalog_refreshed_sets = store
+    return store.setdefault(language, set())
 
 
 def _catalog_backfill_state(app) -> dict:
@@ -2477,13 +2508,14 @@ def _catalog_backfill_state(app) -> dict:
         st = {"running": False, "started_at": None, "finished_at": None,
               "planned": 0, "done": 0, "stocked": 0, "empty": 0, "skipped": 0,
               "cards": 0, "current": None, "waiting_s": 0, "error": None,
-              "last_result": None, "mode": None}
+              "last_result": None, "mode": None, "language": None}
         app.state.catalog_backfill = st
     return st
 
 
 async def _run_catalog_backfill(app, limit: int | None = None,
-                                mode: str = "window") -> None:
+                                mode: str = "window",
+                                language: str = "english") -> None:
     """Stock sets into the catalog. Never raises.
 
     mode='window'  — the newest `limit` sets, minus what's cached. Idempotent
@@ -2509,29 +2541,30 @@ async def _run_catalog_backfill(app, limit: int | None = None,
 
     st.update(running=True, started_at=datetime.utcnow().isoformat() + "Z",
               finished_at=None, planned=0, done=0, stocked=0, empty=0, skipped=0,
-              cards=0, current=None, waiting_s=0, error=None, mode=mode)
+              cards=0, current=None, waiting_s=0, error=None, mode=mode,
+              language=language)
     pool = app.state.db
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            sets = await price_sources.fetch_ppt_sets(client, language="english")
+            sets = await price_sources.fetch_ppt_sets(client, language=language)
         if not sets:
             st["error"] = "PokemonPriceTracker returned no sets."
             logger.warning("Catalog backfill: no sets from PPT — nothing to do")
             return
 
-        have = await catalog.cached_set_ids(pool, CATALOG_GAME, "english")
+        have = await catalog.cached_set_ids(pool, CATALOG_GAME, language)
         if mode == "next":
             todo = catalog.select_next_unstocked(
-                sets, have, limit, skip=_catalog_known_empty(app))
+                sets, have, limit, skip=_catalog_known_empty(app, language))
             logger.info("Catalog backfill [next]: %d set(s) stocked so far, "
                         "%d known empty — taking the next %d",
-                        len(have), len(_catalog_known_empty(app)), len(todo))
+                        len(have), len(_catalog_known_empty(app, language)), len(todo))
         elif mode == "refresh":
             todo = catalog.select_next_refresh(
-                sets, have, _catalog_refreshed_sets(app), limit)
+                sets, have, _catalog_refreshed_sets(app, language), limit)
             logger.info("Catalog backfill [refresh]: %d set(s) cached, "
                         "%d already refreshed this run — taking the next %d",
-                        len(have), len(_catalog_refreshed_sets(app)), len(todo))
+                        len(have), len(_catalog_refreshed_sets(app, language)), len(todo))
         else:
             todo = catalog.select_backfill_window(sets, have, limit)
             logger.info("Catalog backfill [window]: newest %d set(s), %d already "
@@ -2553,7 +2586,7 @@ async def _run_catalog_backfill(app, limit: int | None = None,
         # credit/card) that would only confirm nothing was missing. Not
         # worth doing for mode='next'/'window': those sets aren't cached yet,
         # so there's nothing to compare against.
-        cached_counts = (await catalog.cached_set_counts(pool, CATALOG_GAME, "english")
+        cached_counts = (await catalog.cached_set_counts(pool, CATALOG_GAME, language)
                          if mode == "refresh" else {})
         preflight_client = httpx.AsyncClient(timeout=15.0) if mode == "refresh" else None
 
@@ -2564,7 +2597,7 @@ async def _run_catalog_backfill(app, limit: int | None = None,
 
                 if preflight_client is not None:
                     total = await price_sources.fetch_ppt_set_total(
-                        preflight_client, entry["id"], "english")
+                        preflight_client, entry["id"], language)
                     cached = cached_counts.get(entry["id"], 0)
                     if total is not None and cached >= total:
                         logger.info("Catalog backfill [refresh]: %r already complete "
@@ -2573,7 +2606,7 @@ async def _run_catalog_backfill(app, limit: int | None = None,
                         st["done"] += 1
                         st["skipped"] += 1
                         error_streak = 0
-                        _catalog_refreshed_sets(app).add(entry["id"])
+                        _catalog_refreshed_sets(app, language).add(entry["id"])
                         await asyncio.sleep(CATALOG_BACKFILL_DELAY_S)
                         continue
 
@@ -2581,7 +2614,7 @@ async def _run_catalog_backfill(app, limit: int | None = None,
                 # the run. A 429 says "later", not "never".
                 for attempt in range(CATALOG_BACKFILL_RATE_RETRIES + 1):
                     try:
-                        stats = await _catalog_stock_set(pool, entry["id"], "english")
+                        stats = await _catalog_stock_set(pool, entry["id"], language)
                     except Exception:
                         logger.exception("Catalog backfill: %r failed", entry["id"])
                         stats = {"cards": 0, "priced": 0, "status": "error"}
@@ -2612,7 +2645,7 @@ async def _run_catalog_backfill(app, limit: int | None = None,
                     st["stocked"] += 1
                     st["cards"] += stats["cards"]
                     if mode == "refresh":
-                        _catalog_refreshed_sets(app).add(entry["id"])
+                        _catalog_refreshed_sets(app, language).add(entry["id"])
                 elif stats.get("status") == "empty":
                     # PPT has nothing for this set yet — expected for unreleased
                     # and just-released sets. Skip it and carry on; it'll be
@@ -2621,9 +2654,9 @@ async def _run_catalog_backfill(app, limit: int | None = None,
                     st["empty"] += 1
                     # Remembered so the "stock 5 more" button steps past it next
                     # click instead of re-offering the same empty set forever.
-                    _catalog_known_empty(app).add(entry["id"])
+                    _catalog_known_empty(app, language).add(entry["id"])
                     if mode == "refresh":
-                        _catalog_refreshed_sets(app).add(entry["id"])
+                        _catalog_refreshed_sets(app, language).add(entry["id"])
                     logger.info("Catalog backfill: %r has no data yet — skipping",
                                 entry["id"])
                 else:
@@ -2658,12 +2691,26 @@ async def _run_catalog_backfill(app, limit: int | None = None,
                   finished_at=datetime.utcnow().isoformat() + "Z")
 
 
+# Languages the STARTUP seed auto-stocks. English only by default —
+# deliberately unchanged from before Japanese support existed, because this
+# runs unattended on every deploy and seeding a language costs real credits
+# (~N sets x a few hundred cards, once). Japanese is stocked on purpose from
+# the admin panel instead; set this to "english,japanese" to opt in to
+# seeding it automatically as well.
+CATALOG_SEED_LANGUAGES = [
+    l for l in (s.strip().lower() for s in
+                os.getenv("CATALOG_SEED_LANGUAGES", "english").split(","))
+    if l in price_sources.PPT_LANGUAGES
+] or ["english"]
+
+
 async def _catalog_backfill_startup(app) -> None:
     """Startup seed. Idempotent across deploys: once the newest N sets are in
     `catalog_cards`, every later boot finds nothing to do and spends nothing."""
     try:
         await asyncio.sleep(CATALOG_BACKFILL_START_DELAY_S)
-        await _run_catalog_backfill(app)
+        for lang in CATALOG_SEED_LANGUAGES:
+            await _run_catalog_backfill(app, language=lang)
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -2709,12 +2756,18 @@ async def _run_catalog_price_sweep(app) -> dict:
     pool = app.state.db
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            sets = await price_sources.fetch_ppt_sets(client, language="english")
-        recent_set_ids = [s["id"] for s in sets[:CATALOG_PRICE_SWEEP_RECENT_SETS]]
-
-        candidates = await catalog.select_price_refresh_candidates(
-            pool, CATALOG_GAME, "english", recent_set_ids, CATALOG_PRICE_SWEEP_MAX_CARDS)
+        # Both languages: a stocked Japanese set whose prices never refresh
+        # would go stale forever. They share the one daily credit budget —
+        # the reserve/stop guard below already bounds total spend, so adding
+        # a language spreads the same budget rather than doubling it.
+        candidates = []
+        for lang in price_sources.PPT_LANGUAGES:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                sets = await price_sources.fetch_ppt_sets(client, language=lang)
+            recent_set_ids = [s["id"] for s in sets[:CATALOG_PRICE_SWEEP_RECENT_SETS]]
+            candidates.extend(await catalog.select_price_refresh_candidates(
+                pool, CATALOG_GAME, lang, recent_set_ids,
+                CATALOG_PRICE_SWEEP_MAX_CARDS))
         summary["candidates"] = len(candidates)
         if not candidates:
             logger.info("Catalog price sweep: no refreshable cards (need a "
@@ -2840,13 +2893,13 @@ async def api_catalog_cards(request: Request, sets: str = "", rarities: str = ""
                             user=Depends(get_current_user_or_guest)):
     """Filtered, paginated catalog rows. Pure DB read — spends no vendor quota,
     which is why it carries a generous rate limit."""
-    language = price_sources.ppt_language(language)
-    restrict_set_ids = (await _guest_visible_set_ids(request.app.state.db, language)
+    languages = _language_list(language)
+    restrict_set_ids = (await _guest_visible_set_ids_multi(request.app.state.db, languages)
                         if user.get("guest") else None)
     result = await catalog.query_cards(
         request.app.state.db,
         game=CATALOG_GAME,
-        language=language,
+        language=languages,
         set_ids=_csv_list(sets),
         rarities=_csv_list(rarities),
         min_price=_opt_price(min_price),
@@ -2881,20 +2934,27 @@ async def api_catalog_facets(request: Request, language: str = "english",
     UI can show which sets have no data yet instead of pretending the catalog
     is complete. The set list is cached for a day in price_sources.
     """
-    language = price_sources.ppt_language(language)
-    restrict_set_ids = (await _guest_visible_set_ids(request.app.state.db, language)
+    languages = _language_list(language)
+    restrict_set_ids = (await _guest_visible_set_ids_multi(request.app.state.db, languages)
                         if user.get("guest") else None)
-    data = await catalog.facets(request.app.state.db, CATALOG_GAME, language,
+    data = await catalog.facets(request.app.state.db, CATALOG_GAME, languages,
                                restrict_set_ids=restrict_set_ids)
     data["is_guest_restricted"] = restrict_set_ids is not None
+    data["languages"] = languages
 
+    # PPT's set list is per-language, so fetch each and tag the rows — the
+    # admin stock picker needs to know which language a set would be stocked
+    # in, not just its name.
     available = []
     if price_sources.pokemonpricetracker_available():
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                available = await price_sources.fetch_ppt_sets(client, language=language)
-        except Exception:
-            logger.exception("Catalog: PPT set list failed — showing stocked sets only")
+        for lang in languages:
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    for s in await price_sources.fetch_ppt_sets(client, language=lang):
+                        available.append({**s, "language": lang})
+            except Exception:
+                logger.exception("Catalog: PPT set list failed for %s — "
+                                 "showing stocked sets only", lang)
     # Tag every set with its era so the pickers can group them. Done here
     # rather than in catalog.py: it's presentation, and catalog.py stays
     # schema + queries. era_order lets the client sort groups newest-era-first
@@ -2983,9 +3043,11 @@ async def api_catalog_refresh_cards(request: Request, user=Depends(get_current_u
         raise HTTPException(status_code=503,
                             detail="PokemonPriceTracker isn't configured, so cards can't be refreshed.")
 
-    language = price_sources.ppt_language(body.get("language"))
+    # A list: with both languages shown at once the selection can span them,
+    # and scoping to one would report every row from the other as not_found.
+    languages = _language_list(body.get("language"))
     pool = request.app.state.db
-    rows = await catalog.get_cards_by_id(pool, CATALOG_GAME, language, ids)
+    rows = await catalog.get_cards_by_id(pool, CATALOG_GAME, languages, ids)
     found = {r["id"]: r for r in rows}
     min_age = timedelta(hours=CATALOG_MANUAL_REFRESH_MIN_AGE_HOURS)
 
@@ -3067,11 +3129,18 @@ async def api_catalog_backfill(request: Request, user=Depends(require_admin)):
     # Bounded so a typo can't queue the entire ~180-set catalog in one press.
     limit = max(0, min(limit, 50))
 
+    # Bulk stocking is per-language: "the next 10 unstocked sets" means the
+    # next 10 in ONE language, since a set id's English and Japanese
+    # printings are independent rows.
+    language = price_sources.ppt_language(body.get("language"))
+
     st = _catalog_backfill_state(request.app)
     if st["running"]:
         raise HTTPException(status_code=409, detail="A backfill is already running.")
-    asyncio.create_task(_run_catalog_backfill(request.app, limit=limit, mode=mode))
-    return JSONResponse({"started": True, "sets": limit, "mode": mode},
+    asyncio.create_task(_run_catalog_backfill(request.app, limit=limit, mode=mode,
+                                              language=language))
+    return JSONResponse({"started": True, "sets": limit, "mode": mode,
+                         "language": language},
                         headers={"Cache-Control": "no-store"})
 
 
