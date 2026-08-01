@@ -1,5 +1,6 @@
 import os
 import io
+import csv
 import time
 import math
 import hmac
@@ -17,7 +18,7 @@ from contextlib import asynccontextmanager
 from zoneinfo import ZoneInfo
 from collections import defaultdict
 from fastapi import FastAPI, Request, HTTPException, Depends
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -2934,6 +2935,58 @@ async def api_catalog_cards(request: Request, sets: str = "", rarities: str = ""
     if result.get("facets"):
         card_eras.annotate(result["facets"]["sets"], name_key="set_name")
     return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/catalog/export")
+@limiter.limit("10/minute")
+async def api_catalog_export(request: Request, sets: str = "", rarities: str = "",
+                             min_price: str = "", max_price: str = "",
+                             search: str = "", priced_only: str = "",
+                             sort: str = catalog.DEFAULT_SORT,
+                             language: str = "english",
+                             user=Depends(get_current_user_or_guest)):
+    """CSV download of every card matching the current filters — not just the
+    page on screen. Same filter logic as /api/catalog/cards (down to sharing
+    the guest-tier set ceiling), so an export can never show something the
+    table itself wouldn't. Capped at catalog.EXPORT_MAX_ROWS rows; a lower
+    rate limit than the table's own fetch since a full export is a heavier
+    single request, even though it's still a pure DB read with no vendor cost."""
+    languages = _language_list(language)
+    restrict_set_ids = (await _guest_visible_set_ids_multi(request.app.state.db, languages)
+                        if user.get("guest") else None)
+    rows = await catalog.export_rows(
+        request.app.state.db,
+        game=CATALOG_GAME,
+        language=languages,
+        set_ids=_csv_list(sets),
+        rarities=_csv_list(rarities),
+        min_price=_opt_price(min_price),
+        max_price=_opt_price(max_price),
+        search=(search or "").strip()[:80],
+        priced_only=str(priced_only).lower() in ("1", "true", "yes"),
+        sort=sort,
+        restrict_set_ids=restrict_set_ids,
+    )
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Set", "Card Name", "Card Number", "Rarity", "Language",
+                     "Raw Price", "Price Source", "Last Priced", "Last Refreshed",
+                     "TCGplayer URL", "eBay URL"])
+    for r in rows:
+        writer.writerow([
+            r["set_name"] or r["set_id"], r["name"], r["card_number"], r["rarity"],
+            r["language"], r["raw_price"] if r["raw_price"] is not None else "",
+            r["price_source"] or "", r["priced_at"] or "", r["refreshed_at"] or "",
+            r["tcgplayer_url"] or "", r["ebay_url"] or "",
+        ])
+
+    stamp = datetime.now(ZoneInfo("America/New_York")).strftime("%Y%m%d")
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="catalog_export_{stamp}.csv"'},
+    )
 
 
 @app.get("/api/catalog/facets")

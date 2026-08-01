@@ -294,6 +294,8 @@
             <option value="updated_asc" hidden></option>
           </select>
           <button class="btn btn-plain btn-sm" id="resetBtn" onclick="clearFilters()">Reset</button>
+          <button class="btn btn-plain btn-sm" id="exportBtn" onclick="exportCsv()"
+                  title="Download every card matching the current filters as a CSV">Export CSV</button>
           {% if not is_guest %}
           <button class="btn btn-plain btn-sm" id="refreshSelectedBtn" disabled
                   onclick="refreshSelectedCards()">Refresh selected</button>
@@ -703,6 +705,15 @@ function currentParams(){
   p.set('limit', PAGE_SIZE);
   p.set('offset', offset);
   return p;
+}
+
+// Downloads every card matching the CURRENT filters as a CSV, not just the
+// page on screen — /api/catalog/export shares the same filter-building logic
+// as the table itself (catalog._build_filters), so this can never disagree
+// with what's actually shown. limit/offset in currentParams() are simply
+// ignored by that endpoint, which has no pagination of its own.
+function exportCsv(){
+  window.location.href = '/api/catalog/export?' + currentParams().toString();
 }
 
 // The set and rarity filters narrow each other: pick an era and only the

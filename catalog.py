@@ -138,6 +138,12 @@ def ebay_search_url(card_name: str, set_name: str = "", card_number: str = ""):
 # hand-crafted `limit=100000` from turning one request into a table scan dump.
 MAX_PAGE_SIZE = 100
 
+# Cap on a CSV export. Deliberately much larger than MAX_PAGE_SIZE — the whole
+# point of export is "everything these filters match," not one page of it —
+# but still a real ceiling so a totally unfiltered export can't become an
+# unbounded table dump. Comfortably above the catalog's actual current size.
+EXPORT_MAX_ROWS = 20_000
+
 # Card numbers that don't start with digits (promos, "RC1", "TG05") sort after
 # every numbered card rather than interleaving with them by string order.
 _UNNUMBERED_SORT = 999_999
@@ -602,6 +608,46 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
         "limit": limit,
         "offset": offset,
     }
+
+
+async def export_rows(pool, *, game: str, language=DEFAULT_LANGUAGE,
+                      set_ids=None, rarities=None, min_price=None, max_price=None,
+                      search: str = "", priced_only: bool = False,
+                      sort: str = DEFAULT_SORT, restrict_set_ids=None) -> list:
+    """Every row matching the given filters, up to EXPORT_MAX_ROWS — no
+    pagination, since the point of an export is "everything these filters
+    currently match," not one page of it. Shares _build_filters with
+    query_cards, so an export can never disagree with what the table itself
+    would show for the same filter state.
+    """
+    order_by = SORT_COLUMNS.get(sort, SORT_COLUMNS[DEFAULT_SORT])
+    where_sql, params = _build_filters(game, language, set_ids, rarities,
+                                       min_price, max_price, search, priced_only,
+                                       restrict_set_ids)
+    sql = (
+        "SELECT set_id, language, set_name, card_name, card_number, rarity, "
+        "       tcgplayer_id, tcgplayer_verified, raw_price, price_source, "
+        "       priced_at, refreshed_at "
+        f"FROM catalog_cards WHERE {where_sql} "
+        f"ORDER BY {order_by} "
+        f"LIMIT ${len(params) + 1}"
+    )
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *params, EXPORT_MAX_ROWS)
+    return [{
+        "set_id": r["set_id"],
+        "set_name": r["set_name"],
+        "language": r["language"],
+        "name": r["card_name"],
+        "card_number": r["card_number"],
+        "rarity": r["rarity"],
+        "tcgplayer_url": tcgplayer_url(r["tcgplayer_id"], r["tcgplayer_verified"]),
+        "ebay_url": ebay_search_url(r["card_name"], r["set_name"], r["card_number"]),
+        "raw_price": float(r["raw_price"]) if r["raw_price"] is not None else None,
+        "price_source": r["price_source"],
+        "priced_at": r["priced_at"].isoformat() if r["priced_at"] else None,
+        "refreshed_at": r["refreshed_at"].isoformat() if r["refreshed_at"] else None,
+    } for r in rows]
 
 
 async def facets(pool, game: str, language=DEFAULT_LANGUAGE,
