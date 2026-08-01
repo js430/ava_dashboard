@@ -4015,6 +4015,7 @@ async def get_restocks(
               ON LOWER(TRIM(l.location)) = LOWER(TRIM(rr.location))
               AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(rr.store_name))
             WHERE rr.date >= $1
+            AND rr.non_tcg = FALSE
             AND (rr.channel_name IS NULL OR rr.channel_name NOT IN (
                 'online-restock-information',
                 'other-online-restocks',
