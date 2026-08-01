@@ -67,6 +67,7 @@
   .net-card { border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
   .net-card:last-child { margin-bottom: 0; }
   .net-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+  .net-grade-group { display: flex; align-items: baseline; gap: 6px; }
   .net-grade { font-size: 14px; font-weight: 700; color: #111; }
   .net-sells { font-size: 12px; color: #999; }
   table.net-lines td { padding: 3px 0; border-bottom: none; font-size: 12px; }
@@ -490,6 +491,20 @@ const GRADE_LEVEL = {{ grade_levels | tojson }};
 // Grades the result panel reports on. Everything else is still shown in the
 // price table for reference, but PSA 10 and 9 carry the sale volume.
 const REPORTED_GRADES = ['psa_10','psa_9'];
+// Human-readable vendor names for the "where from" line — the raw source
+// strings (price_sources.py's `used`/`source` values) are internal identifiers,
+// not something to show a first-time visitor evaluating whether to trust a price.
+const SOURCE_LABELS = {
+  pokemonpricetracker: 'PokemonPriceTracker',
+  ebay_browse: 'eBay',
+  manual: 'Manual entry',
+};
+// A "sold" price (PokemonPriceTracker) and an "ask" price (eBay Browse, active
+// listings only — see price_sources.py's EBay comment) are not the same thing,
+// and shouldn't read as interchangeable badges. Shared between the Market
+// Prices table and the "What you'd net" cards so the wording matches wherever
+// a price's basis is shown.
+const BASIS_LABELS = { sold: 'Sold', ask: 'Asking', manual: 'Manual' };
 // Grading company / tier reference (fee, turnaround, coverage). Single source
 // of truth lives in grading_tiers.py; the fee is a default and stays editable.
 const GRADERS = {{ grading_companies | tojson }};
@@ -740,9 +755,9 @@ function buildRows(){
     const price = q ? q.price : '';
     const basis = q ? q.basis : null;
     const badge = basis
-      ? `<span class="basis basis-${basis}">${basis}</span>`
+      ? `<span class="basis basis-${basis}">${BASIS_LABELS[basis] || basis}</span>`
       : '<span class="src">&mdash;</span>';
-    const src = q ? `<div class="src">${q.source.replace('_',' ')}${q.sample_size ? ' &middot; ' + q.sample_size : ''}</div>` : '';
+    const src = q ? `<div class="src">${SOURCE_LABELS[q.source] || q.source}${q.sample_size ? ' &middot; ' + q.sample_size + ' sale(s)' : ''}${q.as_of ? ' &middot; ' + timeAgo(q.as_of) : ''}</div>` : '';
     // Average of the most recent sales — click to use it as the price.
     const recent = (q && q.recent_avg)
       ? `<div class="src recent" title="Average of the last ${q.recent_n} sale(s)${q.recent_since ? ', back to ' + q.recent_since : ''} — click to use"
@@ -919,12 +934,51 @@ function money(v){
     {minimumFractionDigits: 2, maximumFractionDigits: 2});
 }
 
+// Same relative-time format as the Catalog's "Last updated" column, for one
+// consistent freshness language across the app. `iso` is a quote's `as_of` —
+// when this server last fetched that price, not when the underlying sale
+// happened — which is what tells a visitor how stale a cached number could be.
+function timeAgo(iso){
+  if (!iso) return '';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return '';
+  const mins = Math.max(0, Math.round((Date.now() - then) / 60000));
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.round(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.round(months / 12)}y ago`;
+}
+
 // Grade keys "What you'd net" targets for the currently selected company —
 // mirrors grading_tiers.GRADING_COMPANIES["report_grades"] server-side, used
 // here only to word the empty-state message.
 function reportedGradeKeys(){
   const cid = document.getElementById('gradeCompany').value;
   return (GRADERS[cid] && GRADERS[cid].report_grades) || ['psa_10', 'psa_9'];
+}
+
+// Whether "What you'd net" is showing a sold comp, an asking price, or a
+// number the user typed in themselves — the net-proceeds math is the most
+// financially consequential thing on this page, so it shouldn't lose the
+// same sold-vs-ask distinction the Market Prices table already shows above
+// it. Falls back to "Custom" once the input no longer matches what was
+// actually fetched, since at that point the original quote's basis no
+// longer describes the number being used.
+function priceBasis(grade){
+  const q = quotes[grade];
+  const input = document.getElementById('price_' + grade);
+  if (!input) return null;
+  const current = parseFloat(input.value);
+  if (!q || !Number.isFinite(current) || Math.abs(current - q.price) > 0.005){
+    return { cls: 'manual', text: 'Custom' };
+  }
+  const label = BASIS_LABELS[q.basis];
+  return label ? { cls: q.basis, text: label } : null;
 }
 
 function render(d){
@@ -936,9 +990,11 @@ function render(d){
   } else {
     wrap.innerHTML = d.grades.map(g => {
       const better = g.vs_raw >= 0;
+      const basis = priceBasis(g.grade);
+      const basisBadge = basis ? `<span class="basis basis-${basis.cls}">${basis.text}</span>` : '';
       return `<div class="net-card">
         <div class="net-head">
-          <span class="net-grade">${g.label}</span>
+          <span class="net-grade-group"><span class="net-grade">${g.label}</span>${basisBadge}</span>
           <span class="net-sells">sells for ${money(g.price)}</span>
         </div>
         <table class="grades net-lines">

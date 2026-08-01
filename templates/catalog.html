@@ -300,6 +300,10 @@
           <span class="hint" id="refreshMsg"></span>
           {% endif %}
         </div>
+        <div class="hint" style="padding:0 16px 10px">
+          Prices from PokemonPriceTracker (TCGplayer market price) &mdash; refreshed nightly for the
+          newest sets, plus on demand for individual cards. See "Last updated" per row below.
+        </div>
         {% if is_guest and not user_id %}
         <div class="hint guest-note" style="padding:0 16px 10px">
           <strong>Guest account restriction:</strong> showing the newest {{ guest_catalog_visible_sets }}
