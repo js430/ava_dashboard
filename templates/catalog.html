@@ -1009,9 +1009,17 @@ async function loadCards(){
       || document.getElementById('qMin').value.trim()
       || document.getElementById('qMax').value.trim()
       || document.getElementById('qPriced').checked;
-    empty.textContent = total === 0 && !filtering
+    let msg = total === 0 && !filtering
       ? 'Nothing stocked yet. Open a set in the Grading Calculator and it’ll show up here.'
       : 'No cards match those filters.';
+    // A guest searching for a card from an older set gets a real zero-result
+    // page that looks identical to "that card doesn't exist" — this is the
+    // one case worth telling them the restriction, not just the "no note
+    // above" they'd otherwise have no reason to connect to their search.
+    if (IS_GUEST && filtering){
+      msg += ' Guest view only shows the newest sets — see the note above for full access.';
+    }
+    empty.textContent = msg;
   } else {
     empty.style.display = 'none';
   }

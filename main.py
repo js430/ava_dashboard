@@ -1980,6 +1980,10 @@ async def grading_calculator_page(request: Request):
         # make_scan_token. Harmless to hand to non-guests too; only a guest
         # request is actually checked against it.
         "scan_token": make_scan_token(),
+        # Same window as the Catalog (_guest_grading_allowed shares
+        # GUEST_CATALOG_VISIBLE_SETS) — the disclaimer text needs the live
+        # number, not a hardcoded one that drifts the moment the constant changes.
+        "guest_catalog_visible_sets": GUEST_CATALOG_VISIBLE_SETS,
     })
 
 
@@ -2301,10 +2305,18 @@ async def api_grading_set_cards(request: Request, game: str, set_id: str,
 # nothing to filter on. See MEMORY.md.
 CATALOG_GAME = "pokemon"
 
-# Guest tier: catalog browsing is capped to the newest N stocked sets, and
-# the manual per-card refresh is Discord-members-only. Neither restriction
-# applies to a real Discord session (member or admin) — only to `is_guest`.
-GUEST_CATALOG_VISIBLE_SETS = int(os.getenv("GUEST_CATALOG_VISIBLE_SETS", "3"))
+# Guest tier: catalog browsing (and the grading calculator's set picker,
+# which shares this same window — see _guest_grading_allowed) is capped to
+# the newest N stocked sets, and the manual per-card refresh is
+# Discord-members-only. Neither restriction applies to a real Discord
+# session (member or admin) — only to `is_guest`.
+#
+# Was 3 (roughly 6-9 months of releases); widened to 8 (~1.5-2 years) since a
+# cold visitor's first search landing on an older set read as broken rather
+# than restricted — 3 sets wasn't enough for a search to plausibly succeed,
+# which is the wrong first impression for someone converting from a cold
+# link, not a returning member who already knows the restriction exists.
+GUEST_CATALOG_VISIBLE_SETS = int(os.getenv("GUEST_CATALOG_VISIBLE_SETS", "8"))
 # Era keys that aren't a main-series expansion era — promos, novelty/kit
 # groups, and the unclassified catch-all. The guest window should count only
 # main sets (Mega Evolution, Scarlet & Violet, ...), never one of these.

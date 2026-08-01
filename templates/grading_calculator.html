@@ -321,13 +321,13 @@
           </div>
           {% if is_guest and not user_id %}
           <div class="hint guest-note">
-            <strong>Guest account restriction:</strong> showing the last 3 main sets only.
+            <strong>Guest account restriction:</strong> showing the newest {{ guest_catalog_visible_sets }} main sets only.
             <a href="/login">Sign in with Discord</a> for the full set list, or sign up for the
             paid tier (coming soon via Stripe) for full access without a Discord account.
           </div>
           {% elif is_guest %}
           <div class="hint guest-note">
-            <strong>Limited access:</strong> showing the last 3 main sets only. Get the
+            <strong>Limited access:</strong> showing the newest {{ guest_catalog_visible_sets }} main sets only. Get the
             <strong>Intel</strong> or <strong>Monitor</strong> role in the server's
             <a href="{{ upgrade_url }}" target="_blank" rel="noopener">get-access channel</a>
             for the full set list.
