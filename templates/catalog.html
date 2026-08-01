@@ -99,6 +99,10 @@
   table.rows { border-collapse: collapse; width: 100%; font-size: 12px; }
   table.rows th { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: .05em; padding: 7px 10px; text-align: left; border-bottom: 1px solid #e4e4e7; white-space: nowrap; }
   table.rows th.right, table.rows td.right { text-align: right; }
+  table.rows th.sortable { cursor: pointer; user-select: none; }
+  table.rows th.sortable:hover { color: #333; }
+  table.rows th.sortable .sort-arrow { color: #5865F2; font-size: 10px; margin-left: 2px; }
+  html[data-theme="dark"] table.rows th.sortable:hover { color: #ddd; }
   table.rows td { padding: 7px 10px; border-bottom: 1px solid #f4f4f5; }
   table.rows tr:last-child td { border-bottom: none; }
   table.rows tbody tr:hover { background: #fafafa; }
@@ -277,6 +281,17 @@
             <option value="name_asc">Name A&ndash;Z</option>
             <option value="number_asc">Card number</option>
             <option value="set_newest">Recently stocked</option>
+            <!-- Not shown as presets above — set when a column header is
+                 clicked (see onHeaderSortClick), which just needs a matching
+                 <option> to exist for select.value to accept it. -->
+            <option value="name_desc" hidden></option>
+            <option value="number_desc" hidden></option>
+            <option value="set_asc" hidden></option>
+            <option value="set_desc" hidden></option>
+            <option value="rarity_asc" hidden></option>
+            <option value="rarity_desc" hidden></option>
+            <option value="updated_desc" hidden></option>
+            <option value="updated_asc" hidden></option>
           </select>
           <button class="btn btn-plain btn-sm" id="resetBtn" onclick="clearFilters()">Reset</button>
           {% if not is_guest %}
@@ -312,11 +327,11 @@
             <thead>
               <tr>
                 {% if not is_guest %}<th class="check-col"></th>{% endif %}
-                <th class="col-card">Card</th>
-                <th class="col-set">Set</th>
-                <th class="col-rarity">Rarity</th>
-                <th class="right col-price">Raw price</th>
-                <th class="col-updated">Last updated</th>
+                <th class="col-card sortable" onclick="onHeaderSortClick('name')" data-sort-col="name">Card<span class="sort-arrow"></span></th>
+                <th class="col-set sortable" onclick="onHeaderSortClick('set')" data-sort-col="set">Set<span class="sort-arrow"></span></th>
+                <th class="col-rarity sortable" onclick="onHeaderSortClick('rarity')" data-sort-col="rarity">Rarity<span class="sort-arrow"></span></th>
+                <th class="right col-price sortable" onclick="onHeaderSortClick('price')" data-sort-col="price">Raw price<span class="sort-arrow"></span></th>
+                <th class="col-updated sortable" onclick="onHeaderSortClick('updated')" data-sort-col="updated">Last updated<span class="sort-arrow"></span></th>
               </tr>
               <!-- Filters live in the header rather than a sidebar: each one
                    sits under the column it acts on, and on a phone that's one
@@ -1240,10 +1255,52 @@ async function stockSet(){
   }
 }
 
+// Column-header click-to-sort. Each column toggles between its own asc/desc
+// pair; clicking a DIFFERENT column starts it at whichever direction reads
+// most useful first (high-to-low for price/last-updated, A-Z for the rest).
+// Drives the same #qSort value the dropdown does — one piece of state, two
+// ways to change it — so the dropdown's presets and the header arrows never
+// disagree about what's currently sorted.
+const COLUMN_SORT_PAIRS = {
+  name:    ['name_asc', 'name_desc'],
+  set:     ['set_asc', 'set_desc'],
+  rarity:  ['rarity_asc', 'rarity_desc'],
+  price:   ['price_desc', 'price_asc'],
+  updated: ['updated_desc', 'updated_asc'],
+};
+const SORT_DIRECTION = {
+  name_asc: 'asc', name_desc: 'desc',
+  number_asc: 'asc', number_desc: 'desc',
+  set_asc: 'asc', set_desc: 'desc',
+  rarity_asc: 'asc', rarity_desc: 'desc',
+  price_desc: 'desc', price_asc: 'asc',
+  updated_desc: 'desc', updated_asc: 'asc',
+};
+
+function onHeaderSortClick(col){
+  const pair = COLUMN_SORT_PAIRS[col];
+  if (!pair) return;
+  const sel = document.getElementById('qSort');
+  sel.value = (sel.value === pair[0]) ? pair[1] : pair[0];
+  updateSortIndicators();
+  resetAndLoad();
+}
+
+function updateSortIndicators(){
+  const current = document.getElementById('qSort').value;
+  document.querySelectorAll('th.sortable').forEach(th => {
+    const pair = COLUMN_SORT_PAIRS[th.dataset.sortCol];
+    const arrow = th.querySelector('.sort-arrow');
+    if (!arrow) return;
+    const active = pair && (current === pair[0] || current === pair[1]);
+    arrow.textContent = active ? (SORT_DIRECTION[current] === 'asc' ? ' ▲' : ' ▼') : '';
+  });
+}
+
 ['qSearch','qMin','qMax'].forEach(id =>
   document.getElementById(id).addEventListener('input', resetAndLoad));
 document.getElementById('qPriced').addEventListener('change', resetAndLoad);
-document.getElementById('qSort').addEventListener('change', resetAndLoad);
+document.getElementById('qSort').addEventListener('change', () => { updateSortIndicators(); resetAndLoad(); });
 
 // Language checkboxes. Unticking the last one is refused rather than allowed
 // to show an empty catalog with no obvious way back — the server would fall
@@ -1263,6 +1320,7 @@ document.getElementById('qSort').addEventListener('change', resetAndLoad);
     resetAndLoad();
   }));
 
+updateSortIndicators();
 loadFacets();
 loadCards();
 

@@ -149,8 +149,19 @@ SORT_COLUMNS = {
     "price_desc": "raw_price DESC NULLS LAST, card_name ASC",
     "price_asc":  "raw_price ASC NULLS LAST, card_name ASC",
     "name_asc":   "card_name ASC, number_sort ASC",
+    "name_desc":  "card_name DESC, number_sort ASC",
     "number_asc": "number_sort ASC, card_number ASC",
+    "number_desc": "number_sort DESC, card_number ASC",
     "set_newest": "refreshed_at DESC, number_sort ASC",
+    "set_asc":    "set_name ASC, number_sort ASC",
+    "set_desc":   "set_name DESC, number_sort ASC",
+    # rarity is '' rather than NULL when unset (see _facet_counts' "rarity <> ''"
+    # filter) — NULLS LAST doesn't apply to an empty string, so unset rows are
+    # pushed to the end explicitly instead of sorting first in ASC order.
+    "rarity_asc":  "(rarity = '') ASC, rarity ASC, card_name ASC",
+    "rarity_desc": "(rarity = '') ASC, rarity DESC, card_name ASC",
+    "updated_desc": "priced_at DESC NULLS LAST, card_name ASC",
+    "updated_asc":  "priced_at ASC NULLS LAST, card_name ASC",
 }
 DEFAULT_SORT = "price_desc"
 
