@@ -912,38 +912,6 @@ async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
 
     search = _ppt_search_name(card.name)
     language = ppt_language(card.language)
-    headers = {"Authorization": f"Bearer {key}"}
-
-    async def _search(params: dict):
-        """One request. Returns (rows, response) or (None, None) on failure."""
-        try:
-            resp = await client.get(f"{PPT_BASE}/cards", headers=headers, params=params)
-        except Exception:
-            logger.exception("PokemonPriceTracker request failed for %r", search)
-            return None, None
-        if resp.status_code == 401:
-            logger.warning("PokemonPriceTracker rejected the API key (401)")
-            return None, None
-        if resp.status_code == 429:
-            logger.warning("PokemonPriceTracker rate/credit limit hit (429)")
-            return None, None
-        if resp.status_code != 200:
-            logger.warning("PokemonPriceTracker HTTP %s for %r: %s",
-                           resp.status_code, search, resp.text[:300])
-            return None, None
-        try:
-            payload = resp.json()
-        except Exception:
-            logger.warning("PokemonPriceTracker returned non-JSON for %r", search)
-            return None, None
-        # `data` is a list for a search but a single object for an id lookup —
-        # normalise to a list so callers only handle one shape.
-        data = (payload or {}).get("data")
-        if isinstance(data, dict):
-            data = [data]
-        elif not isinstance(data, list):
-            data = []
-        return data, resp
 
     row, resp = None, None
     # When the card came from PPT's own catalog (the set/card pickers) its id is
@@ -966,8 +934,16 @@ async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
 
         rows = []
         for i, params in enumerate(attempts):
-            rows, resp = await _search(params)
-            if rows is None:
+            # Every PPT call goes through _ppt_get — it's the one choke point
+            # the global 60/min limiter (_ppt_rate_limit) is enforced at. This
+            # function used to call client.get() directly here, bypassing that
+            # limiter entirely; with the Grading Calculator open to guests and
+            # members alike, aggregate traffic across many callers could blow
+            # past PPT's real per-minute cap even though each caller's own
+            # per-IP/per-user rate limit looked fine, which is what got the key
+            # rate-limited.
+            rows, resp = await _ppt_get(client, "/cards", params, f"quotes-search({search})")
+            if resp is None:
                 return []
             row = _ppt_pick_card(rows, card)
             if row:
@@ -1000,9 +976,11 @@ async def fetch_pokemonpricetracker(client: httpx.AsyncClient,
     # Fetch the graded block for exactly this card. Billing is per card returned,
     # so one card costs a fraction of flagging a whole search.
     if tcg_id:
-        detail_rows, detail_resp = await _search(
+        detail_rows, detail_resp = await _ppt_get(
+            client, "/cards",
             {"tcgPlayerId": str(tcg_id), "limit": 1, "includeEbay": "true",
-             "days": PPT_EBAY_DAYS, "language": language})
+             "days": PPT_EBAY_DAYS, "language": language},
+            f"quotes-detail(tcgPlayerId={tcg_id})")
         if detail_rows:
             row = detail_rows[0]
             if detail_resp is not None:
