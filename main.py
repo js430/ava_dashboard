@@ -43,6 +43,7 @@ import catalog
 import card_eras
 import population
 import inventory
+import tips
 
 load_dotenv()
 
@@ -203,6 +204,10 @@ async def lifespan(app: FastAPI):
         await inventory.ensure_inventory_schema(app.state.db)
     except Exception:
         logger.exception("Inventory schema ensure failed — /inventory may be unavailable")
+    try:
+        await tips.ensure_tips_schema(app.state.db)
+    except Exception:
+        logger.exception("Tips schema ensure failed — /tips may be unavailable")
     scheduler_task = asyncio.create_task(_card_tracker_daily_scheduler(app))
     # Background, never awaited: seeding the catalog must not delay startup or
     # take the app down if PPT is unreachable.
@@ -613,6 +618,18 @@ def get_current_user(request: Request):
     # Sample/demo viewers never reach live-data endpoints.
     if is_demo(request):
         raise HTTPException(status_code=403, detail="Live data requires the member role.")
+    return user
+
+
+def get_current_discord_user(request: Request):
+    """Any real Discord identity — full member OR role-less demo account —
+    but not an anonymous guest. For features open to the whole Discord
+    regardless of paid role (Tips & Tricks), unlike get_current_user (members
+    only, blocks demo) or get_current_user_or_guest (also allows anonymous
+    guests)."""
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in with Discord to use this.")
     return user
 
 # ---- Guest access (Nexus Playground only) ----
@@ -1935,6 +1952,173 @@ async def api_import_run(request: Request):
     return JSONResponse({"ok": True, "set_name": set_name, "added": added,
                          "skipped_duplicates": skipped, "total_tracked": total},
                         headers={"Cache-Control": "no-store"})
+
+# ---- Tips & Tricks ----
+# Open to the whole Discord — paid and unpaid roles alike — but not anonymous
+# guests, unlike Nexus Playground. See get_current_discord_user.
+
+@app.get("/tips", response_class=HTMLResponse)
+async def tips_page(request: Request):
+    user = request.session.get("user")
+    if not user:
+        return RedirectResponse("/login")
+    if not await terms_current(request, user):
+        return RedirectResponse("/terms")
+    return templates.TemplateResponse("tips.html", {
+        "request": request,
+        "username": user["username"],
+        "avatar": user.get("avatar"),
+        "user_id": user["id"],
+        "is_admin": int(user["id"]) in ADMIN_USER_IDS,
+        "is_mod": request.session.get("mod", False),
+    })
+
+
+def _require_tips_admin(user) -> None:
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Admins only.")
+
+
+@app.get("/api/tips")
+@limiter.limit("60/minute")
+async def api_tips_list(request: Request, user=Depends(get_current_discord_user)):
+    tree = await tips.list_tree(request.app.state.db)
+    is_admin = int(user["id"]) in ADMIN_USER_IDS
+    my_id = int(user["id"])
+    # Whether THIS viewer may edit/delete each entry — resolved server-side so
+    # the client never has to (and can't be tricked into) deciding its own
+    # permissions; the actual edit/delete routes re-check independently.
+    for cat in tree:
+        for topic in cat["topics"]:
+            for e in topic["entries"]:
+                e["can_edit"] = is_admin or int(e["user_id"]) == my_id
+    return JSONResponse({"categories": tree, "is_admin": is_admin},
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/tips/entries")
+@limiter.limit("20/minute")
+async def api_tips_create_entry(request: Request, user=Depends(get_current_discord_user)):
+    body = await request.json()
+    content = (body.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Tip can't be empty.")
+    try:
+        topic_id = int(body.get("topic_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid topic.")
+    result = await tips.create_entry(
+        request.app.state.db, topic_id, int(user["id"]), user["username"], content)
+    return JSONResponse(result)
+
+
+@app.put("/api/tips/entries/{entry_id}")
+@limiter.limit("20/minute")
+async def api_tips_update_entry(request: Request, entry_id: int,
+                                user=Depends(get_current_discord_user)):
+    owner_id = await tips.get_entry_owner(request.app.state.db, entry_id)
+    if owner_id is None:
+        raise HTTPException(status_code=404, detail="Tip not found.")
+    if int(user["id"]) not in ADMIN_USER_IDS and int(owner_id) != int(user["id"]):
+        raise HTTPException(status_code=403, detail="You can only edit your own tips.")
+    body = await request.json()
+    content = (body.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Tip can't be empty.")
+    await tips.update_entry(request.app.state.db, entry_id, content)
+    return JSONResponse({"ok": True})
+
+
+@app.delete("/api/tips/entries/{entry_id}")
+@limiter.limit("20/minute")
+async def api_tips_delete_entry(request: Request, entry_id: int,
+                                user=Depends(get_current_discord_user)):
+    owner_id = await tips.get_entry_owner(request.app.state.db, entry_id)
+    if owner_id is None:
+        raise HTTPException(status_code=404, detail="Tip not found.")
+    if int(user["id"]) not in ADMIN_USER_IDS and int(owner_id) != int(user["id"]):
+        raise HTTPException(status_code=403, detail="You can only delete your own tips.")
+    await tips.delete_entry(request.app.state.db, entry_id)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/tips/categories")
+@limiter.limit("30/minute")
+async def api_tips_create_category(request: Request, user=Depends(get_current_discord_user)):
+    _require_tips_admin(user)
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Category name required.")
+    category_id = await tips.create_category(request.app.state.db, name)
+    return JSONResponse({"id": category_id})
+
+
+@app.patch("/api/tips/categories/{category_id}")
+@limiter.limit("30/minute")
+async def api_tips_update_category(request: Request, category_id: int,
+                                   user=Depends(get_current_discord_user)):
+    _require_tips_admin(user)
+    body = await request.json()
+    if "name" in body:
+        name = (body.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Category name required.")
+        await tips.rename_category(request.app.state.db, category_id, name)
+    if body.get("move") in ("up", "down"):
+        await tips.reorder_category(request.app.state.db, category_id, body["move"])
+    return JSONResponse({"ok": True})
+
+
+@app.delete("/api/tips/categories/{category_id}")
+@limiter.limit("30/minute")
+async def api_tips_delete_category(request: Request, category_id: int,
+                                   user=Depends(get_current_discord_user)):
+    _require_tips_admin(user)
+    await tips.delete_category(request.app.state.db, category_id)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/tips/topics")
+@limiter.limit("30/minute")
+async def api_tips_create_topic(request: Request, user=Depends(get_current_discord_user)):
+    _require_tips_admin(user)
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Topic name required.")
+    try:
+        category_id = int(body.get("category_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid category.")
+    topic_id = await tips.create_topic(request.app.state.db, category_id, name)
+    return JSONResponse({"id": topic_id})
+
+
+@app.patch("/api/tips/topics/{topic_id}")
+@limiter.limit("30/minute")
+async def api_tips_update_topic(request: Request, topic_id: int,
+                                user=Depends(get_current_discord_user)):
+    _require_tips_admin(user)
+    body = await request.json()
+    if "name" in body:
+        name = (body.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Topic name required.")
+        await tips.rename_topic(request.app.state.db, topic_id, name)
+    if body.get("move") in ("up", "down"):
+        await tips.reorder_topic(request.app.state.db, topic_id, body["move"])
+    return JSONResponse({"ok": True})
+
+
+@app.delete("/api/tips/topics/{topic_id}")
+@limiter.limit("30/minute")
+async def api_tips_delete_topic(request: Request, topic_id: int,
+                                user=Depends(get_current_discord_user)):
+    _require_tips_admin(user)
+    await tips.delete_topic(request.app.state.db, topic_id)
+    return JSONResponse({"ok": True})
+
 
 # ---- Grading calculator ----
 # Standalone page, deliberately not wired into the card tracker: it works for

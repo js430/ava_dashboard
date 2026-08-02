@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/brand/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/brand/icon-180.png">
+<script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tips &amp; Tricks — Restock Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
+
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 200; }
+  .header-left { display: flex; align-items: center; gap: 10px; }
+  .avatar { width: 30px; height: 30px; border-radius: 50%; background: #5865F2; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: #fff; overflow: hidden; flex-shrink: 0; }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .header-title { font-size: 15px; font-weight: 600; color: #111; }
+  .header-user { font-size: 12px; color: #888; }
+  .nav { display: flex; gap: 8px; align-items: center; }
+  .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; }
+  .nav a:hover { background: #f4f4f5; }
+  .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-group { position: relative; display: inline-flex; }
+  .nav-group-btn { font-family: inherit; font-size: 12px; color: #555; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+  .nav-group-btn:hover { background: #f4f4f5; }
+  .nav-group-btn.active, .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-caret { font-size: 9px; line-height: 1; }
+  .nav-menu { display: none; position: absolute; top: calc(100% + 4px); right: 0; min-width: 150px; padding: 4px; background: #fff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.10); z-index: 400; }
+  .nav-group.open .nav-menu { display: block; }
+  .nav-menu a { display: block; padding: 6px 10px; border: none; border-radius: 5px; background: none; font-size: 12px; color: #555; text-decoration: none; white-space: nowrap; }
+  .nav-menu a:hover { background: #f4f4f5; }
+  .nav-menu a.active { background: #5865F2; color: #fff; }
+  .theme-toggle { display: none; font-size: 16px; background: #f4f4f5; border: 1px solid #ddd; border-radius: 6px; padding: 4px 8px; cursor: pointer; line-height: 1; transition: background 0.15s; flex-shrink: 0; }
+  .theme-toggle:hover { background: #e8e8ea; }
+
+  .main { padding: 20px; max-width: 900px; margin: 0 auto; }
+
+  .cat-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 18px; }
+  .cat-tab { font-size: 13px; font-weight: 600; color: #555; padding: 7px 14px; border: 1px solid #ddd; border-radius: 20px; background: #fff; cursor: pointer; white-space: nowrap; }
+  .cat-tab:hover { background: #f4f4f5; }
+  .cat-tab.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .cat-add-btn { font-size: 13px; font-weight: 600; color: #5865F2; padding: 7px 14px; border: 1px dashed #b9c0f5; border-radius: 20px; background: none; cursor: pointer; white-space: nowrap; }
+  .cat-add-btn:hover { background: #eef0ff; }
+  .cat-tools { display: flex; gap: 4px; margin-left: 4px; }
+  .icon-btn { font-size: 12px; color: #999; background: none; border: none; cursor: pointer; padding: 2px 4px; border-radius: 4px; line-height: 1; }
+  .icon-btn:hover { background: #eee; color: #333; }
+  .icon-btn.danger:hover { background: #fee2e2; color: #991b1b; }
+
+  .empty-state { text-align: center; padding: 40px 16px; color: #999; font-size: 13px; }
+
+  .topic-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; margin-bottom: 16px; overflow: hidden; }
+  .topic-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid #f0f0f0; }
+  .topic-title { font-size: 14px; font-weight: 700; color: #111; flex: 1; }
+  .topic-body { padding: 12px 16px; }
+
+  .tip-row { padding: 10px 0; border-bottom: 1px solid #f5f5f5; }
+  .tip-row:last-of-type { border-bottom: none; }
+  .tip-meta { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
+  .tip-author { font-size: 12px; font-weight: 700; color: #111; }
+  .tip-time { font-size: 11px; color: #999; }
+  .tip-actions { margin-left: auto; display: flex; gap: 4px; }
+  .tip-content { font-size: 13px; color: #333; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+  .tip-edit-area { width: 100%; font-family: inherit; font-size: 13px; padding: 8px; border: 1px solid #ddd; border-radius: 6px; resize: vertical; min-height: 60px; }
+  .tip-edit-actions { margin-top: 6px; display: flex; gap: 8px; }
+
+  .add-tip { margin-top: 10px; padding-top: 10px; border-top: 1px solid #f0f0f0; }
+  .add-tip textarea { width: 100%; font-family: inherit; font-size: 13px; padding: 8px; border: 1px solid #ddd; border-radius: 6px; resize: vertical; min-height: 56px; }
+  .add-tip-row { display: flex; justify-content: flex-end; margin-top: 6px; }
+
+  .btn { font-size: 12px; font-weight: 600; padding: 6px 14px; border-radius: 6px; border: 1px solid #5865F2; background: #5865F2; color: #fff; cursor: pointer; }
+  .btn:hover { background: #4752d4; }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn-plain { font-size: 12px; font-weight: 600; padding: 6px 14px; border-radius: 6px; border: 1px solid #ddd; background: #fff; color: #555; cursor: pointer; }
+  .btn-plain:hover { background: #f4f4f5; }
+
+  .add-topic-row { text-align: center; margin-top: 4px; }
+
+  @media (max-width: 640px) {
+    .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px; }
+    .nav { flex-wrap: wrap; gap: 5px; }
+    .nav a, .nav-group-btn { font-size: 12px; padding: 3px 7px; }
+    .nav-menu { left: 0; right: auto; }
+    .main { padding: 12px; }
+  }
+
+  html[data-theme="dark"] { color-scheme: dark; }
+  html[data-theme="dark"] body { background: #111113; color: #f0f0f0; }
+  html[data-theme="dark"] .header { background: #1c1c1f; border-bottom-color: #303033; }
+  html[data-theme="dark"] .header-title { color: #f0f0f0; }
+  html[data-theme="dark"] .nav a { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .nav a:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .nav-group-btn { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .nav-group-btn:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav-group-btn.active, html[data-theme="dark"] .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .nav-menu { background: #1c1c1f; border-color: #383838; box-shadow: 0 6px 20px rgba(0,0,0,0.45); }
+  html[data-theme="dark"] .nav-menu a { color: #bbbbc5; }
+  html[data-theme="dark"] .nav-menu a:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav-menu a.active { background: #5865F2; color: #fff; }
+  html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
+  html[data-theme="dark"] .theme-toggle:hover { background: #2e2e32; }
+  html[data-theme="dark"] .cat-tab { background: #1c1c1f; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .cat-tab:hover { background: #252528; }
+  html[data-theme="dark"] .cat-add-btn { border-color: #3a3d7a; color: #a5b4fc; }
+  html[data-theme="dark"] .cat-add-btn:hover { background: #1e2040; }
+  html[data-theme="dark"] .icon-btn { color: #888; }
+  html[data-theme="dark"] .icon-btn:hover { background: #2e2e32; color: #ddd; }
+  html[data-theme="dark"] .icon-btn.danger:hover { background: #4a1f1f; color: #fca5a5; }
+  html[data-theme="dark"] .topic-card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .topic-head { border-bottom-color: #2a2a2d; }
+  html[data-theme="dark"] .topic-title { color: #f0f0f0; }
+  html[data-theme="dark"] .tip-row { border-bottom-color: #2a2a2d; }
+  html[data-theme="dark"] .tip-author { color: #f0f0f0; }
+  html[data-theme="dark"] .tip-content { color: #ccc; }
+  html[data-theme="dark"] .tip-edit-area, html[data-theme="dark"] .add-tip textarea { background: #252528; border-color: #383838; color: #f0f0f0; }
+  html[data-theme="dark"] .add-tip { border-top-color: #2a2a2d; }
+  html[data-theme="dark"] .btn-plain { background: #252528; border-color: #383838; color: #ccc; }
+  html[data-theme="dark"] .btn-plain:hover { background: #2e2e32; }
+  /* ── TCG theme accent (matches every other page) ── */
+  .header { position: relative; }
+  .header::after { content:""; position:absolute; left:0; right:0; bottom:-1px; height:3px; z-index:1;
+    background: linear-gradient(90deg,#ee1515 0%,#f4a92e 34%,#5865F2 67%,#8b5cf6 100%); }
+  .header-title { display:inline-flex; align-items:center; gap:6px; }
+  .title-emblem { width:18px; height:18px; flex-shrink:0; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <div class="avatar">
+      {% if avatar %}
+        <img src="https://cdn.discordapp.com/avatars/{{ user_id }}/{{ avatar }}.png" alt="">
+      {% else %}
+        {{ username[0] | upper }}
+      {% endif %}
+    </div>
+    <div>
+      <div class="header-title"><svg class="title-emblem" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="#fff" stroke="#111" stroke-width="2"/><path d="M2 16a14 14 0 0 1 28 0z" fill="#ee1515"/><path d="M2 16h28" stroke="#111" stroke-width="3"/><circle cx="16" cy="16" r="5" fill="#fff" stroke="#111" stroke-width="3"/></svg>Tips &amp; Tricks</div>
+      <div class="header-user">{{ username }}</div>
+    </div>
+  </div>
+  <div class="nav">
+    <a href="/">Dashboard</a>
+    <a href="/map">Map</a>
+    <a href="/status">Status</a>
+    <a href="/tips" class="active">Tips &amp; Tricks</a>
+    {% if is_admin %}
+    <div class="nav-group">
+      <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        <a href="/admin">Visitor Log</a>
+        <a href="/contributors">Contributors</a>
+        <a href="/invite-network">Network</a>
+      </div>
+    </div>
+    {% endif %}
+    {% if is_admin %}<a href="/raffle-wheel">Raffle</a>{% endif %}
+    <div class="nav-group">
+      <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Nexus Playground<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        {% if is_admin %}<a href="/card-tracker">Tracker</a>{% endif %}
+        <a href="/grading-calculator">Grading Calculator</a>
+        <a href="/catalog">Card Catalog</a>
+        {% if request.session.get('inventory_access', False) %}<a href="/inventory">Inventory</a>{% endif %}
+      </div>
+    </div>
+    {% if is_admin or is_mod %}<a href="/sample">Sample</a>{% endif %}
+    {% if is_admin or is_mod %}<a href="/sample-map">Sample Map</a>{% endif %}
+    {% if is_admin or is_mod %}<a href="/sample-status">Sample Status</a>{% endif %}
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
+    <a href="/logout">Log out</a>
+  </div>
+</div>
+
+<div class="main">
+  <div class="cat-row" id="catRow"></div>
+  <div id="topicsWrap"></div>
+</div>
+
+<script>
+// Vital: every category/topic name and tip is free text from any Discord
+// member (or, for the badge-less "system" pieces, still user-controlled) —
+// unlike the vendor data elsewhere in this app, this is the highest-risk
+// unescaped-HTML surface in the whole dashboard if it's ever skipped.
+function esc(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+let TREE = [];
+let IS_ADMIN = false;
+let activeCategoryId = null;
+
+function timeAgo(iso){
+  if (!iso) return '';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return '';
+  const mins = Math.max(0, Math.round((Date.now() - then) / 60000));
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.round(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.round(months / 12)}y ago`;
+}
+
+async function loadTips(keepActive){
+  const resp = await fetch('/api/tips');
+  if (!resp.ok) return;
+  const d = await resp.json();
+  TREE = d.categories || [];
+  IS_ADMIN = !!d.is_admin;
+  if (!keepActive || !TREE.some(c => c.id === activeCategoryId)){
+    activeCategoryId = TREE.length ? TREE[0].id : null;
+  }
+  render();
+}
+
+function render(){
+  renderCategoryTabs();
+  renderTopics();
+}
+
+function renderCategoryTabs(){
+  const row = document.getElementById('catRow');
+  let html = TREE.map(c => `<button class="cat-tab ${c.id === activeCategoryId ? 'active' : ''}"
+      onclick="selectCategory(${c.id})">${esc(c.name)}</button>`).join('');
+  if (IS_ADMIN){
+    html += `<span class="cat-tools">
+      <button class="cat-add-btn" onclick="addCategory()">+ Category</button>
+    </span>`;
+  }
+  row.innerHTML = html || (IS_ADMIN
+    ? '<button class="cat-add-btn" onclick="addCategory()">+ Add the first category</button>'
+    : '');
+}
+
+function selectCategory(id){
+  activeCategoryId = id;
+  render();
+}
+
+function renderTopics(){
+  const wrap = document.getElementById('topicsWrap');
+  const cat = TREE.find(c => c.id === activeCategoryId);
+  if (!cat){
+    wrap.innerHTML = TREE.length
+      ? ''
+      : `<div class="empty-state">No categories yet.${IS_ADMIN ? '' : ' Check back soon.'}</div>`;
+    return;
+  }
+  let html = '';
+  if (IS_ADMIN){
+    html += `<div class="cat-tools" style="margin-bottom:10px">
+      <button class="icon-btn" onclick="moveCategory(${cat.id},'up')" title="Move category left">&#8592;</button>
+      <button class="icon-btn" onclick="moveCategory(${cat.id},'down')" title="Move category right">&#8594;</button>
+      <button class="icon-btn" onclick="renameCategory(${cat.id})" title="Rename category">Rename</button>
+      <button class="icon-btn danger" onclick="deleteCategory(${cat.id})" title="Delete category">Delete category</button>
+    </div>`;
+  }
+  if (!cat.topics.length){
+    html += `<div class="empty-state">No topics in this category yet.${IS_ADMIN ? '' : ' Check back soon.'}</div>`;
+  }
+  html += cat.topics.map(t => renderTopicCard(t)).join('');
+  if (IS_ADMIN){
+    html += `<div class="add-topic-row"><button class="btn-plain" onclick="addTopic(${cat.id})">+ Add a topic</button></div>`;
+  }
+  wrap.innerHTML = html;
+}
+
+function renderTopicCard(t){
+  const tools = IS_ADMIN ? `
+    <button class="icon-btn" onclick="moveTopic(${t.id},'up')" title="Move up">&#8593;</button>
+    <button class="icon-btn" onclick="moveTopic(${t.id},'down')" title="Move down">&#8595;</button>
+    <button class="icon-btn" onclick="renameTopic(${t.id})" title="Rename topic">Rename</button>
+    <button class="icon-btn danger" onclick="deleteTopic(${t.id})" title="Delete topic">Delete</button>
+  ` : '';
+  const entries = t.entries.length
+    ? t.entries.map(e => renderTipRow(e)).join('')
+    : `<div class="empty-state" style="padding:16px 0">No tips yet — be the first to add one.</div>`;
+  return `<div class="topic-card" data-topic-id="${t.id}">
+    <div class="topic-head">
+      <span class="topic-title">${esc(t.name)}</span>
+      ${tools}
+    </div>
+    <div class="topic-body">
+      <div id="entries-${t.id}">${entries}</div>
+      <div class="add-tip">
+        <textarea id="newtip-${t.id}" placeholder="Share a tip…"></textarea>
+        <div class="add-tip-row">
+          <button class="btn" onclick="submitTip(${t.id})">Post tip</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderTipRow(e){
+  const edited = e.edited_at ? ' <span class="tip-time">(edited)</span>' : '';
+  const actions = e.can_edit ? `
+    <span class="tip-actions">
+      <button class="icon-btn" onclick="startEditEntry(${e.id})">Edit</button>
+      <button class="icon-btn danger" onclick="deleteEntry(${e.id})">Delete</button>
+    </span>` : '';
+  return `<div class="tip-row" id="tip-${e.id}">
+    <div class="tip-meta">
+      <span class="tip-author">${esc(e.username)}</span>
+      <span class="tip-time">${timeAgo(e.created_at)}</span>${edited}
+      ${actions}
+    </div>
+    <div class="tip-content" id="tip-content-${e.id}">${esc(e.content)}</div>
+  </div>`;
+}
+
+async function submitTip(topicId){
+  const ta = document.getElementById('newtip-' + topicId);
+  const content = ta.value.trim();
+  if (!content) return;
+  const resp = await fetch('/api/tips/entries', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ topic_id: topicId, content })
+  });
+  if (!resp.ok){
+    const d = await resp.json().catch(() => ({}));
+    alert(d.detail || 'Could not post that tip.');
+    return;
+  }
+  ta.value = '';
+  await loadTips(true);
+}
+
+function startEditEntry(entryId){
+  const cell = document.getElementById('tip-content-' + entryId);
+  const current = cell.textContent;
+  cell.innerHTML = `<textarea class="tip-edit-area" id="editarea-${entryId}">${esc(current)}</textarea>
+    <div class="tip-edit-actions">
+      <button class="btn" onclick="saveEditEntry(${entryId})">Save</button>
+      <button class="btn-plain" onclick="loadTips(true)">Cancel</button>
+    </div>`;
+}
+
+async function saveEditEntry(entryId){
+  const content = document.getElementById('editarea-' + entryId).value.trim();
+  if (!content) return;
+  const resp = await fetch('/api/tips/entries/' + entryId, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ content })
+  });
+  if (!resp.ok){
+    const d = await resp.json().catch(() => ({}));
+    alert(d.detail || 'Could not save that edit.');
+    return;
+  }
+  await loadTips(true);
+}
+
+async function deleteEntry(entryId){
+  if (!confirm('Delete this tip? This can\'t be undone.')) return;
+  const resp = await fetch('/api/tips/entries/' + entryId, { method: 'DELETE' });
+  if (!resp.ok){
+    const d = await resp.json().catch(() => ({}));
+    alert(d.detail || 'Could not delete that tip.');
+    return;
+  }
+  await loadTips(true);
+}
+
+// ── Admin: categories ──
+async function addCategory(){
+  const name = prompt('New category name:');
+  if (!name || !name.trim()) return;
+  const resp = await fetch('/api/tips/categories', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ name: name.trim() })
+  });
+  if (!resp.ok){ alert('Could not create that category.'); return; }
+  const d = await resp.json();
+  activeCategoryId = d.id;
+  await loadTips(true);
+}
+
+async function renameCategory(id){
+  const cat = TREE.find(c => c.id === id);
+  const name = prompt('Rename category:', cat ? cat.name : '');
+  if (!name || !name.trim()) return;
+  await fetch('/api/tips/categories/' + id, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ name: name.trim() })
+  });
+  await loadTips(true);
+}
+
+async function moveCategory(id, dir){
+  await fetch('/api/tips/categories/' + id, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ move: dir })
+  });
+  await loadTips(true);
+}
+
+async function deleteCategory(id){
+  const cat = TREE.find(c => c.id === id);
+  const topicCount = cat ? cat.topics.length : 0;
+  const tipCount = cat ? cat.topics.reduce((n, t) => n + t.entries.length, 0) : 0;
+  if (!confirm(`Delete "${cat ? cat.name : 'this category'}"? This also deletes its ` +
+               `${topicCount} topic(s) and ${tipCount} tip(s). This can't be undone.`)) return;
+  await fetch('/api/tips/categories/' + id, { method: 'DELETE' });
+  activeCategoryId = null;
+  await loadTips(false);
+}
+
+// ── Admin: topics ──
+async function addTopic(categoryId){
+  const name = prompt('New topic name:');
+  if (!name || !name.trim()) return;
+  const resp = await fetch('/api/tips/topics', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ category_id: categoryId, name: name.trim() })
+  });
+  if (!resp.ok){ alert('Could not create that topic.'); return; }
+  await loadTips(true);
+}
+
+async function renameTopic(id){
+  let current = '';
+  for (const c of TREE) for (const t of c.topics) if (t.id === id) current = t.name;
+  const name = prompt('Rename topic:', current);
+  if (!name || !name.trim()) return;
+  await fetch('/api/tips/topics/' + id, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ name: name.trim() })
+  });
+  await loadTips(true);
+}
+
+async function moveTopic(id, dir){
+  await fetch('/api/tips/topics/' + id, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ move: dir })
+  });
+  await loadTips(true);
+}
+
+async function deleteTopic(id){
+  let topic = null;
+  for (const c of TREE) for (const t of c.topics) if (t.id === id) topic = t;
+  const tipCount = topic ? topic.entries.length : 0;
+  if (!confirm(`Delete "${topic ? topic.name : 'this topic'}"? This also deletes its ` +
+               `${tipCount} tip(s). This can't be undone.`)) return;
+  await fetch('/api/tips/topics/' + id, { method: 'DELETE' });
+  await loadTips(true);
+}
+
+loadTips(false);
+
+(function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();};upd();})();
+
+function closeNavGroups(){
+  document.querySelectorAll('.nav-group.open').forEach(function(g){
+    g.classList.remove('open');
+    var b = g.querySelector('.nav-group-btn');
+    if (b) b.setAttribute('aria-expanded', 'false');
+  });
+}
+function toggleNavGroup(ev){
+  ev.preventDefault();
+  ev.stopPropagation();
+  var btn = ev.currentTarget, grp = btn.parentElement, wasOpen = grp.classList.contains('open');
+  closeNavGroups();
+  if (!wasOpen){ grp.classList.add('open'); btn.setAttribute('aria-expanded', 'true'); }
+}
+document.addEventListener('click', closeNavGroups);
+document.addEventListener('keydown', function(ev){ if (ev.key === 'Escape') closeNavGroups(); });
+</script>
+</body>
+</html>
