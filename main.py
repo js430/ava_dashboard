@@ -289,7 +289,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "https://maps.googleapis.com https://maps.gstatic.com https://assets.pokemon.com; "
             "connect-src 'self' https://maps.googleapis.com; "
             "font-src 'self' data:; "
-            "frame-ancestors 'none'; frame-src 'none'; object-src 'none'; base-uri 'self';"
+            # frame-src narrowly permits Google's Maps Embed iframe (Tips,
+            # Tricks, and Guide's per-location map) — nothing else may be
+            # framed. frame-ancestors stays 'none': this only controls what
+            # WE embed, not who may embed us.
+            "frame-ancestors 'none'; frame-src https://www.google.com; "
+            "object-src 'none'; base-uri 'self';"
         )
         return response
 
@@ -624,7 +629,7 @@ def get_current_user(request: Request):
 def get_current_discord_user(request: Request):
     """Any real Discord identity — full member OR role-less demo account —
     but not an anonymous guest. For features open to the whole Discord
-    regardless of paid role (Tips & Tricks), unlike get_current_user (members
+    regardless of paid role (Tips, Tricks, and Guide), unlike get_current_user (members
     only, blocks demo) or get_current_user_or_guest (also allows anonymous
     guests)."""
     user = request.session.get("user")
@@ -1953,7 +1958,7 @@ async def api_import_run(request: Request):
                          "skipped_duplicates": skipped, "total_tracked": total},
                         headers={"Cache-Control": "no-store"})
 
-# ---- Tips & Tricks ----
+# ---- Tips, Tricks, and Guide ----
 # Open to the whole Discord — paid and unpaid roles alike — but not anonymous
 # guests, unlike Nexus Playground. See get_current_discord_user.
 
@@ -1971,6 +1976,10 @@ async def tips_page(request: Request):
         "user_id": user["id"],
         "is_admin": int(user["id"]) in ADMIN_USER_IDS,
         "is_mod": request.session.get("mod", False),
+        # For the per-location Google Maps embed — same key/pattern map.html
+        # already uses, client-visible by design (Maps Embed/JS API keys are
+        # restricted by HTTP referrer in Google Cloud Console, not secrecy).
+        "google_maps_api_key": GOOGLE_MAPS_API_KEY,
     })
 
 
@@ -1985,13 +1994,17 @@ async def api_tips_list(request: Request, user=Depends(get_current_discord_user)
     tree = await tips.list_tree(request.app.state.db)
     is_admin = int(user["id"]) in ADMIN_USER_IDS
     my_id = int(user["id"])
-    # Whether THIS viewer may edit/delete each entry — resolved server-side so
-    # the client never has to (and can't be tricked into) deciding its own
-    # permissions; the actual edit/delete routes re-check independently.
+    # Whether THIS viewer may edit/delete each entry/location — resolved
+    # server-side so the client never has to (and can't be tricked into)
+    # deciding its own permissions; the actual edit/delete routes re-check
+    # independently.
     for cat in tree:
         for topic in cat["topics"]:
-            for e in topic["entries"]:
-                e["can_edit"] = is_admin or int(e["user_id"]) == my_id
+            for mod in topic["modules"]:
+                for e in mod["entries"]:
+                    e["can_edit"] = is_admin or int(e["user_id"]) == my_id
+                for loc in mod["locations"]:
+                    loc["can_edit"] = is_admin or int(loc["user_id"]) == my_id
     return JSONResponse({"categories": tree, "is_admin": is_admin},
                         headers={"Cache-Control": "no-store"})
 
@@ -2004,11 +2017,11 @@ async def api_tips_create_entry(request: Request, user=Depends(get_current_disco
     if not content:
         raise HTTPException(status_code=400, detail="Tip can't be empty.")
     try:
-        topic_id = int(body.get("topic_id"))
+        module_id = int(body.get("module_id"))
     except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="Invalid topic.")
+        raise HTTPException(status_code=400, detail="Invalid module.")
     result = await tips.create_entry(
-        request.app.state.db, topic_id, int(user["id"]), user["username"], content)
+        request.app.state.db, module_id, int(user["id"]), user["username"], content)
     return JSONResponse(result)
 
 
@@ -2039,6 +2052,54 @@ async def api_tips_delete_entry(request: Request, entry_id: int,
     if int(user["id"]) not in ADMIN_USER_IDS and int(owner_id) != int(user["id"]):
         raise HTTPException(status_code=403, detail="You can only delete your own tips.")
     await tips.delete_entry(request.app.state.db, entry_id)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/tips/locations")
+@limiter.limit("20/minute")
+async def api_tips_create_location(request: Request, user=Depends(get_current_discord_user)):
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    address = (body.get("address") or "").strip()
+    if not name or not address:
+        raise HTTPException(status_code=400, detail="Location name and address are both required.")
+    try:
+        module_id = int(body.get("module_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid module.")
+    result = await tips.create_location(
+        request.app.state.db, module_id, int(user["id"]), user["username"], name, address)
+    return JSONResponse(result)
+
+
+@app.put("/api/tips/locations/{location_id}")
+@limiter.limit("20/minute")
+async def api_tips_update_location(request: Request, location_id: int,
+                                   user=Depends(get_current_discord_user)):
+    owner_id = await tips.get_location_owner(request.app.state.db, location_id)
+    if owner_id is None:
+        raise HTTPException(status_code=404, detail="Location not found.")
+    if int(user["id"]) not in ADMIN_USER_IDS and int(owner_id) != int(user["id"]):
+        raise HTTPException(status_code=403, detail="You can only edit your own locations.")
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    address = (body.get("address") or "").strip()
+    if not name or not address:
+        raise HTTPException(status_code=400, detail="Location name and address are both required.")
+    await tips.update_location(request.app.state.db, location_id, name, address)
+    return JSONResponse({"ok": True})
+
+
+@app.delete("/api/tips/locations/{location_id}")
+@limiter.limit("20/minute")
+async def api_tips_delete_location(request: Request, location_id: int,
+                                   user=Depends(get_current_discord_user)):
+    owner_id = await tips.get_location_owner(request.app.state.db, location_id)
+    if owner_id is None:
+        raise HTTPException(status_code=404, detail="Location not found.")
+    if int(user["id"]) not in ADMIN_USER_IDS and int(owner_id) != int(user["id"]):
+        raise HTTPException(status_code=403, detail="You can only delete your own locations.")
+    await tips.delete_location(request.app.state.db, location_id)
     return JSONResponse({"ok": True})
 
 
@@ -2117,6 +2178,47 @@ async def api_tips_delete_topic(request: Request, topic_id: int,
                                 user=Depends(get_current_discord_user)):
     _require_tips_admin(user)
     await tips.delete_topic(request.app.state.db, topic_id)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/tips/modules")
+@limiter.limit("30/minute")
+async def api_tips_create_module(request: Request, user=Depends(get_current_discord_user)):
+    _require_tips_admin(user)
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Module name required.")
+    try:
+        topic_id = int(body.get("topic_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid topic.")
+    module_id = await tips.create_module(request.app.state.db, topic_id, name)
+    return JSONResponse({"id": module_id})
+
+
+@app.patch("/api/tips/modules/{module_id}")
+@limiter.limit("30/minute")
+async def api_tips_update_module(request: Request, module_id: int,
+                                 user=Depends(get_current_discord_user)):
+    _require_tips_admin(user)
+    body = await request.json()
+    if "name" in body:
+        name = (body.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Module name required.")
+        await tips.rename_module(request.app.state.db, module_id, name)
+    if body.get("move") in ("up", "down"):
+        await tips.reorder_module(request.app.state.db, module_id, body["move"])
+    return JSONResponse({"ok": True})
+
+
+@app.delete("/api/tips/modules/{module_id}")
+@limiter.limit("30/minute")
+async def api_tips_delete_module(request: Request, module_id: int,
+                                 user=Depends(get_current_discord_user)):
+    _require_tips_admin(user)
+    await tips.delete_module(request.app.state.db, module_id)
     return JSONResponse({"ok": True})
 
 

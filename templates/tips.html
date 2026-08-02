@@ -6,7 +6,7 @@
   <link rel="apple-touch-icon" sizes="180x180" href="/static/brand/icon-180.png">
 <script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Tips &amp; Tricks — Restock Dashboard</title>
+<title>Tips, Tricks, and Guide — Restock Dashboard</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
@@ -42,12 +42,28 @@
   .cat-tab.active { background: #5865F2; color: #fff; border-color: #5865F2; }
   .cat-add-btn { font-size: 13px; font-weight: 600; color: #5865F2; padding: 7px 14px; border: 1px dashed #b9c0f5; border-radius: 20px; background: none; cursor: pointer; white-space: nowrap; }
   .cat-add-btn:hover { background: #eef0ff; }
-  .cat-tools { display: flex; gap: 4px; margin-left: 4px; }
   .icon-btn { font-size: 12px; color: #999; background: none; border: none; cursor: pointer; padding: 2px 4px; border-radius: 4px; line-height: 1; }
   .icon-btn:hover { background: #eee; color: #333; }
   .icon-btn.danger:hover { background: #fee2e2; color: #991b1b; }
 
   .empty-state { text-align: center; padding: 40px 16px; color: #999; font-size: 13px; }
+
+  /* Breadcrumb for the topic/module drill-down */
+  .breadcrumb { font-size: 13px; color: #888; margin-bottom: 14px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .crumb-link { color: #5865F2; cursor: pointer; text-decoration: none; }
+  .crumb-link:hover { text-decoration: underline; }
+  .crumb-sep { color: #ccc; }
+  .crumb-current { color: #555; font-weight: 600; }
+
+  /* Tile grid — used for both the topic list and the module list */
+  .tile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; margin-bottom: 10px; }
+  .tile { position: relative; background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 14px; cursor: pointer; text-align: left; display: flex; flex-direction: column; gap: 4px; }
+  .tile:hover { border-color: #5865F2; background: #f8f9ff; }
+  .tile-name { font-size: 14px; font-weight: 700; color: #111; }
+  .tile-meta { font-size: 11px; color: #999; }
+  .tile-tools { display: flex; gap: 2px; margin-top: 6px; }
+  .tile-add { align-items: center; justify-content: center; color: #5865F2; font-weight: 600; font-size: 13px; border-style: dashed; border-color: #b9c0f5; cursor: pointer; }
+  .tile-add:hover { background: #eef0ff; }
 
   .topic-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; margin-bottom: 16px; overflow: hidden; }
   .topic-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid #f0f0f0; }
@@ -68,13 +84,19 @@
   .add-tip textarea { width: 100%; font-family: inherit; font-size: 13px; padding: 8px; border: 1px solid #ddd; border-radius: 6px; resize: vertical; min-height: 56px; }
   .add-tip-row { display: flex; justify-content: flex-end; margin-top: 6px; }
 
+  /* Locations */
+  .loc-card { padding: 12px 0; border-bottom: 1px solid #f5f5f5; }
+  .loc-card:last-of-type { border-bottom: none; }
+  .loc-address { font-size: 12px; color: #666; margin-bottom: 8px; }
+  .loc-input { width: 100%; font-family: inherit; font-size: 13px; padding: 7px 9px; border: 1px solid #ddd; border-radius: 6px; }
+  .loc-map { width: 100%; height: 220px; border: 1px solid #e4e4e7; border-radius: 8px; }
+  .loc-map-fallback { display: inline-block; font-size: 12px; color: #5865F2; }
+
   .btn { font-size: 12px; font-weight: 600; padding: 6px 14px; border-radius: 6px; border: 1px solid #5865F2; background: #5865F2; color: #fff; cursor: pointer; }
   .btn:hover { background: #4752d4; }
   .btn:disabled { opacity: .5; cursor: default; }
   .btn-plain { font-size: 12px; font-weight: 600; padding: 6px 14px; border-radius: 6px; border: 1px solid #ddd; background: #fff; color: #555; cursor: pointer; }
   .btn-plain:hover { background: #f4f4f5; }
-
-  .add-topic-row { text-align: center; margin-top: 4px; }
 
   @media (max-width: 640px) {
     .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px; }
@@ -82,6 +104,7 @@
     .nav a, .nav-group-btn { font-size: 12px; padding: 3px 7px; }
     .nav-menu { left: 0; right: auto; }
     .main { padding: 12px; }
+    .tile-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
   }
 
   html[data-theme="dark"] { color-scheme: dark; }
@@ -107,13 +130,21 @@
   html[data-theme="dark"] .icon-btn { color: #888; }
   html[data-theme="dark"] .icon-btn:hover { background: #2e2e32; color: #ddd; }
   html[data-theme="dark"] .icon-btn.danger:hover { background: #4a1f1f; color: #fca5a5; }
+  html[data-theme="dark"] .crumb-current { color: #ccc; }
+  html[data-theme="dark"] .crumb-link { color: #a5b4fc; }
+  html[data-theme="dark"] .tile { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .tile:hover { border-color: #5865F2; background: #1a1b2e; }
+  html[data-theme="dark"] .tile-name { color: #f0f0f0; }
+  html[data-theme="dark"] .tile-add { color: #a5b4fc; border-color: #3a3d7a; }
+  html[data-theme="dark"] .tile-add:hover { background: #1e2040; }
   html[data-theme="dark"] .topic-card { background: #1c1c1f; border-color: #303033; }
   html[data-theme="dark"] .topic-head { border-bottom-color: #2a2a2d; }
   html[data-theme="dark"] .topic-title { color: #f0f0f0; }
-  html[data-theme="dark"] .tip-row { border-bottom-color: #2a2a2d; }
+  html[data-theme="dark"] .tip-row, html[data-theme="dark"] .loc-card { border-bottom-color: #2a2a2d; }
   html[data-theme="dark"] .tip-author { color: #f0f0f0; }
   html[data-theme="dark"] .tip-content { color: #ccc; }
-  html[data-theme="dark"] .tip-edit-area, html[data-theme="dark"] .add-tip textarea { background: #252528; border-color: #383838; color: #f0f0f0; }
+  html[data-theme="dark"] .loc-address { color: #aaa; }
+  html[data-theme="dark"] .tip-edit-area, html[data-theme="dark"] .add-tip textarea, html[data-theme="dark"] .loc-input { background: #252528; border-color: #383838; color: #f0f0f0; }
   html[data-theme="dark"] .add-tip { border-top-color: #2a2a2d; }
   html[data-theme="dark"] .btn-plain { background: #252528; border-color: #383838; color: #ccc; }
   html[data-theme="dark"] .btn-plain:hover { background: #2e2e32; }
@@ -137,7 +168,7 @@
       {% endif %}
     </div>
     <div>
-      <div class="header-title"><svg class="title-emblem" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="#fff" stroke="#111" stroke-width="2"/><path d="M2 16a14 14 0 0 1 28 0z" fill="#ee1515"/><path d="M2 16h28" stroke="#111" stroke-width="3"/><circle cx="16" cy="16" r="5" fill="#fff" stroke="#111" stroke-width="3"/></svg>Tips &amp; Tricks</div>
+      <div class="header-title"><svg class="title-emblem" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="#fff" stroke="#111" stroke-width="2"/><path d="M2 16a14 14 0 0 1 28 0z" fill="#ee1515"/><path d="M2 16h28" stroke="#111" stroke-width="3"/><circle cx="16" cy="16" r="5" fill="#fff" stroke="#111" stroke-width="3"/></svg>Tips, Tricks, and Guide</div>
       <div class="header-user">{{ username }}</div>
     </div>
   </div>
@@ -145,7 +176,7 @@
     <a href="/">Dashboard</a>
     <a href="/map">Map</a>
     <a href="/status">Status</a>
-    <a href="/tips" class="active">Tips &amp; Tricks</a>
+    <a href="/tips" class="active">Tips, Tricks, and Guide</a>
     {% if is_admin %}
     <div class="nav-group">
       <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
@@ -180,18 +211,22 @@
 </div>
 
 <script>
-// Vital: every category/topic name and tip is free text from any Discord
-// member (or, for the badge-less "system" pieces, still user-controlled) —
-// unlike the vendor data elsewhere in this app, this is the highest-risk
-// unescaped-HTML surface in the whole dashboard if it's ever skipped.
+// Vital: every category/topic/module name, tip, and location is free text
+// from any Discord member — unlike the vendor data elsewhere in this app,
+// this is the highest-risk unescaped-HTML surface in the whole dashboard if
+// it's ever skipped.
 function esc(s){
   return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+const GOOGLE_MAPS_API_KEY = {{ google_maps_api_key | tojson }};
+
 let TREE = [];
 let IS_ADMIN = false;
 let activeCategoryId = null;
+let activeTopicId = null;
+let activeModuleId = null;
 
 function timeAgo(iso){
   if (!iso) return '';
@@ -209,21 +244,41 @@ function timeAgo(iso){
   return `${Math.round(months / 12)}y ago`;
 }
 
-async function loadTips(keepActive){
+// ── Tree lookups ──
+function getCategory(id){ return TREE.find(c => c.id === id) || null; }
+function getTopic(id){
+  for (const c of TREE) { const t = c.topics.find(t => t.id === id); if (t) return t; }
+  return null;
+}
+function getModule(id){
+  for (const c of TREE) for (const t of c.topics) { const m = t.modules.find(m => m.id === id); if (m) return m; }
+  return null;
+}
+
+async function loadTips(preserve){
   const resp = await fetch('/api/tips');
   if (!resp.ok) return;
   const d = await resp.json();
   TREE = d.categories || [];
   IS_ADMIN = !!d.is_admin;
-  if (!keepActive || !TREE.some(c => c.id === activeCategoryId)){
+  if (!preserve || !getCategory(activeCategoryId)){
     activeCategoryId = TREE.length ? TREE[0].id : null;
+    activeTopicId = null;
+    activeModuleId = null;
+  } else if (activeTopicId !== null && !getTopic(activeTopicId)){
+    activeTopicId = null;
+    activeModuleId = null;
+  } else if (activeModuleId !== null && !getModule(activeModuleId)){
+    activeModuleId = null;
   }
   render();
 }
 
 function render(){
   renderCategoryTabs();
-  renderTopics();
+  if (activeModuleId !== null) renderModuleContent();
+  else if (activeTopicId !== null) renderModuleList();
+  else renderTopicList();
 }
 
 function renderCategoryTabs(){
@@ -231,9 +286,7 @@ function renderCategoryTabs(){
   let html = TREE.map(c => `<button class="cat-tab ${c.id === activeCategoryId ? 'active' : ''}"
       onclick="selectCategory(${c.id})">${esc(c.name)}</button>`).join('');
   if (IS_ADMIN){
-    html += `<span class="cat-tools">
-      <button class="cat-add-btn" onclick="addCategory()">+ Category</button>
-    </span>`;
+    html += `<button class="cat-add-btn" onclick="addCategory()">+ Category</button>`;
   }
   row.innerHTML = html || (IS_ADMIN
     ? '<button class="cat-add-btn" onclick="addCategory()">+ Add the first category</button>'
@@ -242,58 +295,145 @@ function renderCategoryTabs(){
 
 function selectCategory(id){
   activeCategoryId = id;
+  activeTopicId = null;
+  activeModuleId = null;
   render();
 }
 
-function renderTopics(){
+function selectTopic(id){
+  activeTopicId = id;
+  activeModuleId = null;
+  render();
+}
+
+function selectModule(id){
+  activeModuleId = id;
+  render();
+}
+
+function breadcrumbHtml(cat, topic, mod){
+  let html = `<div class="breadcrumb">`;
+  html += `<span class="crumb-link" onclick="selectCategory(${cat.id})">${esc(cat.name)}</span>`;
+  if (topic){
+    html += `<span class="crumb-sep">/</span>`;
+    html += mod
+      ? `<span class="crumb-link" onclick="selectTopic(${topic.id})">${esc(topic.name)}</span>`
+      : `<span class="crumb-current">${esc(topic.name)}</span>`;
+  }
+  if (mod){
+    html += `<span class="crumb-sep">/</span><span class="crumb-current">${esc(mod.name)}</span>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+// ── Level 1: topics within the active category ──
+function renderTopicList(){
   const wrap = document.getElementById('topicsWrap');
-  const cat = TREE.find(c => c.id === activeCategoryId);
+  const cat = getCategory(activeCategoryId);
   if (!cat){
-    wrap.innerHTML = TREE.length
-      ? ''
-      : `<div class="empty-state">No categories yet.${IS_ADMIN ? '' : ' Check back soon.'}</div>`;
+    wrap.innerHTML = TREE.length ? '' : `<div class="empty-state">No categories yet.${IS_ADMIN ? '' : ' Check back soon.'}</div>`;
     return;
   }
   let html = '';
   if (IS_ADMIN){
-    html += `<div class="cat-tools" style="margin-bottom:10px">
+    html += `<div class="breadcrumb" style="margin-bottom:10px">
       <button class="icon-btn" onclick="moveCategory(${cat.id},'up')" title="Move category left">&#8592;</button>
       <button class="icon-btn" onclick="moveCategory(${cat.id},'down')" title="Move category right">&#8594;</button>
-      <button class="icon-btn" onclick="renameCategory(${cat.id})" title="Rename category">Rename</button>
+      <button class="icon-btn" onclick="renameCategory(${cat.id})" title="Rename category">Rename category</button>
       <button class="icon-btn danger" onclick="deleteCategory(${cat.id})" title="Delete category">Delete category</button>
     </div>`;
   }
-  if (!cat.topics.length){
-    html += `<div class="empty-state">No topics in this category yet.${IS_ADMIN ? '' : ' Check back soon.'}</div>`;
-  }
-  html += cat.topics.map(t => renderTopicCard(t)).join('');
+  html += '<div class="tile-grid">';
+  html += cat.topics.map(t => renderTopicTile(t)).join('');
   if (IS_ADMIN){
-    html += `<div class="add-topic-row"><button class="btn-plain" onclick="addTopic(${cat.id})">+ Add a topic</button></div>`;
+    html += `<button class="tile tile-add" onclick="addTopic(${cat.id})">+ Add a topic</button>`;
+  }
+  html += '</div>';
+  if (!cat.topics.length && !IS_ADMIN){
+    html = `<div class="empty-state">No topics in this category yet. Check back soon.</div>`;
   }
   wrap.innerHTML = html;
 }
 
-function renderTopicCard(t){
+function renderTopicTile(t){
+  const count = t.modules.length;
   const tools = IS_ADMIN ? `
-    <button class="icon-btn" onclick="moveTopic(${t.id},'up')" title="Move up">&#8593;</button>
-    <button class="icon-btn" onclick="moveTopic(${t.id},'down')" title="Move down">&#8595;</button>
-    <button class="icon-btn" onclick="renameTopic(${t.id})" title="Rename topic">Rename</button>
-    <button class="icon-btn danger" onclick="deleteTopic(${t.id})" title="Delete topic">Delete</button>
-  ` : '';
-  const entries = t.entries.length
-    ? t.entries.map(e => renderTipRow(e)).join('')
+    <div class="tile-tools">
+      <button class="icon-btn" onclick="event.stopPropagation(); moveTopic(${t.id},'up')" title="Move up">&#8593;</button>
+      <button class="icon-btn" onclick="event.stopPropagation(); moveTopic(${t.id},'down')" title="Move down">&#8595;</button>
+      <button class="icon-btn" onclick="event.stopPropagation(); renameTopic(${t.id})" title="Rename">Rename</button>
+      <button class="icon-btn danger" onclick="event.stopPropagation(); deleteTopic(${t.id})" title="Delete">Delete</button>
+    </div>` : '';
+  return `<div class="tile" onclick="selectTopic(${t.id})">
+    <span class="tile-name">${esc(t.name)}</span>
+    <span class="tile-meta">${count} module${count === 1 ? '' : 's'}</span>
+    ${tools}
+  </div>`;
+}
+
+// ── Level 2: modules within the active topic ──
+function renderModuleList(){
+  const wrap = document.getElementById('topicsWrap');
+  const cat = getCategory(activeCategoryId);
+  const topic = getTopic(activeTopicId);
+  if (!cat || !topic){ activeTopicId = null; render(); return; }
+
+  let html = breadcrumbHtml(cat, topic, null);
+  html += '<div class="tile-grid">';
+  html += topic.modules.map(m => renderModuleTile(m)).join('');
+  if (IS_ADMIN){
+    html += `<button class="tile tile-add" onclick="addModule(${topic.id})">+ Add a module</button>`;
+  }
+  html += '</div>';
+  if (!topic.modules.length && !IS_ADMIN){
+    html += `<div class="empty-state">Nothing here yet. Check back soon.</div>`;
+  }
+  wrap.innerHTML = html;
+}
+
+function renderModuleTile(m){
+  const count = m.entries.length + m.locations.length;
+  const tools = IS_ADMIN ? `
+    <div class="tile-tools">
+      <button class="icon-btn" onclick="event.stopPropagation(); moveModule(${m.id},'up')" title="Move up">&#8593;</button>
+      <button class="icon-btn" onclick="event.stopPropagation(); moveModule(${m.id},'down')" title="Move down">&#8595;</button>
+      <button class="icon-btn" onclick="event.stopPropagation(); renameModule(${m.id})" title="Rename">Rename</button>
+      <button class="icon-btn danger" onclick="event.stopPropagation(); deleteModule(${m.id})" title="Delete">Delete</button>
+    </div>` : '';
+  return `<div class="tile" onclick="selectModule(${m.id})">
+    <span class="tile-name">${esc(m.name)}</span>
+    <span class="tile-meta">${count} item${count === 1 ? '' : 's'}</span>
+    ${tools}
+  </div>`;
+}
+
+// ── Level 3: a module's actual content (tips + locations) ──
+function renderModuleContent(){
+  const wrap = document.getElementById('topicsWrap');
+  const cat = getCategory(activeCategoryId);
+  const topic = getTopic(activeTopicId);
+  const mod = getModule(activeModuleId);
+  if (!cat || !topic || !mod){ activeModuleId = null; render(); return; }
+
+  let html = breadcrumbHtml(cat, topic, mod);
+  html += renderTipsSection(mod);
+  html += renderLocationsSection(mod);
+  wrap.innerHTML = html;
+}
+
+function renderTipsSection(mod){
+  const entries = mod.entries.length
+    ? mod.entries.map(e => renderTipRow(e)).join('')
     : `<div class="empty-state" style="padding:16px 0">No tips yet — be the first to add one.</div>`;
-  return `<div class="topic-card" data-topic-id="${t.id}">
-    <div class="topic-head">
-      <span class="topic-title">${esc(t.name)}</span>
-      ${tools}
-    </div>
+  return `<div class="topic-card">
+    <div class="topic-head"><span class="topic-title">Tips</span></div>
     <div class="topic-body">
-      <div id="entries-${t.id}">${entries}</div>
+      <div id="entries-${mod.id}">${entries}</div>
       <div class="add-tip">
-        <textarea id="newtip-${t.id}" placeholder="Share a tip…"></textarea>
+        <textarea id="newtip-${mod.id}" placeholder="Share a tip…"></textarea>
         <div class="add-tip-row">
-          <button class="btn" onclick="submitTip(${t.id})">Post tip</button>
+          <button class="btn" onclick="submitTip(${mod.id})">Post tip</button>
         </div>
       </div>
     </div>
@@ -317,13 +457,13 @@ function renderTipRow(e){
   </div>`;
 }
 
-async function submitTip(topicId){
-  const ta = document.getElementById('newtip-' + topicId);
+async function submitTip(moduleId){
+  const ta = document.getElementById('newtip-' + moduleId);
   const content = ta.value.trim();
   if (!content) return;
   const resp = await fetch('/api/tips/entries', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ topic_id: topicId, content })
+    body: JSON.stringify({ module_id: moduleId, content })
   });
   if (!resp.ok){
     const d = await resp.json().catch(() => ({}));
@@ -370,6 +510,116 @@ async function deleteEntry(entryId){
   await loadTips(true);
 }
 
+// ── Locations ──
+function mapEmbedUrl(address){
+  return `https://www.google.com/maps/embed/v1/place?key=${GOOGLE_MAPS_API_KEY}&q=${encodeURIComponent(address)}`;
+}
+
+function renderLocationsSection(mod){
+  const locations = mod.locations.length
+    ? mod.locations.map(l => renderLocationCard(l)).join('')
+    : `<div class="empty-state" style="padding:16px 0">No locations yet — add one below.</div>`;
+  return `<div class="topic-card">
+    <div class="topic-head"><span class="topic-title">Locations</span></div>
+    <div class="topic-body">
+      <div id="locations-${mod.id}">${locations}</div>
+      <div class="add-tip">
+        <input type="text" class="loc-input" id="newlocname-${mod.id}" placeholder="Place name (e.g. Mandarake Akihabara)">
+        <div style="height:6px"></div>
+        <input type="text" class="loc-input" id="newlocaddr-${mod.id}" placeholder="Address">
+        <div class="add-tip-row">
+          <button class="btn" onclick="submitLocation(${mod.id})">Add location</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderLocationCard(l){
+  const actions = l.can_edit ? `
+    <span class="tip-actions">
+      <button class="icon-btn" onclick="startEditLocation(${l.id})">Edit</button>
+      <button class="icon-btn danger" onclick="deleteLocation(${l.id})">Delete</button>
+    </span>` : '';
+  const mapBlock = GOOGLE_MAPS_API_KEY
+    ? `<iframe class="loc-map" src="${esc(mapEmbedUrl(l.address))}" loading="lazy"
+        referrerpolicy="no-referrer-when-downgrade" allowfullscreen></iframe>`
+    : `<a class="loc-map-fallback" href="${esc('https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(l.address))}"
+        target="_blank" rel="noopener">Open in Google Maps</a>`;
+  return `<div class="loc-card" id="loc-${l.id}">
+    <div class="tip-meta">
+      <span class="tip-author">${esc(l.name)}</span>
+      ${actions}
+    </div>
+    <div class="loc-address">${esc(l.address)}</div>
+    ${mapBlock}
+  </div>`;
+}
+
+async function submitLocation(moduleId){
+  const nameEl = document.getElementById('newlocname-' + moduleId);
+  const addrEl = document.getElementById('newlocaddr-' + moduleId);
+  const name = nameEl.value.trim();
+  const address = addrEl.value.trim();
+  if (!name || !address) return;
+  const resp = await fetch('/api/tips/locations', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ module_id: moduleId, name, address })
+  });
+  if (!resp.ok){
+    const d = await resp.json().catch(() => ({}));
+    alert(d.detail || 'Could not add that location.');
+    return;
+  }
+  nameEl.value = ''; addrEl.value = '';
+  await loadTips(true);
+}
+
+function startEditLocation(locationId){
+  const loc = (function(){
+    for (const c of TREE) for (const t of c.topics) for (const m of t.modules)
+      for (const l of m.locations) if (l.id === locationId) return l;
+    return null;
+  })();
+  if (!loc) return;
+  const card = document.getElementById('loc-' + locationId);
+  card.innerHTML = `
+    <input type="text" class="loc-input" id="editlocname-${locationId}" value="${esc(loc.name)}">
+    <div style="height:6px"></div>
+    <input type="text" class="loc-input" id="editlocaddr-${locationId}" value="${esc(loc.address)}">
+    <div class="tip-edit-actions">
+      <button class="btn" onclick="saveEditLocation(${locationId})">Save</button>
+      <button class="btn-plain" onclick="loadTips(true)">Cancel</button>
+    </div>`;
+}
+
+async function saveEditLocation(locationId){
+  const name = document.getElementById('editlocname-' + locationId).value.trim();
+  const address = document.getElementById('editlocaddr-' + locationId).value.trim();
+  if (!name || !address) return;
+  const resp = await fetch('/api/tips/locations/' + locationId, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ name, address })
+  });
+  if (!resp.ok){
+    const d = await resp.json().catch(() => ({}));
+    alert(d.detail || 'Could not save that location.');
+    return;
+  }
+  await loadTips(true);
+}
+
+async function deleteLocation(locationId){
+  if (!confirm('Delete this location? This can\'t be undone.')) return;
+  const resp = await fetch('/api/tips/locations/' + locationId, { method: 'DELETE' });
+  if (!resp.ok){
+    const d = await resp.json().catch(() => ({}));
+    alert(d.detail || 'Could not delete that location.');
+    return;
+  }
+  await loadTips(true);
+}
+
 // ── Admin: categories ──
 async function addCategory(){
   const name = prompt('New category name:');
@@ -381,11 +631,13 @@ async function addCategory(){
   if (!resp.ok){ alert('Could not create that category.'); return; }
   const d = await resp.json();
   activeCategoryId = d.id;
+  activeTopicId = null;
+  activeModuleId = null;
   await loadTips(true);
 }
 
 async function renameCategory(id){
-  const cat = TREE.find(c => c.id === id);
+  const cat = getCategory(id);
   const name = prompt('Rename category:', cat ? cat.name : '');
   if (!name || !name.trim()) return;
   await fetch('/api/tips/categories/' + id, {
@@ -404,13 +656,17 @@ async function moveCategory(id, dir){
 }
 
 async function deleteCategory(id){
-  const cat = TREE.find(c => c.id === id);
+  const cat = getCategory(id);
   const topicCount = cat ? cat.topics.length : 0;
-  const tipCount = cat ? cat.topics.reduce((n, t) => n + t.entries.length, 0) : 0;
+  const itemCount = cat
+    ? cat.topics.reduce((n, t) => n + t.modules.reduce((n2, m) => n2 + m.entries.length + m.locations.length, 0), 0)
+    : 0;
   if (!confirm(`Delete "${cat ? cat.name : 'this category'}"? This also deletes its ` +
-               `${topicCount} topic(s) and ${tipCount} tip(s). This can't be undone.`)) return;
+               `${topicCount} topic(s) and everything in them (${itemCount} item(s) total). This can't be undone.`)) return;
   await fetch('/api/tips/categories/' + id, { method: 'DELETE' });
   activeCategoryId = null;
+  activeTopicId = null;
+  activeModuleId = null;
   await loadTips(false);
 }
 
@@ -427,9 +683,8 @@ async function addTopic(categoryId){
 }
 
 async function renameTopic(id){
-  let current = '';
-  for (const c of TREE) for (const t of c.topics) if (t.id === id) current = t.name;
-  const name = prompt('Rename topic:', current);
+  const topic = getTopic(id);
+  const name = prompt('Rename topic:', topic ? topic.name : '');
   if (!name || !name.trim()) return;
   await fetch('/api/tips/topics/' + id, {
     method: 'PATCH', headers: {'Content-Type': 'application/json'},
@@ -447,12 +702,55 @@ async function moveTopic(id, dir){
 }
 
 async function deleteTopic(id){
-  let topic = null;
-  for (const c of TREE) for (const t of c.topics) if (t.id === id) topic = t;
-  const tipCount = topic ? topic.entries.length : 0;
+  const topic = getTopic(id);
+  const moduleCount = topic ? topic.modules.length : 0;
+  const itemCount = topic ? topic.modules.reduce((n, m) => n + m.entries.length + m.locations.length, 0) : 0;
   if (!confirm(`Delete "${topic ? topic.name : 'this topic'}"? This also deletes its ` +
-               `${tipCount} tip(s). This can't be undone.`)) return;
+               `${moduleCount} module(s) and everything in them (${itemCount} item(s) total). This can't be undone.`)) return;
   await fetch('/api/tips/topics/' + id, { method: 'DELETE' });
+  activeTopicId = null;
+  activeModuleId = null;
+  await loadTips(false);
+}
+
+// ── Admin: modules ──
+async function addModule(topicId){
+  const name = prompt('New module name:');
+  if (!name || !name.trim()) return;
+  const resp = await fetch('/api/tips/modules', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ topic_id: topicId, name: name.trim() })
+  });
+  if (!resp.ok){ alert('Could not create that module.'); return; }
+  await loadTips(true);
+}
+
+async function renameModule(id){
+  const mod = getModule(id);
+  const name = prompt('Rename module:', mod ? mod.name : '');
+  if (!name || !name.trim()) return;
+  await fetch('/api/tips/modules/' + id, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ name: name.trim() })
+  });
+  await loadTips(true);
+}
+
+async function moveModule(id, dir){
+  await fetch('/api/tips/modules/' + id, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ move: dir })
+  });
+  await loadTips(true);
+}
+
+async function deleteModule(id){
+  const mod = getModule(id);
+  const itemCount = mod ? mod.entries.length + mod.locations.length : 0;
+  if (!confirm(`Delete "${mod ? mod.name : 'this module'}"? This also deletes its ` +
+               `${itemCount} item(s). This can't be undone.`)) return;
+  await fetch('/api/tips/modules/' + id, { method: 'DELETE' });
+  activeModuleId = null;
   await loadTips(true);
 }
 
