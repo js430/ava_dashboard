@@ -98,6 +98,58 @@ TIPS_SCHEMA = [
     "REFERENCES tips_modules(id) ON DELETE CASCADE",
     "ALTER TABLE tips_locations ALTER COLUMN topic_id DROP NOT NULL",
     "CREATE INDEX IF NOT EXISTS idx_tips_locations_module ON tips_locations (module_id)",
+    # One row per (item, user) — the UNIQUE constraint is what makes "like"
+    # idempotent and race-safe at the DB level: a double-click can't produce
+    # two likes from the same person no matter how the requests interleave.
+    """
+    CREATE TABLE IF NOT EXISTS tips_entry_likes (
+        id          SERIAL PRIMARY KEY,
+        entry_id    INTEGER NOT NULL REFERENCES tips_entries(id) ON DELETE CASCADE,
+        user_id     BIGINT NOT NULL,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (entry_id, user_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_tips_entry_likes_entry ON tips_entry_likes (entry_id)",
+    """
+    CREATE TABLE IF NOT EXISTS tips_location_likes (
+        id           SERIAL PRIMARY KEY,
+        location_id  INTEGER NOT NULL REFERENCES tips_locations(id) ON DELETE CASCADE,
+        user_id      BIGINT NOT NULL,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (location_id, user_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_tips_location_likes_location ON tips_location_likes (location_id)",
+    # Stored as BYTEA in Postgres rather than on local disk — Railway
+    # containers are ephemeral, so anything written to the filesystem is
+    # lost on the next deploy/restart. This reuses the same DB connection
+    # everything else here already has, at the cost of the images living in
+    # the database rather than a dedicated object store; fine at the scale
+    # of a community photo gallery, worth revisiting only if that changes.
+    """
+    CREATE TABLE IF NOT EXISTS tips_photos (
+        id          SERIAL PRIMARY KEY,
+        module_id   INTEGER NOT NULL REFERENCES tips_modules(id) ON DELETE CASCADE,
+        image_data  BYTEA NOT NULL,
+        media_type  TEXT NOT NULL,
+        caption     TEXT NOT NULL DEFAULT '',
+        user_id     BIGINT NOT NULL,
+        username    TEXT NOT NULL,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_tips_photos_module ON tips_photos (module_id)",
+    """
+    CREATE TABLE IF NOT EXISTS tips_photo_likes (
+        id          SERIAL PRIMARY KEY,
+        photo_id    INTEGER NOT NULL REFERENCES tips_photos(id) ON DELETE CASCADE,
+        user_id     BIGINT NOT NULL,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (photo_id, user_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_tips_photo_likes_photo ON tips_photo_likes (photo_id)",
 ]
 
 # A tip is a short, freeform note, not an essay — bounded mainly so one
@@ -105,6 +157,7 @@ TIPS_SCHEMA = [
 MAX_CONTENT_LENGTH = 2000
 MAX_NAME_LENGTH = 80
 MAX_ADDRESS_LENGTH = 300
+MAX_CAPTION_LENGTH = 300
 
 DEFAULT_MODULE_NAME = "General"
 
@@ -159,14 +212,26 @@ async def ensure_tips_schema(pool) -> None:
     await _migrate_orphaned_content(pool)
 
 
-async def list_tree(pool) -> list:
+async def list_tree(pool, viewer_user_id=None) -> list:
     """Full category -> topic -> module -> entries/locations tree, in
-    display order.
+    display order. Entries and locations within a module are sorted by like
+    count descending (most-liked first) by default, tiebroken by oldest
+    first — likes are the point of the ordering, submission time is just a
+    stable tiebreak, not a competing sort key.
 
-    Five flat queries plus in-Python grouping rather than one big JOIN — a
-    JOIN across all four levels would repeat every parent row once per leaf
-    row, which is wasted transfer for a board that's read far more often
-    than it's written to.
+    `viewer_user_id`, when given, marks which entries/locations THIS viewer
+    has already liked (`liked_by_me`) so the like button can render its
+    pressed/unpressed state without a second round-trip. None (an
+    unauthenticated caller, if this were ever exposed that way) means
+    nothing is marked as liked-by-me.
+
+    Seven flat queries plus in-Python grouping rather than one big JOIN — a
+    JOIN across every level plus both like tables would repeat every parent
+    row once per leaf/like row, which is wasted transfer for a board that's
+    read far more often than it's written to. Like COUNTS are computed in
+    Python from the raw (item_id, user_id) rows rather than a SQL COUNT/JOIN,
+    for the same reason — a tip realistically has single-digit likes, so
+    there's nothing to gain from pushing the aggregation into the database.
     """
     async with pool.acquire() as conn:
         categories = await conn.fetch(
@@ -179,10 +244,26 @@ async def list_tree(pool) -> list:
             "ORDER BY sort_order ASC, id ASC")
         entries = await conn.fetch(
             "SELECT id, module_id, user_id, username, content, created_at, edited_at "
-            "FROM tips_entries WHERE module_id IS NOT NULL ORDER BY created_at ASC")
+            "FROM tips_entries WHERE module_id IS NOT NULL")
         locations = await conn.fetch(
             "SELECT id, module_id, name, address, user_id, username, created_at "
-            "FROM tips_locations WHERE module_id IS NOT NULL ORDER BY created_at ASC")
+            "FROM tips_locations WHERE module_id IS NOT NULL")
+        photos = await conn.fetch(
+            "SELECT id, module_id, caption, user_id, username, created_at "
+            "FROM tips_photos")
+        entry_likes = await conn.fetch("SELECT entry_id, user_id FROM tips_entry_likes")
+        location_likes = await conn.fetch("SELECT location_id, user_id FROM tips_location_likes")
+        photo_likes = await conn.fetch("SELECT photo_id, user_id FROM tips_photo_likes")
+
+    entry_likers = {}
+    for r in entry_likes:
+        entry_likers.setdefault(r["entry_id"], set()).add(r["user_id"])
+    location_likers = {}
+    for r in location_likes:
+        location_likers.setdefault(r["location_id"], set()).add(r["user_id"])
+    photo_likers = {}
+    for r in photo_likes:
+        photo_likers.setdefault(r["photo_id"], set()).add(r["user_id"])
 
     topics_by_category = {}
     for t in topics:
@@ -196,6 +277,50 @@ async def list_tree(pool) -> list:
     locations_by_module = {}
     for l in locations:
         locations_by_module.setdefault(l["module_id"], []).append(l)
+    photos_by_module = {}
+    for p in photos:
+        photos_by_module.setdefault(p["module_id"], []).append(p)
+
+    def _entry_dict(e):
+        likers = entry_likers.get(e["id"], set())
+        return {
+            "id": e["id"],
+            "user_id": str(e["user_id"]),
+            "username": e["username"],
+            "content": e["content"],
+            "created_at": e["created_at"].isoformat(),
+            "edited_at": e["edited_at"].isoformat() if e["edited_at"] else None,
+            "like_count": len(likers),
+            "liked_by_me": viewer_user_id is not None and viewer_user_id in likers,
+        }
+
+    def _location_dict(l):
+        likers = location_likers.get(l["id"], set())
+        return {
+            "id": l["id"],
+            "user_id": str(l["user_id"]),
+            "username": l["username"],
+            "name": l["name"],
+            "address": l["address"],
+            "created_at": l["created_at"].isoformat(),
+            "like_count": len(likers),
+            "liked_by_me": viewer_user_id is not None and viewer_user_id in likers,
+        }
+
+    def _photo_dict(p):
+        likers = photo_likers.get(p["id"], set())
+        return {
+            "id": p["id"],
+            "user_id": str(p["user_id"]),
+            "username": p["username"],
+            "caption": p["caption"],
+            "created_at": p["created_at"].isoformat(),
+            "like_count": len(likers),
+            "liked_by_me": viewer_user_id is not None and viewer_user_id in likers,
+        }
+
+    def _by_likes_then_age(item):
+        return (-item["like_count"], item["created_at"])
 
     out = []
     for c in categories:
@@ -203,25 +328,19 @@ async def list_tree(pool) -> list:
         for t in topics_by_category.get(c["id"], []):
             topic_modules = []
             for m in modules_by_topic.get(t["id"], []):
+                mod_entries = sorted(
+                    (_entry_dict(e) for e in entries_by_module.get(m["id"], [])),
+                    key=_by_likes_then_age)
+                mod_locations = sorted(
+                    (_location_dict(l) for l in locations_by_module.get(m["id"], [])),
+                    key=_by_likes_then_age)
+                mod_photos = sorted(
+                    (_photo_dict(p) for p in photos_by_module.get(m["id"], [])),
+                    key=_by_likes_then_age)
                 topic_modules.append({
-                    "id": m["id"],
-                    "name": m["name"],
-                    "entries": [{
-                        "id": e["id"],
-                        "user_id": str(e["user_id"]),
-                        "username": e["username"],
-                        "content": e["content"],
-                        "created_at": e["created_at"].isoformat(),
-                        "edited_at": e["edited_at"].isoformat() if e["edited_at"] else None,
-                    } for e in entries_by_module.get(m["id"], [])],
-                    "locations": [{
-                        "id": l["id"],
-                        "user_id": str(l["user_id"]),
-                        "username": l["username"],
-                        "name": l["name"],
-                        "address": l["address"],
-                        "created_at": l["created_at"].isoformat(),
-                    } for l in locations_by_module.get(m["id"], [])],
+                    "id": m["id"], "name": m["name"],
+                    "entries": mod_entries, "locations": mod_locations,
+                    "photos": mod_photos,
                 })
             cat_topics.append({"id": t["id"], "name": t["name"], "modules": topic_modules})
         out.append({"id": c["id"], "name": c["name"], "topics": cat_topics})
@@ -428,6 +547,34 @@ async def delete_entry(pool, entry_id: int) -> None:
         await conn.execute("DELETE FROM tips_entries WHERE id = $1", entry_id)
 
 
+async def toggle_entry_like(pool, entry_id: int, user_id: int) -> dict:
+    """Like the entry if this user hasn't already, unlike if they have.
+    Returns {liked, like_count} reflecting the state AFTER this call.
+
+    Read-then-act inside a transaction, with ON CONFLICT DO NOTHING as a
+    backstop — the UNIQUE(entry_id, user_id) constraint means two concurrent
+    toggles from the SAME user can't both register as a fresh "like" (one
+    silently no-ops), so the count can never overcount one person's like.
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            existing = await conn.fetchrow(
+                "SELECT id FROM tips_entry_likes WHERE entry_id = $1 AND user_id = $2",
+                entry_id, user_id)
+            if existing:
+                await conn.execute("DELETE FROM tips_entry_likes WHERE id = $1", existing["id"])
+                liked = False
+            else:
+                await conn.execute(
+                    "INSERT INTO tips_entry_likes (entry_id, user_id) VALUES ($1, $2) "
+                    "ON CONFLICT (entry_id, user_id) DO NOTHING",
+                    entry_id, user_id)
+                liked = True
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM tips_entry_likes WHERE entry_id = $1", entry_id)
+    return {"liked": liked, "like_count": count}
+
+
 # ---- Locations (member-submitted, per module) ----
 # A place worth knowing about for a module — "Mandarake Akihabara" with an
 # address, shown as an embedded map on the page. Same member-submits,
@@ -467,3 +614,91 @@ async def update_location(pool, location_id: int, name: str, address: str) -> No
 async def delete_location(pool, location_id: int) -> None:
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM tips_locations WHERE id = $1", location_id)
+
+
+async def toggle_location_like(pool, location_id: int, user_id: int) -> dict:
+    """Same toggle/race-safety shape as toggle_entry_like, for locations."""
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            existing = await conn.fetchrow(
+                "SELECT id FROM tips_location_likes WHERE location_id = $1 AND user_id = $2",
+                location_id, user_id)
+            if existing:
+                await conn.execute("DELETE FROM tips_location_likes WHERE id = $1", existing["id"])
+                liked = False
+            else:
+                await conn.execute(
+                    "INSERT INTO tips_location_likes (location_id, user_id) VALUES ($1, $2) "
+                    "ON CONFLICT (location_id, user_id) DO NOTHING",
+                    location_id, user_id)
+                liked = True
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM tips_location_likes WHERE location_id = $1", location_id)
+    return {"liked": liked, "like_count": count}
+
+
+# ---- Photos (member-submitted, per module) ----
+# Image bytes live in the DB (tips_photos.image_data) rather than on local
+# disk or an external object store — see the tips_photos schema comment.
+# list_tree() never selects image_data itself (it's metadata-only there);
+# callers fetch the bytes separately via get_photo_image() for the dedicated
+# image-serving endpoint, so the main tree payload stays light.
+
+async def create_photo(pool, module_id: int, user_id: int, username: str,
+                       image_data: bytes, media_type: str, caption: str) -> dict:
+    caption = caption.strip()[:MAX_CAPTION_LENGTH]
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "INSERT INTO tips_photos (module_id, user_id, username, image_data, media_type, caption) "
+            "VALUES ($1, $2, $3, $4, $5, $6) "
+            "RETURNING id, created_at",
+            module_id, user_id, username, image_data, media_type, caption)
+    return {"id": row["id"], "created_at": row["created_at"].isoformat()}
+
+
+async def get_photo_owner(pool, photo_id: int):
+    """The submitting user_id of one photo, or None if it doesn't exist."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT user_id FROM tips_photos WHERE id = $1", photo_id)
+    return row["user_id"] if row else None
+
+
+async def get_photo_image(pool, photo_id: int):
+    """(image_data, media_type) for one photo, or None if it doesn't exist."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT image_data, media_type FROM tips_photos WHERE id = $1", photo_id)
+    return (row["image_data"], row["media_type"]) if row else None
+
+
+async def update_photo_caption(pool, photo_id: int, caption: str) -> None:
+    caption = caption.strip()[:MAX_CAPTION_LENGTH]
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE tips_photos SET caption = $1 WHERE id = $2", caption, photo_id)
+
+
+async def delete_photo(pool, photo_id: int) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM tips_photos WHERE id = $1", photo_id)
+
+
+async def toggle_photo_like(pool, photo_id: int, user_id: int) -> dict:
+    """Same toggle/race-safety shape as toggle_entry_like, for photos."""
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            existing = await conn.fetchrow(
+                "SELECT id FROM tips_photo_likes WHERE photo_id = $1 AND user_id = $2",
+                photo_id, user_id)
+            if existing:
+                await conn.execute("DELETE FROM tips_photo_likes WHERE id = $1", existing["id"])
+                liked = False
+            else:
+                await conn.execute(
+                    "INSERT INTO tips_photo_likes (photo_id, user_id) VALUES ($1, $2) "
+                    "ON CONFLICT (photo_id, user_id) DO NOTHING",
+                    photo_id, user_id)
+                liked = True
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM tips_photo_likes WHERE photo_id = $1", photo_id)
+    return {"liked": liked, "like_count": count}

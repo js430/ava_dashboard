@@ -1991,13 +1991,13 @@ def _require_tips_admin(user) -> None:
 @app.get("/api/tips")
 @limiter.limit("60/minute")
 async def api_tips_list(request: Request, user=Depends(get_current_discord_user)):
-    tree = await tips.list_tree(request.app.state.db)
     is_admin = int(user["id"]) in ADMIN_USER_IDS
     my_id = int(user["id"])
-    # Whether THIS viewer may edit/delete each entry/location — resolved
-    # server-side so the client never has to (and can't be tricked into)
-    # deciding its own permissions; the actual edit/delete routes re-check
-    # independently.
+    tree = await tips.list_tree(request.app.state.db, viewer_user_id=my_id)
+    # Whether THIS viewer may edit/delete each entry/location/photo —
+    # resolved server-side so the client never has to (and can't be tricked
+    # into) deciding its own permissions; the actual edit/delete routes
+    # re-check independently.
     for cat in tree:
         for topic in cat["topics"]:
             for mod in topic["modules"]:
@@ -2005,6 +2005,8 @@ async def api_tips_list(request: Request, user=Depends(get_current_discord_user)
                     e["can_edit"] = is_admin or int(e["user_id"]) == my_id
                 for loc in mod["locations"]:
                     loc["can_edit"] = is_admin or int(loc["user_id"]) == my_id
+                for p in mod["photos"]:
+                    p["can_edit"] = is_admin or int(p["user_id"]) == my_id
     return JSONResponse({"categories": tree, "is_admin": is_admin},
                         headers={"Cache-Control": "no-store"})
 
@@ -2055,6 +2057,14 @@ async def api_tips_delete_entry(request: Request, entry_id: int,
     return JSONResponse({"ok": True})
 
 
+@app.post("/api/tips/entries/{entry_id}/like")
+@limiter.limit("60/minute")
+async def api_tips_like_entry(request: Request, entry_id: int,
+                              user=Depends(get_current_discord_user)):
+    result = await tips.toggle_entry_like(request.app.state.db, entry_id, int(user["id"]))
+    return JSONResponse(result)
+
+
 @app.post("/api/tips/locations")
 @limiter.limit("20/minute")
 async def api_tips_create_location(request: Request, user=Depends(get_current_discord_user)):
@@ -2101,6 +2111,14 @@ async def api_tips_delete_location(request: Request, location_id: int,
         raise HTTPException(status_code=403, detail="You can only delete your own locations.")
     await tips.delete_location(request.app.state.db, location_id)
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/tips/locations/{location_id}/like")
+@limiter.limit("60/minute")
+async def api_tips_like_location(request: Request, location_id: int,
+                                 user=Depends(get_current_discord_user)):
+    result = await tips.toggle_location_like(request.app.state.db, location_id, int(user["id"]))
+    return JSONResponse(result)
 
 
 @app.post("/api/tips/categories")
@@ -2220,6 +2238,91 @@ async def api_tips_delete_module(request: Request, module_id: int,
     _require_tips_admin(user)
     await tips.delete_module(request.app.state.db, module_id)
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/tips/photos")
+@limiter.limit("10/minute")
+async def api_tips_create_photo(request: Request, user=Depends(get_current_discord_user)):
+    body = await request.json()
+    try:
+        module_id = int(body.get("module_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid module.")
+    caption = (body.get("caption") or "").strip()
+
+    image_data = body.get("image")
+    if not image_data:
+        raise HTTPException(status_code=400, detail="No image provided")
+
+    if "," in image_data:
+        header, image_data = image_data.split(",", 1)
+        media_type = header.split(";")[0].split(":")[1] if ":" in header else "image/jpeg"
+    else:
+        media_type = "image/jpeg"
+
+    if media_type not in ALLOWED_MEDIA_TYPES:
+        raise HTTPException(status_code=400, detail="Unsupported image type")
+
+    try:
+        image_bytes = base64.b64decode(image_data)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 image")
+
+    if len(image_bytes) > MAX_IMAGE_BYTES:
+        image_bytes, media_type = _compress_card_image(image_bytes)
+
+    result = await tips.create_photo(
+        request.app.state.db, module_id, int(user["id"]), user["username"],
+        image_bytes, media_type, caption)
+    return JSONResponse(result)
+
+
+@app.put("/api/tips/photos/{photo_id}")
+@limiter.limit("20/minute")
+async def api_tips_update_photo(request: Request, photo_id: int,
+                                user=Depends(get_current_discord_user)):
+    owner_id = await tips.get_photo_owner(request.app.state.db, photo_id)
+    if owner_id is None:
+        raise HTTPException(status_code=404, detail="Photo not found.")
+    if int(user["id"]) not in ADMIN_USER_IDS and int(owner_id) != int(user["id"]):
+        raise HTTPException(status_code=403, detail="You can only edit your own photos.")
+    body = await request.json()
+    caption = (body.get("caption") or "").strip()
+    await tips.update_photo_caption(request.app.state.db, photo_id, caption)
+    return JSONResponse({"ok": True})
+
+
+@app.delete("/api/tips/photos/{photo_id}")
+@limiter.limit("20/minute")
+async def api_tips_delete_photo(request: Request, photo_id: int,
+                                user=Depends(get_current_discord_user)):
+    owner_id = await tips.get_photo_owner(request.app.state.db, photo_id)
+    if owner_id is None:
+        raise HTTPException(status_code=404, detail="Photo not found.")
+    if int(user["id"]) not in ADMIN_USER_IDS and int(owner_id) != int(user["id"]):
+        raise HTTPException(status_code=403, detail="You can only delete your own photos.")
+    await tips.delete_photo(request.app.state.db, photo_id)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/tips/photos/{photo_id}/like")
+@limiter.limit("60/minute")
+async def api_tips_like_photo(request: Request, photo_id: int,
+                              user=Depends(get_current_discord_user)):
+    result = await tips.toggle_photo_like(request.app.state.db, photo_id, int(user["id"]))
+    return JSONResponse(result)
+
+
+@app.get("/api/tips/photos/{photo_id}/image")
+@limiter.limit("120/minute")
+async def api_tips_photo_image(request: Request, photo_id: int,
+                               user=Depends(get_current_discord_user)):
+    result = await tips.get_photo_image(request.app.state.db, photo_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Photo not found.")
+    image_bytes, media_type = result
+    return Response(content=image_bytes, media_type=media_type,
+                    headers={"Cache-Control": "private, max-age=3600"})
 
 
 # ---- Grading calculator ----

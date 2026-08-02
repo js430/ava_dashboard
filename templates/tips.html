@@ -92,6 +92,22 @@
   .loc-map { width: 100%; height: 220px; border: 1px solid #e4e4e7; border-radius: 8px; }
   .loc-map-fallback { display: inline-block; font-size: 12px; color: #5865F2; }
 
+  /* Likes */
+  .like-btn { font-size: 12px; color: #999; background: none; border: none; cursor: pointer; padding: 2px 6px; border-radius: 4px; line-height: 1; display: inline-flex; align-items: center; gap: 4px; }
+  .like-btn:hover { background: #eee; color: #333; }
+  .like-btn.liked { color: #ee1515; font-weight: 600; }
+
+  /* Photo gallery */
+  .photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+  .photo-card { position: relative; background: #fafafa; border: 1px solid #e4e4e7; border-radius: 8px; overflow: hidden; }
+  .photo-card img { width: 100%; height: 140px; object-fit: cover; display: block; background: #eee; }
+  .photo-caption-wrap { padding: 8px; }
+  .photo-caption { font-size: 12px; color: #333; word-break: break-word; }
+  .photo-meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
+  .add-photo { margin-top: 10px; padding-top: 10px; border-top: 1px solid #f0f0f0; }
+  .add-photo input[type=text] { width: 100%; font-family: inherit; font-size: 13px; padding: 7px 9px; border: 1px solid #ddd; border-radius: 6px; }
+  .add-photo-row { display: flex; justify-content: flex-end; margin-top: 6px; gap: 8px; align-items: center; }
+
   .btn { font-size: 12px; font-weight: 600; padding: 6px 14px; border-radius: 6px; border: 1px solid #5865F2; background: #5865F2; color: #fff; cursor: pointer; }
   .btn:hover { background: #4752d4; }
   .btn:disabled { opacity: .5; cursor: default; }
@@ -148,6 +164,14 @@
   html[data-theme="dark"] .add-tip { border-top-color: #2a2a2d; }
   html[data-theme="dark"] .btn-plain { background: #252528; border-color: #383838; color: #ccc; }
   html[data-theme="dark"] .btn-plain:hover { background: #2e2e32; }
+  html[data-theme="dark"] .like-btn { color: #888; }
+  html[data-theme="dark"] .like-btn:hover { background: #2e2e32; color: #ddd; }
+  html[data-theme="dark"] .like-btn.liked { color: #f87171; }
+  html[data-theme="dark"] .photo-card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .photo-card img { background: #2a2a2d; }
+  html[data-theme="dark"] .photo-caption { color: #ccc; }
+  html[data-theme="dark"] .add-photo { border-top-color: #2a2a2d; }
+  html[data-theme="dark"] .add-photo input[type=text] { background: #252528; border-color: #383838; color: #f0f0f0; }
   /* ── TCG theme accent (matches every other page) ── */
   .header { position: relative; }
   .header::after { content:""; position:absolute; left:0; right:0; bottom:-1px; height:3px; z-index:1;
@@ -419,6 +443,7 @@ function renderModuleContent(){
   let html = breadcrumbHtml(cat, topic, mod);
   html += renderTipsSection(mod);
   html += renderLocationsSection(mod);
+  html += renderPhotosSection(mod);
   wrap.innerHTML = html;
 }
 
@@ -451,10 +476,28 @@ function renderTipRow(e){
     <div class="tip-meta">
       <span class="tip-author">${esc(e.username)}</span>
       <span class="tip-time">${timeAgo(e.created_at)}</span>${edited}
+      ${likeButton('entry', e.id, e.like_count, e.liked_by_me)}
       ${actions}
     </div>
     <div class="tip-content" id="tip-content-${e.id}">${esc(e.content)}</div>
   </div>`;
+}
+
+// ── Likes (shared by tips, locations, photos) ──
+function likeButton(kind, id, count, likedByMe){
+  return `<button class="like-btn${likedByMe ? ' liked' : ''}" id="like-${kind}-${id}"
+      onclick="toggleLike('${kind}', ${id})">&#9829; <span id="likecount-${kind}-${id}">${count}</span></button>`;
+}
+
+async function toggleLike(kind, id){
+  const paths = { entry: 'entries', location: 'locations', photo: 'photos' };
+  const resp = await fetch(`/api/tips/${paths[kind]}/${id}/like`, { method: 'POST' });
+  if (!resp.ok) return;
+  const result = await resp.json();
+  const btn = document.getElementById(`like-${kind}-${id}`);
+  const count = document.getElementById(`likecount-${kind}-${id}`);
+  if (btn) btn.classList.toggle('liked', result.liked);
+  if (count) count.textContent = result.like_count;
 }
 
 async function submitTip(moduleId){
@@ -549,6 +592,7 @@ function renderLocationCard(l){
   return `<div class="loc-card" id="loc-${l.id}">
     <div class="tip-meta">
       <span class="tip-author">${esc(l.name)}</span>
+      ${likeButton('location', l.id, l.like_count, l.liked_by_me)}
       ${actions}
     </div>
     <div class="loc-address">${esc(l.address)}</div>
@@ -615,6 +659,118 @@ async function deleteLocation(locationId){
   if (!resp.ok){
     const d = await resp.json().catch(() => ({}));
     alert(d.detail || 'Could not delete that location.');
+    return;
+  }
+  await loadTips(true);
+}
+
+// ── Photo gallery ──
+let pendingPhotoDataUrl = null;
+
+function renderPhotosSection(mod){
+  const photos = mod.photos.length
+    ? `<div class="photo-grid">${mod.photos.map(p => renderPhotoCard(p)).join('')}</div>`
+    : `<div class="empty-state" style="padding:16px 0">No photos yet — add one below.</div>`;
+  return `<div class="topic-card">
+    <div class="topic-head"><span class="topic-title">Photos</span></div>
+    <div class="topic-body">
+      <div id="photos-${mod.id}">${photos}</div>
+      <div class="add-photo">
+        <input type="file" id="photofile-${mod.id}" accept="image/*" style="display:none" onchange="handlePhotoFile(event, ${mod.id})">
+        <input type="text" class="loc-input" id="newphotocaption-${mod.id}" placeholder="Caption (optional)">
+        <div class="add-photo-row">
+          <span id="photofilename-${mod.id}" class="tip-time"></span>
+          <button class="btn-plain" onclick="document.getElementById('photofile-${mod.id}').click()">Choose photo</button>
+          <button class="btn" onclick="submitPhoto(${mod.id})">Post photo</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderPhotoCard(p){
+  const actions = p.can_edit ? `
+    <span class="tip-actions">
+      <button class="icon-btn" onclick="startEditPhotoCaption(${p.id})">Edit</button>
+      <button class="icon-btn danger" onclick="deletePhoto(${p.id})">Delete</button>
+    </span>` : '';
+  return `<div class="photo-card" id="photo-${p.id}">
+    <img src="/api/tips/photos/${p.id}/image" loading="lazy" alt="">
+    <div class="photo-caption-wrap">
+      <div class="photo-caption" id="photo-caption-${p.id}">${esc(p.caption)}</div>
+      <div class="photo-meta">
+        <span class="tip-author">${esc(p.username)}</span>
+        ${likeButton('photo', p.id, p.like_count, p.liked_by_me)}
+        ${actions}
+      </div>
+    </div>
+  </div>`;
+}
+
+function handlePhotoFile(ev, moduleId){
+  const file = ev.target.files[0];
+  ev.target.value = '';
+  if (!file) return;
+  document.getElementById('photofilename-' + moduleId).textContent = file.name;
+  const reader = new FileReader();
+  reader.onload = (e) => { pendingPhotoDataUrl = e.target.result; };
+  reader.readAsDataURL(file);
+}
+
+async function submitPhoto(moduleId){
+  if (!pendingPhotoDataUrl){
+    alert('Choose a photo first.');
+    return;
+  }
+  const caption = document.getElementById('newphotocaption-' + moduleId).value.trim();
+  const resp = await fetch('/api/tips/photos', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ module_id: moduleId, image: pendingPhotoDataUrl, caption })
+  });
+  if (!resp.ok){
+    const d = await resp.json().catch(() => ({}));
+    alert(d.detail || 'Could not post that photo.');
+    return;
+  }
+  pendingPhotoDataUrl = null;
+  await loadTips(true);
+}
+
+function startEditPhotoCaption(photoId){
+  const photo = (function(){
+    for (const c of TREE) for (const t of c.topics) for (const m of t.modules)
+      for (const p of m.photos) if (p.id === photoId) return p;
+    return null;
+  })();
+  if (!photo) return;
+  const cell = document.getElementById('photo-caption-' + photoId);
+  cell.innerHTML = `<input type="text" class="loc-input" id="editphotocaption-${photoId}" value="${esc(photo.caption)}">
+    <div class="tip-edit-actions">
+      <button class="btn" onclick="saveEditPhotoCaption(${photoId})">Save</button>
+      <button class="btn-plain" onclick="loadTips(true)">Cancel</button>
+    </div>`;
+}
+
+async function saveEditPhotoCaption(photoId){
+  const caption = document.getElementById('editphotocaption-' + photoId).value.trim();
+  const resp = await fetch('/api/tips/photos/' + photoId, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ caption })
+  });
+  if (!resp.ok){
+    const d = await resp.json().catch(() => ({}));
+    alert(d.detail || 'Could not save that caption.');
+    return;
+  }
+  await loadTips(true);
+}
+
+async function deletePhoto(photoId){
+  if (!confirm('Delete this photo? This can\'t be undone.')) return;
+  const resp = await fetch('/api/tips/photos/' + photoId, { method: 'DELETE' });
+  if (!resp.ok){
+    const d = await resp.json().catch(() => ({}));
+    alert(d.detail || 'Could not delete that photo.');
     return;
   }
   await loadTips(true);
