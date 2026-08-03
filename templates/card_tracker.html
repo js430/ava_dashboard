@@ -73,7 +73,7 @@
   html[data-theme="dark"] #addResultsList .add-row { border-bottom-color: #242427; }
   html[data-theme="dark"] #addResultsList .add-row:hover { background: #222226; }
   html[data-theme="dark"] #addResultsList .add-row .pname { color: #f0f0f0; }
-  html[data-theme="dark"] #addGame { background: #252528; border-color: #383838; color: #f0f0f0; }
+  html[data-theme="dark"] #addGame, html[data-theme="dark"] #addLanguage { background: #252528; border-color: #383838; color: #f0f0f0; }
 
   .table-scroll { overflow-x: auto; }
   table { border-collapse: collapse; width: 100%; font-size: 12px; }
@@ -242,6 +242,10 @@
       <select id="addGame" onchange="onAddGameChange()" style="font-size:12px;height:30px;padding:0 8px;border:1px solid #ddd;border-radius:6px;background:#fff;color:#111;">
         <option value="pokemon">Pokémon</option>
         <option value="one_piece">One Piece</option>
+      </select>
+      <select id="addLanguage" onchange="onAddSearchInput()" style="font-size:12px;height:30px;padding:0 8px;border:1px solid #ddd;border-radius:6px;background:#fff;color:#111;">
+        <option value="english">English</option>
+        <option value="japanese">Japanese</option>
       </select>
       <input class="search-input" type="text" id="addSearchInput" placeholder="Search card name…" oninput="onAddSearchInput()" style="width:220px;">
       <span class="filter-count" id="addPortfolioCount"></span>
@@ -1069,6 +1073,10 @@ function onAddGameChange(){
   document.getElementById('addSearchInput').value = '';
   document.getElementById('addResultsList').style.display = 'none';
   addSearchResults = [];
+  // One Piece has no language split in this app (no Japanese catalog data) —
+  // hide the picker rather than offer a choice that does nothing.
+  const isPokemon = document.getElementById('addGame').value === 'pokemon';
+  document.getElementById('addLanguage').style.display = isPokemon ? '' : 'none';
 }
 
 function onAddSearchInput(){
@@ -1083,13 +1091,14 @@ function onAddSearchInput(){
 
 async function runAddSearch(q){
   const game = document.getElementById('addGame').value;
+  const language = game === 'pokemon' ? document.getElementById('addLanguage').value : null;
   const list = document.getElementById('addResultsList');
   list.style.display = 'block';
   list.innerHTML = '<div class="add-empty">Searching…</div>';
   try {
     const resp = await fetch('/api/card-tracker/portfolio/search', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ game, query: q })
+      body: JSON.stringify({ game, query: q, language })
     });
     const d = await resp.json();
     if (!resp.ok) throw new Error(d.detail || ('HTTP ' + resp.status));

@@ -1633,24 +1633,37 @@ async def api_portfolio_search(request: Request, user=Depends(get_current_user))
     anything. If a card genuinely isn't in the catalog yet, it isn't
     findable here; the same limitation resolve_tcgplayer_ids already has.
 
-    Returns matches across BOTH languages for one query — English and
-    Japanese are separate products (see catalog.py), so `language` is
-    included in DISTINCT ON rather than filtered out, and each result is
-    labeled so a member can tell the two printings apart before adding."""
+    `language` is optional — English and Japanese are separate products
+    (see catalog.py), so when the caller picks one (the card-tracker page's
+    Pokemon-only language dropdown) results are filtered to it; omitted
+    (One Piece, which has no language split in this app) returns matches
+    across whatever languages exist, each labeled so they're distinguishable
+    either way."""
     body = await request.json()
     game = body.get("game", "")
     query = (body.get("query") or "").strip()
+    language = body.get("language")
     if game not in VALID_GAMES:
         raise HTTPException(status_code=400, detail="game must be 'pokemon' or 'one_piece'")
     if len(query) < 2:
         raise HTTPException(status_code=400, detail="query must be at least 2 characters")
+    if language is not None:
+        language = price_sources.ppt_language(language)
     async with request.app.state.db.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT DISTINCT ON (card_name, set_name, card_number, rarity, language) "
-            "card_name, set_name, card_number, rarity, tcgplayer_id, language "
-            "FROM catalog_cards WHERE game = $1 AND card_name ILIKE $2 "
-            "ORDER BY card_name, set_name, card_number, rarity, language LIMIT 25",
-            game, f"%{query}%")
+        if language:
+            rows = await conn.fetch(
+                "SELECT DISTINCT ON (card_name, set_name, card_number, rarity, language) "
+                "card_name, set_name, card_number, rarity, tcgplayer_id, language "
+                "FROM catalog_cards WHERE game = $1 AND language = $2 AND card_name ILIKE $3 "
+                "ORDER BY card_name, set_name, card_number, rarity, language LIMIT 25",
+                game, language, f"%{query}%")
+        else:
+            rows = await conn.fetch(
+                "SELECT DISTINCT ON (card_name, set_name, card_number, rarity, language) "
+                "card_name, set_name, card_number, rarity, tcgplayer_id, language "
+                "FROM catalog_cards WHERE game = $1 AND card_name ILIKE $2 "
+                "ORDER BY card_name, set_name, card_number, rarity, language LIMIT 25",
+                game, f"%{query}%")
     return JSONResponse([
         {"name": r["card_name"], "set_name": r["set_name"], "card_number": r["card_number"],
          "variant": r["rarity"] or None, "tcgplayer_id": r["tcgplayer_id"] or None,
