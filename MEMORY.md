@@ -3,6 +3,83 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-08-02 — Card tracker: opened to all paid members, one portfolio each
+
+**Decided:** The card tracker moved from a single admin-only shared list to
+per-member portfolios. Access is now gated by `get_current_user` (the same
+dependency that splits the real dashboard from `/sample`) instead of
+`require_admin` — any member with the paid premium role gets in, not just
+`ADMIN_USER_IDS`. Each member can track up to `MAX_USER_PORTFOLIO_CARDS`
+(100) cards of their own, added/removed via new
+`/api/card-tracker/portfolio/*` routes.
+
+**Data model — shared catalog, per-user membership, NOT per-user data.**
+`tracked_cards`/`price_snapshots`/`card_scores` stay exactly as they were: one
+row per card, shared by everyone. A new join table, `user_tracked_cards
+(user_id, card_id)`, is the only per-member data. If two members track the
+same Charizard, PPT is billed once a day, not twice — this was the deciding
+factor over giving each member fully separate rows, given how tightly this
+codebase already guards the shared PPT/JustTCG credit budget (see
+`card_tracker.py`'s module docstring).
+
+**Rejected: wiping existing data.** The initial ask was "clear out
+everything," but on confirmation the actual want was to keep it — all
+cards tracked before this change were linked to Discord user
+`96718322170597376`'s new portfolio via a one-time migration insert (run by
+hand against the live DB, deliberately NOT baked into the app's idempotent
+startup schema — a specific Discord user ID has no business running on every
+future deploy).
+
+**Two queries now filter to `EXISTS (SELECT 1 FROM user_tracked_cards ...)`**
+(`_MISSING_TODAY_SQL`, `_COVERAGE_SQL`, and the free-resolve query in
+`resolve_tcgplayer_ids`, all in `card_tracker.py`) — a catalog row nobody
+actually tracks (an old `watchlist.py` seed, or the last member who dropped
+it) stops costing a credit every day. This is new: before per-user
+portfolios existed, every row in `tracked_cards` was implicitly "wanted" by
+whoever curated the admin list.
+
+**`MAX_TRACKED_CARDS` raised 400 → 3000.** Sized against the PPT **API plan**
+(20,000 credits/day) specifically — steady-state cost is ~1 credit/card/day,
+so 3,000 cards is ~15% of the daily budget, leaving room for the catalog
+backfill and grading calculator sharing the same PPT key. **If the PPT plan
+ever changes, re-check this number** — it's not a generic default, it's
+sized to this specific account's tier.
+
+**Admin-only tools stay admin-only, not opened to members**: rematch,
+reset-history, manual Backdate (30/60/180d), and bulk "Import a set" all
+still require `ADMIN_USER_IDS`, now living behind a "Full Catalog" view
+toggle admins can switch to (default view for everyone, including admins, is
+"My Portfolio"). Deliberate: keeps every PPT/JustTCG-credit-spending trigger
+in a small trusted group even as the member base — and therefore aggregate
+portfolio size — grows. A member's own "Add a card" (free catalog search) is
+the only way a regular member's action can spend credits, and only when the
+card is genuinely new to the whole shared catalog — auto-backdated the same
+way any first-time-resolved card already is (see the auto-backdate entry
+directly below).
+
+## 2026-08-02 — Card tracker: new cards auto-backdate 180 days on first resolve
+
+**Decided:** The moment a tracked Pokemon card gets a `tcgplayer_id` for the
+first time (free catalog match in `resolve_tcgplayer_ids`, or the paid-search
+fallback in `run_ppt_ingest`), it now also gets an automatic 180-day PPT
+`includeHistory` pull — the same call the manual admin "Backdate" button
+makes, just automatic and unconditional. Reasoning: a brand-new card's graph
+used to be a single flat point until someone remembered to click Backdate;
+this makes every new card useful immediately.
+
+**Cost is real and NOT gated by a confirm dialog**, unlike the manual
+action: +2 PPT credits per newly-resolved card, no admin sign-off. Capped at
+`AUTO_BACKDATE_RUN_CAP` (25) per ingest run, shared across both resolve
+paths — importing/adding a whole set at once can't burn the day's credit
+budget in one sweep. Cards beyond the cap still get today's live price
+normally; they just don't get history until the next sweep's cap resets, or
+a manual backdate.
+
+**Shared helper**: `_backdate_one_card` (fetch + idempotent insert for one
+card) backs both the manual `run_ppt_backdate` and the automatic
+`auto_backdate_new_card` — same PPT call, same day-skip logic, so the two
+paths can't drift apart.
+
 ## 2026-07-30 — Catalog: Japanese sets, as a multi-select alongside English
 
 **Decided:** The catalog browses English and/or Japanese, via two independent

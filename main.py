@@ -33,7 +33,8 @@ from content_size_limit_asgi import ContentSizeLimitMiddleware
 
 from card_tracker import (ensure_card_tracker_schema, sync_watchlist, run_ingest,
                           run_ppt_ingest, run_scoring, MAX_TRACKED_CARDS,
-                          run_ppt_backdate, BACKDATE_DAY_CHOICES, BACKDATE_MAX_CARDS)
+                          run_ppt_backdate, BACKDATE_DAY_CHOICES, BACKDATE_MAX_CARDS,
+                          VALID_GAMES, MAX_USER_PORTFOLIO_CARDS, auto_backdate_new_card)
 import card_scoring
 import set_import
 import price_sources
@@ -1520,77 +1521,225 @@ async def api_inventory_needs_location(request: Request, user=Depends(require_in
 
 @app.get("/card-tracker", response_class=HTMLResponse)
 async def card_tracker_page(request: Request):
+    # Same member/sample split as the real dashboard ("/") — any paid member
+    # gets their own portfolio; admins additionally see the Full Catalog
+    # admin tools. No longer admin-only.
     user = request.session.get("user")
     if not user:
         return RedirectResponse("/login")
-    if int(user["id"]) not in ADMIN_USER_IDS:
-        raise HTTPException(status_code=403, detail="Not authorized")
+    if is_demo(request):
+        return RedirectResponse("/sample")
     return templates.TemplateResponse("card_tracker.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
         "user_id": user["id"],
-        "is_admin": True,
+        "is_admin": int(user["id"]) in ADMIN_USER_IDS,
         "is_mod": request.session.get("mod", False),
+        "max_portfolio_cards": MAX_USER_PORTFOLIO_CARDS,
     })
+
+def _f_num(x):
+    return float(x) if x is not None else None
+
+def _canon_ident(s):
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+def _serialize_tracker_row(r) -> dict:
+    """Shared row->JSON shape for the admin Full Catalog list and a member's
+    Portfolio list — same columns, only the SQL's WHERE/JOIN differs between
+    the two callers."""
+    return {
+        "id": r["id"],
+        "name": r["name"],
+        "game": r["game"],
+        "set_name": r["set_name"],
+        "card_number": r["card_number"],
+        "variant": r["variant"],
+        "justtcg_name": r["justtcg_name"],
+        "justtcg_set": r["justtcg_set"],
+        "justtcg_number": r["justtcg_number"],
+        # Flag likely wrong matches: JustTCG's name differs from ours.
+        "match_suspect": bool(r["justtcg_name"]) and
+                         _canon_ident(r["justtcg_name"]) != _canon_ident(r["name"]),
+        "release_date": r["release_date"].isoformat() if r["release_date"] else None,
+        "price_low": _f_num(r["price_low"]),
+        "price_mid": _f_num(r["price_mid"]),
+        "price_high": _f_num(r["price_high"]),
+        "captured_at": r["captured_at"].isoformat() if r["captured_at"] else None,
+        "momentum_7d": _f_num(r["momentum_7d"]),
+        "momentum_30d": _f_num(r["momentum_30d"]),
+        "liquidity_score": _f_num(r["liquidity_score"]),
+        "age_days": r["age_days"],
+        "potential_score": _f_num(r["potential_score"]),
+        "computed_at": r["computed_at"].isoformat() if r["computed_at"] else None,
+    }
+
+_TRACKER_ROW_COLUMNS = """
+    tc.id, tc.name, tc.game, tc.set_name, tc.card_number, tc.variant,
+    tc.release_date, tc.justtcg_name, tc.justtcg_set, tc.justtcg_number,
+    ps.price_low, ps.price_mid, ps.price_high, ps.captured_at,
+    cs.momentum_7d, cs.momentum_30d, cs.liquidity_score,
+    cs.age_days, cs.potential_score, cs.computed_at
+"""
+_TRACKER_ROW_JOINS = """
+    LEFT JOIN LATERAL (
+        SELECT * FROM price_snapshots WHERE card_id = tc.id
+        ORDER BY captured_at DESC LIMIT 1
+    ) ps ON true
+    LEFT JOIN LATERAL (
+        SELECT * FROM card_scores WHERE card_id = tc.id
+        ORDER BY computed_at DESC LIMIT 1
+    ) cs ON true
+"""
 
 @app.get("/api/card-tracker/list")
 async def api_card_tracker_list(request: Request, user=Depends(require_admin)):
-    def _f(x):
-        return float(x) if x is not None else None
+    """Full shared catalog — admin-only 'Full Catalog' view."""
     async with request.app.state.db.acquire() as conn:
         rows = await conn.fetch(
-            """
-            SELECT tc.id, tc.name, tc.game, tc.set_name, tc.card_number, tc.variant,
-                   tc.release_date, tc.justtcg_name, tc.justtcg_set, tc.justtcg_number,
-                   ps.price_low, ps.price_mid, ps.price_high, ps.captured_at,
-                   cs.momentum_7d, cs.momentum_30d, cs.liquidity_score,
-                   cs.age_days, cs.potential_score, cs.computed_at
+            f"""
+            SELECT {_TRACKER_ROW_COLUMNS}
             FROM tracked_cards tc
-            LEFT JOIN LATERAL (
-                SELECT * FROM price_snapshots WHERE card_id = tc.id
-                ORDER BY captured_at DESC LIMIT 1
-            ) ps ON true
-            LEFT JOIN LATERAL (
-                SELECT * FROM card_scores WHERE card_id = tc.id
-                ORDER BY computed_at DESC LIMIT 1
-            ) cs ON true
+            {_TRACKER_ROW_JOINS}
             ORDER BY cs.potential_score DESC NULLS LAST, tc.name ASC
             """
         )
-    def _canon_ident(s):
-        return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+    return JSONResponse([_serialize_tracker_row(r) for r in rows],
+                        headers={"Cache-Control": "no-store"})
+
+@app.get("/api/card-tracker/portfolio")
+async def api_portfolio_list(request: Request, user=Depends(get_current_user)):
+    """The caller's own tracked cards — any paid member, not just admins."""
+    async with request.app.state.db.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT {_TRACKER_ROW_COLUMNS}
+            FROM user_tracked_cards utc
+            JOIN tracked_cards tc ON tc.id = utc.card_id
+            {_TRACKER_ROW_JOINS}
+            WHERE utc.user_id = $1
+            ORDER BY cs.potential_score DESC NULLS LAST, tc.name ASC
+            """, int(user["id"]))
+    return JSONResponse([_serialize_tracker_row(r) for r in rows],
+                        headers={"Cache-Control": "no-store"})
+
+@app.post("/api/card-tracker/portfolio/search")
+@limiter.limit("60/hour")
+async def api_portfolio_search(request: Request, user=Depends(get_current_user)):
+    """Free (no PPT/JustTCG credits) — searches the already-populated
+    catalog_cards table so a member can find a card to add without spending
+    anything. If a card genuinely isn't in the catalog yet, it isn't
+    findable here; the same limitation resolve_tcgplayer_ids already has."""
+    body = await request.json()
+    game = body.get("game", "")
+    query = (body.get("query") or "").strip()
+    if game not in VALID_GAMES:
+        raise HTTPException(status_code=400, detail="game must be 'pokemon' or 'one_piece'")
+    if len(query) < 2:
+        raise HTTPException(status_code=400, detail="query must be at least 2 characters")
+    async with request.app.state.db.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT DISTINCT ON (card_name, set_name, card_number, rarity) "
+            "card_name, set_name, card_number, rarity, tcgplayer_id "
+            "FROM catalog_cards WHERE game = $1 AND card_name ILIKE $2 "
+            "ORDER BY card_name, set_name, card_number, rarity LIMIT 25",
+            game, f"%{query}%")
     return JSONResponse([
-        {
-            "id": r["id"],
-            "name": r["name"],
-            "game": r["game"],
-            "set_name": r["set_name"],
-            "card_number": r["card_number"],
-            "variant": r["variant"],
-            "justtcg_name": r["justtcg_name"],
-            "justtcg_set": r["justtcg_set"],
-            "justtcg_number": r["justtcg_number"],
-            # Flag likely wrong matches: JustTCG's name differs from ours.
-            "match_suspect": bool(r["justtcg_name"]) and
-                             _canon_ident(r["justtcg_name"]) != _canon_ident(r["name"]),
-            "release_date": r["release_date"].isoformat() if r["release_date"] else None,
-            "price_low": _f(r["price_low"]),
-            "price_mid": _f(r["price_mid"]),
-            "price_high": _f(r["price_high"]),
-            "captured_at": r["captured_at"].isoformat() if r["captured_at"] else None,
-            "momentum_7d": _f(r["momentum_7d"]),
-            "momentum_30d": _f(r["momentum_30d"]),
-            "liquidity_score": _f(r["liquidity_score"]),
-            "age_days": r["age_days"],
-            "potential_score": _f(r["potential_score"]),
-            "computed_at": r["computed_at"].isoformat() if r["computed_at"] else None,
-        }
+        {"name": r["card_name"], "set_name": r["set_name"], "card_number": r["card_number"],
+         "variant": r["rarity"] or None, "tcgplayer_id": r["tcgplayer_id"] or None}
         for r in rows
     ], headers={"Cache-Control": "no-store"})
 
+@app.post("/api/card-tracker/portfolio/add")
+@limiter.limit("60/hour")
+async def api_portfolio_add(request: Request, user=Depends(get_current_user)):
+    """Add one card (from a /portfolio/search result) to the caller's
+    portfolio. Ensures the card exists in the shared catalog first (free
+    insert if it's genuinely new — Pokemon adds already carry a
+    tcgplayer_id from the search, skipping the usual free-resolve step
+    entirely), then auto-backdates it exactly like any other brand-new
+    catalog card if this member is the first to ever track it."""
+    body = await request.json()
+    game = body.get("game", "")
+    name = (body.get("name") or "").strip()[:200]
+    set_name = (body.get("set_name") or "").strip()[:200]
+    card_number = (body.get("card_number") or "").strip()[:40]
+    variant = (body.get("variant") or "").strip()[:200] or None
+    tcgplayer_id = (body.get("tcgplayer_id") or "").strip()[:40] or None
+    if game not in VALID_GAMES or not name:
+        raise HTTPException(status_code=400, detail="game and name required")
+
+    user_id = int(user["id"])
+    pool = request.app.state.db
+    async with pool.acquire() as conn:
+        count = await conn.fetchval(
+            "SELECT COUNT(*) FROM user_tracked_cards WHERE user_id = $1", user_id)
+        if count >= MAX_USER_PORTFOLIO_CARDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Your portfolio is full ({MAX_USER_PORTFOLIO_CARDS} cards) "
+                       f"— remove a card before adding another")
+
+        async with conn.transaction():
+            insert_row = await conn.fetchrow(
+                "INSERT INTO tracked_cards (name, game, set_name, card_number, variant, tcgplayer_id) "
+                "VALUES ($1, $2, $3, $4, $5, $6) "
+                "ON CONFLICT (game, name, set_name, card_number) DO NOTHING RETURNING id",
+                name, game, set_name, card_number,
+                variant, tcgplayer_id if game == "pokemon" else None)
+            is_new = insert_row is not None
+            if is_new:
+                card_id = insert_row["id"]
+                total = await conn.fetchval("SELECT COUNT(*) FROM tracked_cards")
+                if total > MAX_TRACKED_CARDS:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"The shared card catalog is at its cap "
+                               f"({MAX_TRACKED_CARDS} cards) — this particular "
+                               f"card isn't tracked by anyone yet, so it can't be added right "
+                               f"now. An admin can raise the cap in card_tracker.py.")
+            else:
+                existing = await conn.fetchrow(
+                    "SELECT id FROM tracked_cards WHERE game=$1 AND name=$2 "
+                    "AND set_name=$3 AND card_number=$4",
+                    game, name, set_name, card_number)
+                card_id = existing["id"]
+            await conn.execute(
+                "INSERT INTO user_tracked_cards (user_id, card_id) VALUES ($1, $2) "
+                "ON CONFLICT DO NOTHING", user_id, card_id)
+        new_count = count + 1
+
+    if is_new and game == "pokemon" and tcgplayer_id:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            await auto_backdate_new_card(client, pool, card_id, name, tcgplayer_id)
+
+    logger.info("Portfolio: user %s added %r (card_id=%d, new_to_catalog=%s)",
+                user_id, name, card_id, is_new)
+    return JSONResponse({"ok": True, "card_id": card_id, "portfolio_count": new_count,
+                        "new_to_catalog": is_new},
+                       headers={"Cache-Control": "no-store"})
+
+@app.post("/api/card-tracker/portfolio/remove")
+@limiter.limit("60/hour")
+async def api_portfolio_remove(request: Request, user=Depends(get_current_user)):
+    """Unlink cards from the caller's OWN portfolio only — never touches
+    tracked_cards/price_snapshots, so the card and its history survive for
+    anyone else still tracking it. No cap; unlinking is cheap."""
+    body = await request.json()
+    ids = body.get("card_ids")
+    if not isinstance(ids, list) or not ids or not all(isinstance(i, int) for i in ids):
+        raise HTTPException(status_code=400, detail="card_ids (non-empty list of int) required")
+    user_id = int(user["id"])
+    async with request.app.state.db.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM user_tracked_cards WHERE user_id = $1 AND card_id = ANY($2::int[])",
+            user_id, ids)
+    removed = int(result.split()[-1]) if result else 0
+    return JSONResponse({"ok": True, "removed": removed}, headers={"Cache-Control": "no-store"})
+
 @app.get("/api/card-tracker/history")
-async def api_card_tracker_history(request: Request, card_id: int, user=Depends(require_admin)):
+async def api_card_tracker_history(request: Request, card_id: int, user=Depends(get_current_user)):
     def _f(x):
         return float(x) if x is not None else None
     async with request.app.state.db.acquire() as conn:
@@ -1785,9 +1934,12 @@ def _validate_backdate_card_ids(body: dict) -> list:
 @app.post("/api/card-tracker/remove")
 @limiter.limit("30/hour")
 async def api_card_tracker_remove(request: Request, user=Depends(require_admin)):
-    """Permanently delete selected tracked cards (cascades to their price
-    history and scores). Cards seeded from watchlist.py reappear on the next
-    refresh unless also removed from that file — sync_watchlist never deletes."""
+    """Permanently purge selected cards from the SHARED catalog (cascades to
+    their price history, scores, AND every member's portfolio — this is not
+    the same as a member removing a card from their own portfolio via
+    /api/card-tracker/portfolio/remove, which never touches the shared data).
+    Cards seeded from watchlist.py reappear on the next refresh unless also
+    removed from that file — sync_watchlist never deletes."""
     body = await request.json()
     card_ids = _validate_card_ids(body)
     async with request.app.state.db.acquire() as conn:

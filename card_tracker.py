@@ -1,9 +1,19 @@
 """Card profit-potential tracker (trial) — schema + DB plumbing + ingest.
 
 Owned by ava_dashboard (see data-system.md): tracked_cards, price_snapshots,
-card_scores. Tables are created idempotently at app startup and by the ingest
-script — matching ava_bot's CREATE TABLE IF NOT EXISTS convention, since
-neither repo has a migration system.
+card_scores, user_tracked_cards. Tables are created idempotently at app
+startup and by the ingest script — matching ava_bot's CREATE TABLE IF NOT
+EXISTS convention, since neither repo has a migration system.
+
+tracked_cards/price_snapshots/card_scores are a SHARED catalog: a card and
+its price history exist once regardless of how many members track it.
+user_tracked_cards is the per-member portfolio join table (main.py's
+/api/card-tracker/portfolio routes) — it's the only per-user data here. The
+ingest/scoring functions below (run_ppt_ingest, run_ingest, run_scoring,
+resolve_tcgplayer_ids) all operate on the shared catalog and don't need to
+know who owns what; only the "what needs a price today" queries
+(_MISSING_TODAY_SQL, _COVERAGE_SQL) filter to cards at least one member
+actually tracks, so an orphaned catalog row stops costing credits.
 """
 
 import os
@@ -78,12 +88,19 @@ PLAN_RUN_CAPS = {
     "enterprise": {"resolution": 500, "pricing": 100},
 }
 
-# Global ceiling on tracked cards. Guards the JustTCG free tier (1,000
-# calls/month): if the batch endpoint works, 400 cards ≈ 4 pricing calls/day
-# plus one-time id resolution; if batch falls back to per-card, 400/day would
-# blow the budget in 2.5 days — the ingest's consecutive-failure abort plus
-# this cap bound the damage. Raise deliberately, not casually.
-MAX_TRACKED_CARDS = 400
+# Global ceiling on the SHARED catalog (distinct cards across every member's
+# portfolio combined, not per-user). Sized against the PPT API plan's 20,000
+# credits/day: steady-state cost is ~1 credit/card/day (the live-price sweep
+# only re-prices what's missing today), so 3,000 cards ≈ 3,000 credits/day
+# (~15% of budget), leaving room for the catalog backfill and grading
+# calculator sharing the same PPT key, plus resolution/backdate spend. Raise
+# deliberately, not casually — re-check against the actual PPT plan in use.
+MAX_TRACKED_CARDS = 3000
+# Per-member cap on portfolio size (see main.py's /api/card-tracker/portfolio
+# routes). Independent of MAX_TRACKED_CARDS — that one bounds the shared
+# catalog's total credit exposure, this one bounds how much of it any single
+# member can claim.
+MAX_USER_PORTFOLIO_CARDS = 100
 
 VALID_GAMES = ("pokemon", "one_piece")
 
@@ -139,6 +156,19 @@ CARD_TRACKER_SCHEMA = [
     # a card only needs its set stocked once to be trackable forever.
     "ALTER TABLE tracked_cards ADD COLUMN IF NOT EXISTS tcgplayer_id TEXT",
     "ALTER TABLE tracked_cards ADD COLUMN IF NOT EXISTS catalog_matched_name TEXT",
+    # Per-member portfolio membership. Deliberately just a join table — the
+    # card itself and its price history are shared (see module docstring):
+    # two members tracking the same card cost one PPT credit/day, not two,
+    # and removing a card from one portfolio never touches the other's data.
+    """
+    CREATE TABLE IF NOT EXISTS user_tracked_cards (
+        user_id    BIGINT NOT NULL,
+        card_id    INTEGER NOT NULL REFERENCES tracked_cards(id) ON DELETE CASCADE,
+        added_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (user_id, card_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_user_tracked_cards_user ON user_tracked_cards (user_id)",
 ]
 
 
@@ -259,7 +289,7 @@ def match_catalog_row(card: dict, candidates: list):
 
 async def resolve_tcgplayer_ids(pool, client: httpx.AsyncClient, backdate_budget: int) -> dict:
     """Fill tracked_cards.tcgplayer_id from catalog_cards, then auto-backdate
-    each newly-resolved card (see _auto_backdate_new_card) — this is the
+    each newly-resolved card (see auto_backdate_new_card) — this is the
     first point a brand-new card (from watchlist sync or set import) has a
     usable tcgplayer_id, so it's the earliest a backdate can happen.
 
@@ -283,8 +313,12 @@ async def resolve_tcgplayer_ids(pool, client: httpx.AsyncClient, backdate_budget
     remaining = backdate_budget
     async with pool.acquire() as conn:
         cards = await conn.fetch(
-            "SELECT id, name, set_name, card_number, variant FROM tracked_cards "
+            "SELECT id, name, set_name, card_number, variant FROM tracked_cards t "
             "WHERE game = 'pokemon' AND (tcgplayer_id IS NULL OR tcgplayer_id = '') "
+            # Same reasoning as _MISSING_TODAY_SQL: skip orphaned rows so an
+            # abandoned/never-adopted card doesn't spend an auto-backdate
+            # (2 PPT credits) on something nobody is actually tracking.
+            "AND EXISTS (SELECT 1 FROM user_tracked_cards u WHERE u.card_id = t.id) "
             "ORDER BY id")
         for c in cards:
             candidates = await conn.fetch(
@@ -308,7 +342,7 @@ async def resolve_tcgplayer_ids(pool, client: httpx.AsyncClient, backdate_budget
                         match["tcgplayer_id"])
             if remaining > 0:
                 remaining -= 1
-                bd = await _auto_backdate_new_card(client, pool, c["id"], c["name"], match["tcgplayer_id"])
+                bd = await auto_backdate_new_card(client, pool, c["id"], c["name"], match["tcgplayer_id"])
                 summary["auto_backdate_credits"] += bd["credits"]
                 if bd["inserted"]:
                     summary["auto_backdated"] += 1
@@ -325,12 +359,18 @@ async def resolve_tcgplayer_ids(pool, client: httpx.AsyncClient, backdate_budget
 # Cards with no snapshot for the current UTC day, neediest first. UTC matches
 # the day boundary the JustTCG history backfill already dedupes on, so the two
 # can't disagree about what "today" means.
+# The "AND EXISTS user_tracked_cards" clause on both queries below is what
+# stops an orphaned catalog row (nobody's portfolio references it — e.g. a
+# watchlist.py seed nobody actually added, or the last member dropped it)
+# from costing a credit every day forever. A card only gets priced while at
+# least one member is actually tracking it.
 _MISSING_TODAY_SQL = """
     SELECT t.id, t.name, t.set_name, t.card_number, t.variant, t.tcgplayer_id,
            (SELECT MAX(p.captured_at) FROM price_snapshots p WHERE p.card_id = t.id)
                AS last_priced
     FROM tracked_cards t
     WHERE t.game = 'pokemon'
+      AND EXISTS (SELECT 1 FROM user_tracked_cards u WHERE u.card_id = t.id)
       AND NOT EXISTS (
           SELECT 1 FROM price_snapshots p
           WHERE p.card_id = t.id
@@ -348,7 +388,9 @@ _COVERAGE_SQL = """
                  AND (p.captured_at AT TIME ZONE 'UTC')::date
                      = (NOW() AT TIME ZONE 'UTC')::date
            )) AS priced_today
-    FROM tracked_cards t WHERE t.game = 'pokemon'
+    FROM tracked_cards t
+    WHERE t.game = 'pokemon'
+      AND EXISTS (SELECT 1 FROM user_tracked_cards u WHERE u.card_id = t.id)
 """
 
 
@@ -473,7 +515,7 @@ async def run_ppt_ingest(pool) -> dict:
                 # the same run-level budget so the two paths can't double it.
                 if auto_backdate_budget_left > 0:
                     auto_backdate_budget_left -= 1
-                    bd = await _auto_backdate_new_card(client, pool, c["id"], c["name"], tcg_id)
+                    bd = await auto_backdate_new_card(client, pool, c["id"], c["name"], tcg_id)
                     summary["credits"] += bd["credits"]
                     if bd["inserted"]:
                         summary["auto_backdated"] += 1
@@ -534,7 +576,7 @@ async def _backdate_one_card(client: httpx.AsyncClient, pool, card_id: int, card
                              tcgplayer_id: str, days: int) -> dict:
     """Fetch + insert missing daily prices for ONE card. Shared by the manual
     /api/card-tracker/backdate action (run_ppt_backdate) and the automatic
-    first-resolve backdate (_auto_backdate_new_card) — same PPT call, same
+    first-resolve backdate (auto_backdate_new_card) — same PPT call, same
     idempotent day-skip insert, just different callers and days.
 
     Returns {"inserted": int, "credits": int, "status": "ok"|"rate_limited"|"empty"|"error"}.
@@ -579,7 +621,7 @@ async def _backdate_one_card(client: httpx.AsyncClient, pool, card_id: int, card
     return {"inserted": inserted, "credits": credits, "status": "ok"}
 
 
-async def _auto_backdate_new_card(client: httpx.AsyncClient, pool, card_id: int,
+async def auto_backdate_new_card(client: httpx.AsyncClient, pool, card_id: int,
                                   card_name: str, tcgplayer_id: str) -> dict:
     """Best-effort AUTO_BACKDATE_DAYS-day backdate the moment a card gets its
     tcgplayer_id for the first time (see resolve_tcgplayer_ids and the
@@ -610,7 +652,7 @@ async def run_ppt_backdate(pool, card_ids: list, days: int) -> dict:
     PPT's includeHistory param (price_sources.fetch_ppt_price_history).
 
     Admin-triggered only, on cards picked by hand — separate from the
-    automatic first-resolve backdate (_auto_backdate_new_card), which covers
+    automatic first-resolve backdate (auto_backdate_new_card), which covers
     every new card without a manual click. One Piece cards are reported as
     skipped (PPT has no coverage for them; JustTCG's own history already
     backfills automatically in run_ingest).

@@ -56,6 +56,21 @@
   html[data-theme="dark"] .selection-bar { background: #1e2040; border-bottom-color: #303033; }
   html[data-theme="dark"] .selection-bar #selectionCount { color: #ccc; }
 
+  #addResultsList { max-height: 220px; overflow-y: auto; border-top: 1px solid #f0f0f0; }
+  #addResultsList .add-row { display: flex; align-items: center; gap: 8px; padding: 7px 16px; font-size: 12px; border-bottom: 1px solid #f7f7f7; cursor: pointer; }
+  #addResultsList .add-row:last-child { border-bottom: none; }
+  #addResultsList .add-row:hover { background: #fafafa; }
+  #addResultsList .add-row .pname { font-weight: 600; color: #111; }
+  #addResultsList .add-row .pmeta { color: #999; flex: 1; }
+  #addResultsList .add-row .add-btn { font-size: 11px; font-weight: 700; color: #16a34a; }
+  #addResultsList .add-row.tracked .add-btn { color: #999; }
+  #addResultsList .add-empty { padding: 10px 16px; font-size: 12px; color: #999; }
+  html[data-theme="dark"] #addResultsList { border-top-color: #2a2a2d; }
+  html[data-theme="dark"] #addResultsList .add-row { border-bottom-color: #242427; }
+  html[data-theme="dark"] #addResultsList .add-row:hover { background: #222226; }
+  html[data-theme="dark"] #addResultsList .add-row .pname { color: #f0f0f0; }
+  html[data-theme="dark"] #addGame { background: #252528; border-color: #383838; color: #f0f0f0; }
+
   .table-scroll { overflow-x: auto; }
   table { border-collapse: collapse; width: 100%; font-size: 12px; }
   thead th { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; padding: 9px 12px; text-align: right; border-bottom: 1px solid #e4e4e7; background: #fafafa; white-space: nowrap; }
@@ -176,7 +191,7 @@
 <div class="header">
   <div>
     <div class="header-title">Card Tracker</div>
-    <div class="header-sub">Profit-potential watchlist (trial) — mods &amp; admins</div>
+    <div class="header-sub">Your card portfolio (trial) — track price, momentum, and profit potential</div>
   </div>
   <div class="nav">
     <a href="/">Dashboard</a>
@@ -197,7 +212,7 @@
     <div class="nav-group">
       <button class="nav-group-btn active" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Nexus Playground<span class="nav-caret">&#9662;</span></button>
       <div class="nav-menu">
-        {% if is_admin %}<a href="/card-tracker" class="active">Tracker</a>{% endif %}
+        <a href="/card-tracker" class="active">Tracker</a>
         <a href="/grading-calculator">Grading Calculator</a>
         <a href="/catalog">Card Catalog</a>
         {% if request.session.get('inventory_access', False) %}<a href="/inventory">Inventory</a>{% endif %}
@@ -217,6 +232,19 @@
     <div class="stat-card"><div class="stat-label">Last snapshot</div><div class="stat-value" id="statLast" style="font-size:14px;margin-top:4px;">—</div></div>
   </div>
 
+  <div class="table-card" id="addCardPanel" style="margin-bottom:16px;">
+    <div class="table-header">
+      <span class="table-header-title">Add a card to your portfolio</span>
+      <select id="addGame" onchange="onAddGameChange()" style="font-size:12px;height:30px;padding:0 8px;border:1px solid #ddd;border-radius:6px;background:#fff;color:#111;">
+        <option value="pokemon">Pokémon</option>
+        <option value="one_piece">One Piece</option>
+      </select>
+      <input class="search-input" type="text" id="addSearchInput" placeholder="Search card name…" oninput="onAddSearchInput()" style="width:220px;">
+      <span class="filter-count" id="addPortfolioCount"></span>
+    </div>
+    <div id="addResultsList" style="display:none;"></div>
+  </div>
+
   <div class="detail-card" id="detailCard">
     <div class="detail-header">
       <div class="detail-head-row">
@@ -234,7 +262,7 @@
         </div>
       </div>
       {% if is_admin %}
-      <div style="margin-top:8px;">
+      <div class="catalog-only" style="margin-top:8px;">
         <button class="refresh-btn" id="rematchBtn" style="background:#dc2626;height:26px;font-size:12px;padding:0 10px;" onclick="rematchCard()">Re-match card (clears its price history)</button>
         <button class="refresh-btn" id="resetHistoryBtn" style="background:#d97706;height:26px;font-size:12px;padding:0 10px;margin-left:6px;" onclick="resetHistory()" title="Only needed to force a full re-pull — the nightly refresh now fills in missing days on its own. Keeps the current JustTCG match and clears this card's snapshots so the next refresh re-requests the full history.">Re-fetch full history</button>
         <span class="detail-sub" id="rematchNote" style="margin-left:8px;"></span>
@@ -251,30 +279,36 @@
 
   <div class="table-card">
     <div class="table-header">
-      <span class="table-header-title">Ranked by potential</span>
+      {% if is_admin %}
+      <div class="btn-group">
+        <button id="viewPortfolio" class="active" onclick="setViewMode('portfolio')">My Portfolio</button>
+        <button id="viewCatalog" onclick="setViewMode('catalog')">Full Catalog</button>
+      </div>
+      {% endif %}
+      <span class="table-header-title" id="tableTitle">My Portfolio</span>
       <button class="clear-filters-btn" onclick="clearFilters()">Clear filters</button>
       <span class="filter-count" id="filterCount"></span>
-      {% if is_admin %}<button class="refresh-btn" id="resetAllHistoryBtn" style="background:#d97706" onclick="resetAllHistory()" title="Rarely needed now — the nightly refresh backfills missing days automatically. Keeps all JustTCG matches and clears every card's price history so the next Refresh re-pulls the full window for everyone.">Re-fetch history (all)</button>{% endif %}
-      {% if is_admin %}<button class="refresh-btn" id="refreshBtn" onclick="refreshData()">Refresh prices</button>{% endif %}
-      <span class="refresh-note" id="refreshNote"></span>
+      {% if is_admin %}<button class="refresh-btn catalog-only" id="resetAllHistoryBtn" style="background:#d97706" onclick="resetAllHistory()" title="Rarely needed now — the nightly refresh backfills missing days automatically. Keeps all JustTCG matches and clears every card's price history so the next Refresh re-pulls the full window for everyone.">Re-fetch history (all)</button>{% endif %}
+      {% if is_admin %}<button class="refresh-btn catalog-only" id="refreshBtn" onclick="refreshData()">Refresh prices</button>{% endif %}
+      {% if is_admin %}<span class="refresh-note catalog-only" id="refreshNote"></span>{% endif %}
     </div>
-    {% if is_admin %}
     <div class="selection-bar" id="selectionBar" style="display:none;">
       <span id="selectionCount"></span>
-      <button class="refresh-btn" style="background:#dc2626" onclick="removeSelected()">Remove from tracker</button>
-      <span style="font-size:12px;color:#999;margin-left:6px;">Backdate (max 10):</span>
-      <button class="refresh-btn" style="background:#16a34a" onclick="backdateSelected(30)">30 days</button>
-      <button class="refresh-btn" style="background:#16a34a" onclick="backdateSelected(60)">60 days</button>
-      <button class="refresh-btn" style="background:#16a34a" onclick="backdateSelected(180)">180 days</button>
+      <button class="refresh-btn" style="background:#dc2626" id="selRemoveBtn" onclick="removeSelected()">Remove from my portfolio</button>
+      {% if is_admin %}
+      <span class="catalog-only" id="backdateLabel" style="font-size:12px;color:#999;margin-left:6px;">Backdate (max 10):</span>
+      <button class="refresh-btn catalog-only" style="background:#16a34a" onclick="backdateSelected(30)">30 days</button>
+      <button class="refresh-btn catalog-only" style="background:#16a34a" onclick="backdateSelected(60)">60 days</button>
+      <button class="refresh-btn catalog-only" style="background:#16a34a" onclick="backdateSelected(180)">180 days</button>
+      {% endif %}
       <button class="clear-filters-btn" onclick="clearSelection()">Clear selection</button>
       <span class="refresh-note" id="selectionNote"></span>
     </div>
-    {% endif %}
     <div class="table-scroll">
       <table>
         <thead>
           <tr>
-            {% if is_admin %}<th class="left" style="width:28px;"><input type="checkbox" id="selectAllBox" onchange="toggleSelectAll(this.checked)" title="Select all shown"></th>{% endif %}
+            <th class="left" style="width:28px;"><input type="checkbox" id="selectAllBox" onchange="toggleSelectAll(this.checked)" title="Select all shown"></th>
             <th class="left">#</th>
             <th class="left sortable" onclick="sortBy('name')">Card<span class="sort-arrow" id="arrow-name"></span></th>
             <th class="left sortable" onclick="sortBy('set_name')">Set<span class="sort-arrow" id="arrow-set_name"></span></th>
@@ -288,7 +322,7 @@
             <th class="sortable" onclick="sortBy('potential_score')">Score<span class="sort-arrow" id="arrow-potential_score"></span></th>
           </tr>
           <tr class="filter-row">
-            {% if is_admin %}<th></th>{% endif %}
+            <th></th>
             <th></th>
             <th class="left"><input class="col-filter" type="text" id="fCard" placeholder="Filter card…" oninput="onFilterChange()"></th>
             <th class="left"><input class="col-filter" type="text" id="fSet" placeholder="Filter set…" oninput="onFilterChange()"></th>
@@ -309,16 +343,16 @@
           </tr>
         </thead>
         <tbody id="trackerBody">
-          <tr><td colspan="{{ '12' if is_admin else '11' }}" class="empty">Loading…</td></tr>
+          <tr><td colspan="12" class="empty">Loading…</td></tr>
         </tbody>
       </table>
     </div>
   </div>
 
   {% if is_admin %}
-  <div class="import-card">
+  <div class="import-card catalog-only">
     <div class="import-header">
-      <span class="import-title">Import a set</span>
+      <span class="import-title">Import a set (bulk, admin)</span>
       <select id="impGame" onchange="onImportGameChange()">
         <option value="pokemon">Pokémon</option>
         <option value="one_piece">One Piece</option>
@@ -347,6 +381,14 @@ function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
 
 const GAME_LABELS = { pokemon: 'Pokémon', one_piece: 'One Piece' };
 const IS_ADMIN = {{ 'true' if is_admin else 'false' }};
+// 'portfolio': the caller's own tracked cards (everyone, incl. admins by
+// default). 'catalog': the whole shared list — admin-only, reachable only
+// via the toggle that's rendered admin-only, but every catalog-only control
+// is gated at click-time too (see the checks in removeSelected/backdateSelected)
+// rather than trusting the DOM alone.
+let viewMode = 'portfolio';
+const MAX_PORTFOLIO_CARDS = {{ max_portfolio_cards }};
+let portfolioCardCount = null;   // tracked separately from allRows.length, which is catalog-wide in Full Catalog view
 let allRows = [];
 let selectedId = null;
 let selectedIds = new Set();
@@ -358,6 +400,28 @@ let sortAsc = false;
 const SORTABLE = ['name','set_name','variant','game','price_mid','momentum_7d','momentum_30d','age_days','liquidity_score','potential_score'];
 const FILTER_IDS = ['fCard','fSet','fRarity','fGame','fPriceMin','fPriceMax','fM7Min','fM7Max','fM30Min','fM30Max',
                     'fAgeMin','fAgeMax','fLiqMin','fLiqMax','fScoreMin','fScoreMax'];
+
+function updateCatalogOnlyVisibility(){
+  const show = IS_ADMIN && viewMode === 'catalog';
+  document.querySelectorAll('.catalog-only').forEach(el => { el.style.display = show ? '' : 'none'; });
+  const removeBtn = document.getElementById('selRemoveBtn');
+  if (removeBtn) removeBtn.textContent = show ? 'Remove from tracker' : 'Remove from my portfolio';
+}
+
+function setViewMode(mode){
+  if (!IS_ADMIN || mode === viewMode) return;
+  viewMode = mode;
+  const pBtn = document.getElementById('viewPortfolio'), cBtn = document.getElementById('viewCatalog');
+  if (pBtn) pBtn.classList.toggle('active', mode === 'portfolio');
+  if (cBtn) cBtn.classList.toggle('active', mode === 'catalog');
+  const title = document.getElementById('tableTitle');
+  if (title) title.textContent = mode === 'catalog' ? 'Full Catalog (admin)' : 'My Portfolio';
+  selectedIds.clear();
+  selectedId = null;
+  document.getElementById('detailCard').classList.remove('visible');
+  updateCatalogOnlyVisibility();
+  load();
+}
 
 function money(v){ return v == null ? '—' : '$' + Number(v).toFixed(2); }
 function pct(v){
@@ -478,16 +542,18 @@ function renderTable(){
     : `${rows.length} of ${allRows.length} shown`;
 
   const body = document.getElementById('trackerBody');
-  const colspan = IS_ADMIN ? 12 : 11;
   if (!rows.length){
-    body.innerHTML = `<tr><td colspan="${colspan}" class="empty">${allRows.length ? 'No cards match the current filters.' : 'No cards yet — run the ingest (scripts/ingest_prices) or hit Refresh prices.'}</td></tr>`;
-    if (IS_ADMIN) updateSelectAllBox([]);
+    const emptyMsg = allRows.length ? 'No cards match the current filters.'
+      : (viewMode === 'catalog' ? 'No cards in the catalog yet.'
+                                 : 'Your portfolio is empty — search for a card above to add one.');
+    body.innerHTML = `<tr><td colspan="12" class="empty">${emptyMsg}</td></tr>`;
+    updateSelectAllBox([]);
     updateSelectionBar();
     return;
   }
   body.innerHTML = rows.map((r, i) => `
     <tr data-id="${r.id}" class="${r.id === selectedId ? 'selected' : ''}" onclick="showDetail(${r.id})">
-      ${IS_ADMIN ? `<td class="left" onclick="event.stopPropagation()"><input type="checkbox" class="rowCheck" ${selectedIds.has(r.id) ? 'checked' : ''} onchange="toggleSelect(${r.id}, this.checked)"></td>` : ''}
+      <td class="left" onclick="event.stopPropagation()"><input type="checkbox" class="rowCheck" ${selectedIds.has(r.id) ? 'checked' : ''} onchange="toggleSelect(${r.id}, this.checked)"></td>
       <td class="left rank">${i + 1}</td>
       <td class="left">
         <div class="card-name">${esc(r.name)}${r.match_suspect ? ' <span title="JustTCG matched a different card name — open the detail panel and re-match if wrong">⚠️</span>' : ''}</div>
@@ -503,7 +569,7 @@ function renderTable(){
       <td>${r.liquidity_score == null ? '—' : (r.liquidity_score * 100).toFixed(0) + '%'}</td>
       <td>${scoreBadge(r.potential_score)}</td>
     </tr>`).join('');
-  if (IS_ADMIN) updateSelectAllBox(rows);
+  updateSelectAllBox(rows);
   updateSelectionBar();
 }
 
@@ -788,19 +854,45 @@ async function removeSelected(){
   const ids = Array.from(selectedIds);
   const names = allRows.filter(r => ids.includes(r.id)).map(r => r.name);
   const preview = names.slice(0, 8).join(', ') + (names.length > 8 ? `, +${names.length - 8} more` : '');
-  if (!confirm(`Remove ${ids.length} card(s) from the tracker?\n\n${preview}\n\n`
-             + `This permanently deletes their price history and scores and cannot be undone. `
-             + `Cards seeded from watchlist.py will reappear on the next refresh unless also `
-             + `removed from that file.`)) return;
+  const catalogMode = IS_ADMIN && viewMode === 'catalog';
   const note = document.getElementById('selectionNote');
+
+  if (catalogMode){
+    if (!confirm(`Remove ${ids.length} card(s) from the tracker?\n\n${preview}\n\n`
+               + `This permanently deletes their price history and scores for EVERYONE tracking `
+               + `them, not just you, and cannot be undone. Cards seeded from watchlist.py will `
+               + `reappear on the next refresh unless also removed from that file.`)) return;
+    try {
+      const resp = await fetch('/api/card-tracker/remove', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ card_ids: ids })
+      });
+      const d = await resp.json();
+      if (!resp.ok || !d.ok) throw new Error(d.detail || ('HTTP ' + resp.status));
+      if (note) note.textContent = `Removed ${d.removed} card(s) from the catalog.`;
+      if (selectedId != null && ids.includes(selectedId)){
+        selectedId = null;
+        document.getElementById('detailCard').classList.remove('visible');
+      }
+      selectedIds.clear();
+      await load();
+    } catch (e) {
+      if (note) note.textContent = 'Failed: ' + e.message;
+    }
+    return;
+  }
+
+  if (!confirm(`Remove ${ids.length} card(s) from your portfolio?\n\n${preview}\n\n`
+             + `This only removes them from YOUR portfolio — the price history stays intact `
+             + `for anyone else tracking the same card.`)) return;
   try {
-    const resp = await fetch('/api/card-tracker/remove', {
+    const resp = await fetch('/api/card-tracker/portfolio/remove', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ card_ids: ids })
     });
     const d = await resp.json();
     if (!resp.ok || !d.ok) throw new Error(d.detail || ('HTTP ' + resp.status));
-    if (note) note.textContent = `Removed ${d.removed} card(s).`;
+    if (note) note.textContent = `Removed ${d.removed} card(s) from your portfolio.`;
     if (selectedId != null && ids.includes(selectedId)){
       selectedId = null;
       document.getElementById('detailCard').classList.remove('visible');
@@ -817,6 +909,7 @@ const PPT_BACKDATE_CREDIT_COST = 2;   // per card: base lookup + includeHistory,
 const BACKDATE_MAX_CARDS = 10;   // matches card_tracker.BACKDATE_MAX_CARDS — backdate spends PPT credits per card
 
 async function backdateSelected(days){
+  if (!IS_ADMIN || viewMode !== 'catalog') return;   // admin-only, Full Catalog view only — matches server-side gating
   if (!selectedIds.size) return;
   const ids = Array.from(selectedIds);
   if (ids.length > BACKDATE_MAX_CARDS){
@@ -942,15 +1035,101 @@ function pollRefresh(t0){
 
 async function load(){
   try {
-    const resp = await fetch('/api/card-tracker/list');
+    const url = (IS_ADMIN && viewMode === 'catalog') ? '/api/card-tracker/list' : '/api/card-tracker/portfolio';
+    const resp = await fetch(url);
     if (!resp.ok) throw new Error(resp.status);
     allRows = await resp.json();
+    if (url.endsWith('/portfolio')) portfolioCardCount = allRows.length;
     buildStats();
     renderTable();
+    updateAddPortfolioCount();
   } catch (err) {
     document.getElementById('trackerBody').innerHTML =
-      '<tr><td colspan="11" class="empty">Failed to load data.</td></tr>';
+      '<tr><td colspan="12" class="empty">Failed to load data.</td></tr>';
   }
+}
+
+// ── Add a card (everyone) — free search against the pre-populated catalog,
+//    no PPT/JustTCG credits spent until the card is actually added, and only
+//    if it's genuinely new to the whole shared catalog. ──
+let addSearchTimer = null;
+let addSearchResults = [];
+
+function onAddGameChange(){
+  document.getElementById('addSearchInput').value = '';
+  document.getElementById('addResultsList').style.display = 'none';
+  addSearchResults = [];
+}
+
+function onAddSearchInput(){
+  clearTimeout(addSearchTimer);
+  const q = document.getElementById('addSearchInput').value.trim();
+  if (q.length < 2){
+    document.getElementById('addResultsList').style.display = 'none';
+    return;
+  }
+  addSearchTimer = setTimeout(() => runAddSearch(q), 350);
+}
+
+async function runAddSearch(q){
+  const game = document.getElementById('addGame').value;
+  const list = document.getElementById('addResultsList');
+  list.style.display = 'block';
+  list.innerHTML = '<div class="add-empty">Searching…</div>';
+  try {
+    const resp = await fetch('/api/card-tracker/portfolio/search', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ game, query: q })
+    });
+    const d = await resp.json();
+    if (!resp.ok) throw new Error(d.detail || ('HTTP ' + resp.status));
+    addSearchResults = d;
+    renderAddResults();
+  } catch(e) {
+    list.innerHTML = `<div class="add-empty">Search failed: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderAddResults(){
+  const list = document.getElementById('addResultsList');
+  if (!addSearchResults.length){
+    list.innerHTML = '<div class="add-empty">No matches — it may not be cataloged yet.</div>';
+    return;
+  }
+  list.innerHTML = addSearchResults.map((c, i) => `
+    <div class="add-row" onclick="addCardToPortfolio(${i})">
+      <span class="pname">${esc(c.name)}</span>
+      <span class="pmeta">${esc(c.set_name)}${c.card_number ? ' #' + esc(c.card_number) : ''}${c.variant ? ' · ' + esc(c.variant) : ''}</span>
+      <span class="add-btn">+ Add</span>
+    </div>`).join('');
+}
+
+async function addCardToPortfolio(i){
+  const c = addSearchResults[i];
+  if (!c) return;
+  const game = document.getElementById('addGame').value;
+  try {
+    const resp = await fetch('/api/card-tracker/portfolio/add', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ game, name: c.name, set_name: c.set_name, card_number: c.card_number,
+                             variant: c.variant, tcgplayer_id: c.tcgplayer_id })
+    });
+    const d = await resp.json();
+    if (!resp.ok || !d.ok) throw new Error(d.detail || ('HTTP ' + resp.status));
+    portfolioCardCount = d.portfolio_count;
+    updateAddPortfolioCount();
+    document.getElementById('addSearchInput').value = '';
+    document.getElementById('addResultsList').style.display = 'none';
+    if (!IS_ADMIN || viewMode === 'portfolio') await load();
+  } catch(e) {
+    alert('Could not add card: ' + e.message);
+  }
+}
+
+function updateAddPortfolioCount(){
+  const el = document.getElementById('addPortfolioCount');
+  if (!el) return;
+  el.textContent = portfolioCardCount == null ? '' : `${portfolioCardCount}/${MAX_PORTFOLIO_CARDS} in your portfolio`;
 }
 
 // ── Set import (admin only — panel exists only when is_admin) ──
@@ -1087,6 +1266,7 @@ async function showNextScheduled(){
   } catch(e) {}
 }
 
+updateCatalogOnlyVisibility();
 load();
 showNextScheduled();
 (function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();if(selectedId)showDetail(selectedId);};upd();})();
