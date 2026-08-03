@@ -2843,7 +2843,7 @@ async def api_tips_photo_image(request: Request, photo_id: int,
 async def _guest_grading_allowed(pool, game: str, language: str, set_name: str) -> bool:
     if game != "pokemon":
         return True
-    visible = await _guest_visible_set_ids(pool, language)
+    visible = await _guest_visible_set_ids(pool, language, limit=GUEST_GRADING_VISIBLE_SETS)
     return _norm_set_name(set_name) in {_norm_set_name(v) for v in visible}
 
 
@@ -2877,10 +2877,10 @@ async def grading_calculator_page(request: Request):
         # make_scan_token. Harmless to hand to non-guests too; only a guest
         # request is actually checked against it.
         "scan_token": make_scan_token(),
-        # Same window as the Catalog (_guest_grading_allowed shares
-        # GUEST_CATALOG_VISIBLE_SETS) — the disclaimer text needs the live
-        # number, not a hardcoded one that drifts the moment the constant changes.
-        "guest_catalog_visible_sets": GUEST_CATALOG_VISIBLE_SETS,
+        # Own window, decoupled from the Catalog's — the disclaimer text
+        # needs the live number, not a hardcoded one that drifts the moment
+        # the constant changes.
+        "guest_grading_visible_sets": GUEST_GRADING_VISIBLE_SETS,
     })
 
 
@@ -3093,11 +3093,13 @@ async def api_grading_sets(request: Request, game: str = "pokemon",
             async with httpx.AsyncClient(timeout=30.0) as client:
                 sets = await price_sources.fetch_ppt_sets(client, language=language)
             if user.get("guest"):
-                # Guest tier is capped to the same "last 3 main sets" as the
-                # Catalog. Return the filtered list even if it's empty rather
-                # than falling through to the unrestricted baked list below.
+                # Guest tier is capped to the newest GUEST_GRADING_VISIBLE_SETS
+                # sets — its own window, not the Catalog's. Return the
+                # filtered list even if it's empty rather than falling
+                # through to the unrestricted baked list below.
                 visible = {_norm_set_name(v)
-                          for v in await _guest_visible_set_ids(request.app.state.db, language)}
+                          for v in await _guest_visible_set_ids(
+                              request.app.state.db, language, limit=GUEST_GRADING_VISIBLE_SETS)}
                 sets = [s for s in sets if _norm_set_name(s.get("id")) in visible]
                 return JSONResponse({"source": "pokemonpricetracker",
                                      "language": language, "sets": sets},
@@ -3214,25 +3216,35 @@ CATALOG_GAME = "pokemon"
 # which is the wrong first impression for someone converting from a cold
 # link, not a returning member who already knows the restriction exists.
 GUEST_CATALOG_VISIBLE_SETS = int(os.getenv("GUEST_CATALOG_VISIBLE_SETS", "8"))
+# The grading calculator has its own, tighter guest window — decoupled from
+# the Catalog's so tightening/widening one never silently changes the other.
+GUEST_GRADING_VISIBLE_SETS = int(os.getenv("GUEST_GRADING_VISIBLE_SETS", "5"))
 # Era keys that aren't a main-series expansion era — promos, novelty/kit
 # groups, and the unclassified catch-all. The guest window should count only
 # main sets (Mega Evolution, Scarlet & Violet, ...), never one of these.
 GUEST_CATALOG_NON_MAIN_ERAS = {"promos", "mcdonalds", "pop", "trainer_kits", "other"}
 
 
-async def _guest_visible_set_ids(pool, language: str) -> list:
-    """The newest GUEST_CATALOG_VISIBLE_SETS RELEASED, STOCKED, main-era sets,
-    newest-by-release first — the guest tier's catalog ceiling. Same "walk
-    PPT's own newest-first list, keep only what's actually stocked" pattern
-    as select_backfill_window, just capped much smaller.
+async def _guest_visible_set_ids(pool, language: str, limit: int = None) -> list:
+    """The newest `limit` (default GUEST_CATALOG_VISIBLE_SETS) RELEASED,
+    STOCKED, main-era sets, newest-by-release first — the guest tier's
+    ceiling for whichever page is asking. Same "walk PPT's own newest-first
+    list, keep only what's actually stocked" pattern as
+    select_backfill_window, just capped much smaller.
+
+    `limit` lets a caller use a tighter window than the Catalog's default —
+    the grading calculator passes GUEST_GRADING_VISIBLE_SETS, since its
+    guest restriction is deliberately stricter and must never silently
+    follow the Catalog's if that one changes.
 
     A set can show up stocked (preview/pre-release cards already priced)
     before its actual release date, so an undated or future-dated set is
     skipped here even if it's already in `have` — the guest window should
     never include a set that hasn't come out yet. Promos and other
     non-main-era groups (see GUEST_CATALOG_NON_MAIN_ERAS) are skipped too —
-    the window is meant to read as "the last 3 main sets".
+    the window is meant to read as "the last N main sets".
     """
+    limit = GUEST_CATALOG_VISIBLE_SETS if limit is None else limit
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             sets = await price_sources.fetch_ppt_sets(client, language=language)
@@ -3250,7 +3262,7 @@ async def _guest_visible_set_ids(pool, language: str) -> list:
             continue
         if s.get("id") in have:
             out.append(s["id"])
-        if len(out) >= GUEST_CATALOG_VISIBLE_SETS:
+        if len(out) >= limit:
             break
     return out
 

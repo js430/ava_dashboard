@@ -322,16 +322,18 @@
           </div>
           {% if is_guest and not user_id %}
           <div class="hint guest-note">
-            <strong>Guest account restriction:</strong> showing the newest {{ guest_catalog_visible_sets }} main sets only.
-            <a href="/login">Sign in with Discord</a> for the full set list, or sign up for the
+            <strong>Guest account restriction:</strong> showing the newest {{ guest_grading_visible_sets }} main sets only,
+            and costs are locked to PSA 10 / PSA Regular tier.
+            <a href="/login">Sign in with Discord</a> for the full set list and every grade/grader, or sign up for the
             paid tier (coming soon via Stripe) for full access without a Discord account.
           </div>
           {% elif is_guest %}
           <div class="hint guest-note">
-            <strong>Limited access:</strong> showing the newest {{ guest_catalog_visible_sets }} main sets only. Get the
+            <strong>Limited access:</strong> showing the newest {{ guest_grading_visible_sets }} main sets only,
+            and costs are locked to PSA 10 / PSA Regular tier. Get the
             <strong>Intel</strong> or <strong>Monitor</strong> role
             <a href="{{ upgrade_url }}" target="_blank" rel="noopener">here</a>
-            for the full set list.
+            for the full set list and every grade/grader.
           </div>
           {% endif %}
           <div class="row">
@@ -379,7 +381,7 @@
               <div class="scanned-strip-badges" id="scannedStripBadges"></div>
             </div>
           </div>
-          <div class="grade-filter-row">
+          <div class="grade-filter-row" {% if is_guest %}style="display:none"{% endif %}>
             <label for="minGradeSlider">Lowest grade shown</label>
             <input type="range" id="minGradeSlider" min="1" max="8" step="1" value="8" oninput="applyGradeFilter()">
             <span class="grade-filter-value" id="minGradeLabel">8</span>
@@ -413,13 +415,15 @@
         <div class="card-body">
           <div class="row">
             <div><label class="label" for="gradeCompany">Grader</label>
-              <select id="gradeCompany" onchange="onCompanyChange()">
-                <option value="">Custom / other</option>
-                {% for cid, c in grading_companies.items() %}<option value="{{ cid }}">{{ c.label }}</option>{% endfor %}
+              <select id="gradeCompany" onchange="onCompanyChange()" {% if is_guest %}disabled title="Sign in with Discord for every grader"{% endif %}>
+                {% if not is_guest %}<option value="">Custom / other</option>{% endif %}
+                {% for cid, c in grading_companies.items() %}
+                {% if not is_guest or cid == 'psa' %}<option value="{{ cid }}">{{ c.label }}</option>{% endif %}
+                {% endfor %}
               </select>
             </div>
             <div><label class="label" for="gradeTier">Tier</label>
-              <select id="gradeTier" onchange="onTierChange()"><option value="">&mdash;</option></select>
+              <select id="gradeTier" onchange="onTierChange()" {% if is_guest %}disabled title="Sign in with Discord for every tier"{% endif %}><option value="">&mdash;</option></select>
             </div>
             <div><label class="label" for="gradingFee">Grading fee ($)</label>
               <input type="number" id="gradingFee" value="25" min="0" step="0.01" oninput="onFeeManual()"></div>
@@ -479,19 +483,24 @@ function esc(s){
   return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
-// Guest tier's restriction is which cards can be looked up (last 3 main
-// sets — see the Set dropdown disclaimer and _guest_grading_allowed in
-// main.py), not which grades are shown for one they're allowed to.
+// Guest tier's restriction is which cards can be looked up (newest
+// GUEST_GRADING_VISIBLE_SETS sets — see the Set dropdown disclaimer and
+// _guest_grading_allowed in main.py), PLUS (as of the PSA-10-only trial
+// limit) which grades/graders are shown at all — see IS_GUEST_TIER below.
 const ALL_GRADES = ['raw','psa_1','psa_2','psa_3','psa_4','psa_5','psa_6','psa_7',
   'psa_8','psa_9','psa_10','bgs_9_5','bgs_10','cgc_9','cgc_10','sgc_10','tag_9','tag_10'];
-const GRADES = ALL_GRADES;
+const IS_GUEST_TIER = {{ 'true' if is_guest else 'false' }};
+// Guest tier only ever sees raw (the baseline every comparison needs) and
+// PSA 10 — matches the locked Grader/Tier selects and the hidden "lowest
+// grade shown" slider (nothing to slide with just one graded row).
+const GRADES = IS_GUEST_TIER ? ['raw', 'psa_10'] : ALL_GRADES;
 const LABELS = {{ grade_labels | tojson }};
 // Numeric rank per grade, for the "lowest grade shown" slider — a row stays
 // visible when its level >= the slider value (raw's level is 0, always shown).
 const GRADE_LEVEL = {{ grade_levels | tojson }};
 // Grades the result panel reports on. Everything else is still shown in the
 // price table for reference, but PSA 10 and 9 carry the sale volume.
-const REPORTED_GRADES = ['psa_10','psa_9'];
+const REPORTED_GRADES = IS_GUEST_TIER ? ['psa_10'] : ['psa_10','psa_9'];
 // Human-readable vendor names for the "where from" line — the raw source
 // strings (price_sources.py's `used`/`source` values) are internal identifiers,
 // not something to show a first-time visitor evaluating whether to trust a price.
