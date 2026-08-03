@@ -250,6 +250,37 @@ OG_TITLE = "Nexus Card Co — Restock Dashboard"
 OG_DESCRIPTION = ("Historical restock data, store maps, card prices and analytics "
                   "for the TCG community, built around our Discord server.")
 
+# link-unfurl bots (Discord, Slack, etc.) never carry a session cookie, so
+# every protected page's normal 302-to-login chain runs all the way through
+# to Discord's own OAuth authorize page — and the crawler renders THAT
+# page's branding ("Discord — Group Chat That's All Fun & Games") instead of
+# ours. login_redirect_or_preview() below intercepts known preview bots and
+# hands back our own OG tags directly instead of redirecting them, so a
+# shared dashboard link always previews as Nexus Card Co. Real visitors are
+# unaffected — they still get the normal redirect to Discord OAuth.
+LINK_PREVIEW_BOT_MARKERS = ("discordbot", "slackbot", "twitterbot", "facebookexternalhit",
+                           "telegrambot", "whatsapp", "linkedinbot", "skypeuripreview",
+                           "vkshare", "redditbot", "embedly")
+
+def _is_link_preview_bot(request: Request) -> bool:
+    ua = (request.headers.get("user-agent") or "").lower()
+    return any(marker in ua for marker in LINK_PREVIEW_BOT_MARKERS)
+
+def login_redirect_or_preview(request: Request, title: str = None, description: str = None):
+    """Drop-in replacement for RedirectResponse("/login") on any route gated
+    behind a Discord session. A detected link-preview bot gets our own OG
+    tags rendered directly (no redirect followed); anyone else gets the
+    normal login redirect, unchanged."""
+    if _is_link_preview_bot(request):
+        return templates.TemplateResponse("og_preview.html", {
+            "request": request,
+            "base_url": PUBLIC_BASE_URL,
+            "og_title": title or OG_TITLE,
+            "og_description": description or OG_DESCRIPTION,
+            "og_url": f"{PUBLIC_BASE_URL}{request.url.path}",
+        })
+    return RedirectResponse("/login")
+
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 if os.path.isdir(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -817,7 +848,7 @@ async def sample_page(request: Request):
     member role. Serves no live data — all numbers are generated client-side."""
     user = request.session.get("user")
     if not user:
-        return RedirectResponse("/login")
+        return login_redirect_or_preview(request)
     # Non-premium users see the sample; admins and server mods may also preview
     # it. Regular premium members have no reason to, so send them to the live board.
     is_staff = int(user["id"]) in ADMIN_USER_IDS or request.session.get("mod", False)
@@ -836,7 +867,7 @@ async def sample_status_page(request: Request):
     """Demo store-status page with fake data. Same audience as /sample."""
     user = request.session.get("user")
     if not user:
-        return RedirectResponse("/login")
+        return login_redirect_or_preview(request)
     is_staff = int(user["id"]) in ADMIN_USER_IDS or request.session.get("mod", False)
     if not is_demo(request) and not is_staff:
         return RedirectResponse("/status")
@@ -854,7 +885,7 @@ async def sample_map_page(request: Request):
     Maps API). Same audience as /sample."""
     user = request.session.get("user")
     if not user:
-        return RedirectResponse("/login")
+        return login_redirect_or_preview(request)
     is_staff = int(user["id"]) in ADMIN_USER_IDS or request.session.get("mod", False)
     if not is_demo(request) and not is_staff:
         return RedirectResponse("/map")
@@ -870,7 +901,7 @@ async def sample_map_page(request: Request):
 async def terms_page(request: Request):
     user = request.session.get("user")
     if not user:
-        return RedirectResponse("/login")
+        return login_redirect_or_preview(request)
     if await terms_current(request, user):
         return RedirectResponse("/")
     from datetime import date
@@ -1220,7 +1251,7 @@ async def _load_raffle_entries(conn, raffle_id: str, with_names: bool = True) ->
 async def raffle_wheel_page(request: Request):
     user = request.session.get("user")
     if not user:
-        return RedirectResponse("/login")
+        return login_redirect_or_preview(request)
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
     if int(user["id"]) not in ADMIN_USER_IDS:
@@ -1373,7 +1404,7 @@ def require_inventory_access(request: Request) -> dict:
 async def inventory_page(request: Request):
     user = request.session.get("user")
     if not user:
-        return RedirectResponse("/login")
+        return login_redirect_or_preview(request)
     is_admin_user = int(user["id"]) in ADMIN_USER_IDS
     if not is_admin_user and not request.session.get("inventory_access", False):
         raise HTTPException(status_code=403, detail="Not authorized")
@@ -1526,7 +1557,11 @@ async def card_tracker_page(request: Request):
     # admin tools. No longer admin-only.
     user = request.session.get("user")
     if not user:
-        return RedirectResponse("/login")
+        return login_redirect_or_preview(
+            request, title="Card Tracker — Nexus Card Co",
+            description="Track up to 100 Pokémon or One Piece cards — daily price history, "
+                        "momentum, and a profit-potential score. Sign in with Discord to build "
+                        "your portfolio.")
     if is_demo(request):
         return RedirectResponse("/sample")
     return templates.TemplateResponse("card_tracker.html", {
@@ -2284,7 +2319,10 @@ async def api_import_run(request: Request):
 async def tips_page(request: Request):
     user = request.session.get("user")
     if not user:
-        return RedirectResponse("/login")
+        return login_redirect_or_preview(
+            request, title="Tips, Tricks, and Guide — Nexus Card Co",
+            description="Community-written tips, guides, and photos, organized by topic. "
+                        "Sign in with Discord to read and contribute.")
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
     return templates.TemplateResponse("tips.html", {
@@ -2726,7 +2764,10 @@ async def grading_calculator_page(request: Request):
         if not await terms_current(request, user):
             return RedirectResponse("/terms")
     elif not is_guest(request):
-        return RedirectResponse("/login")
+        return login_redirect_or_preview(
+            request, title="Grading Calculator — Nexus Card Co",
+            description="Estimate a card's graded value across PSA, BGS, CGC, and more. "
+                        "Sign in with Discord or continue as a guest to use it.")
     return templates.TemplateResponse("grading_calculator.html", {
         "request": request,
         **_viewer_context(request, user),
@@ -3641,7 +3682,10 @@ async def catalog_page(request: Request):
         if not await terms_current(request, user):
             return RedirectResponse("/terms")
     elif not is_guest(request):
-        return RedirectResponse("/login")
+        return login_redirect_or_preview(
+            request, title="Card Catalog — Nexus Card Co",
+            description="Browse every stocked Pokémon and One Piece set with live prices. "
+                        "Sign in with Discord or continue as a guest to use it.")
     return templates.TemplateResponse("catalog.html", {
         "request": request,
         **_viewer_context(request, user),
@@ -3973,7 +4017,7 @@ async def api_catalog_backfill(request: Request, user=Depends(require_admin)):
 async def analytics_page(request: Request):
     user = request.session.get("user")
     if not user:
-        return RedirectResponse("/login")
+        return login_redirect_or_preview(request)
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
     if int(user["id"]) not in ADMIN_USER_IDS:
@@ -4236,7 +4280,10 @@ async def get_analytics(
 async def status_page(request: Request):
     user = request.session.get("user")
     if not user:
-        return RedirectResponse("/login")
+        return login_redirect_or_preview(
+            request, title="Store Status — Nexus Card Co",
+            description="Live restock status for tracked stores in the DMV. "
+                        "Sign in with Discord to view it.")
     if is_demo(request):
         return RedirectResponse("/sample-status")
     if not await terms_current(request, user):
@@ -4293,7 +4340,7 @@ async def get_status(request: Request, user=Depends(get_current_user)):
 async def contributors_page(request: Request):
     user = request.session.get("user")
     if not user:
-        return RedirectResponse("/login")
+        return login_redirect_or_preview(request)
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
     if int(user["id"]) not in ADMIN_USER_IDS:
@@ -4559,7 +4606,10 @@ async def get_contributor_regions(request: Request, region: str, period: str = "
 async def map_page(request: Request):
     user = request.session.get("user")
     if not user:
-        return RedirectResponse("/login")
+        return login_redirect_or_preview(
+            request, title="Store Map — Nexus Card Co",
+            description="An interactive map of tracked stores across the DMV. "
+                        "Sign in with Discord to view it.")
     if is_demo(request):
         return RedirectResponse("/sample-map")
     if not await terms_current(request, user):
@@ -4592,7 +4642,7 @@ def require_all_mods(request: Request) -> dict:
 async def invite_network_page(request: Request):
     user = request.session.get("user")
     if not user:
-        return RedirectResponse("/login")
+        return login_redirect_or_preview(request)
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
     is_admin = int(user["id"]) in ADMIN_USER_IDS

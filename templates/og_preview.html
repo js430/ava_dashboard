@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/brand/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/brand/icon-180.png">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ og_title }}</title>
+<meta name="description" content="{{ og_description }}">
+
+<!-- Served only to detected link-preview bots (see main.py's
+     login_redirect_or_preview) — a real visitor never sees this page, they
+     get the normal redirect to Discord OAuth. Without this, a bot follows
+     that same redirect all the way to Discord's own OAuth page and shows
+     ITS branding in the chat embed instead of ours. -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Nexus Card Co">
+<meta property="og:title" content="{{ og_title }}">
+<meta property="og:description" content="{{ og_description }}">
+<meta property="og:url" content="{{ og_url }}">
+<meta property="og:image" content="{{ base_url }}/static/brand/og-banner.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="343">
+<meta property="og:image:alt" content="Nexus Card Co — restocks, analytics, community">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{{ og_title }}">
+<meta name="twitter:description" content="{{ og_description }}">
+<meta name="twitter:image" content="{{ base_url }}/static/brand/og-banner.png">
+<meta name="theme-color" content="#111021">
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; margin: 0; display: flex; align-items: center; justify-content: center; }
+  .box { text-align: center; padding: 24px; }
+  .box p { font-size: 15px; margin: 0 0 12px; color: #333; }
+  .box a { color: #5865F2; font-weight: 600; text-decoration: none; }
+  .box a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+  <div class="box">
+    <p>Sign in with Discord to view this page.</p>
+    <a href="/login">Sign in</a>
+  </div>
+</body>
+</html>
