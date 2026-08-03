@@ -34,7 +34,8 @@ from content_size_limit_asgi import ContentSizeLimitMiddleware
 from card_tracker import (ensure_card_tracker_schema, sync_watchlist, run_ingest,
                           run_ppt_ingest, run_scoring, MAX_TRACKED_CARDS,
                           run_ppt_backdate, BACKDATE_DAY_CHOICES, BACKDATE_MAX_CARDS,
-                          VALID_GAMES, MAX_USER_PORTFOLIO_CARDS, auto_backdate_new_card)
+                          VALID_GAMES, MAX_USER_PORTFOLIO_CARDS, auto_backdate_new_card,
+                          refresh_one_card)
 import card_scoring
 import set_import
 import price_sources
@@ -1731,14 +1732,22 @@ async def api_portfolio_add(request: Request, user=Depends(get_current_user)):
                 "ON CONFLICT DO NOTHING", user_id, card_id)
         new_count = count + 1
 
-    if is_new and game == "pokemon" and tcgplayer_id:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+    refresh = {"snapshot_added": False, "credits": 0, "scored": False}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        if is_new and game == "pokemon" and tcgplayer_id:
             await auto_backdate_new_card(client, pool, card_id, name, tcgplayer_id, language=language)
+        # Whether new or already in the shared catalog — this fills in
+        # today's price (if missing) and a fresh score right away, so the
+        # 7d/30d/score columns aren't blank until the next scheduled sweep.
+        try:
+            refresh = await refresh_one_card(client, pool, card_id)
+        except Exception:
+            logger.exception("Portfolio: post-add refresh failed for %r (id %d)", name, card_id)
 
-    logger.info("Portfolio: user %s added %r (card_id=%d, new_to_catalog=%s)",
-                user_id, name, card_id, is_new)
+    logger.info("Portfolio: user %s added %r (card_id=%d, new_to_catalog=%s, refresh=%s)",
+                user_id, name, card_id, is_new, refresh)
     return JSONResponse({"ok": True, "card_id": card_id, "portfolio_count": new_count,
-                        "new_to_catalog": is_new},
+                        "new_to_catalog": is_new, "scored": refresh["scored"]},
                        headers={"Cache-Control": "no-store"})
 
 @app.post("/api/card-tracker/portfolio/remove")

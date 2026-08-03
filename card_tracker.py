@@ -927,37 +927,100 @@ async def run_ingest(pool) -> dict:
     return summary
 
 
-async def run_scoring(pool) -> dict:
-    """Compute and store a card_scores row for every tracked card, from the
-    last 60 days of snapshots (enough history for a true 30d baseline).
-    Pure math lives in card_scoring.py; this is just the DB glue."""
+async def _score_one_card(conn, card_id: int, release_date) -> bool:
+    """Compute + insert a card_scores row for ONE card from its last 60 days
+    of snapshots. False if there's nothing scoreable yet (no snapshots, or
+    not enough of a single-source series — see select_scoring_series).
+
+    Takes an already-acquired connection rather than a pool: run_scoring
+    reuses one connection across its whole sweep; refresh_one_card acquires
+    its own for a single card. Pure math lives in card_scoring.py; this is
+    just the DB glue, shared by both callers.
+    """
     import card_scoring
 
+    snaps = await conn.fetch(
+        "SELECT captured_at, price_low, price_mid, price_high, source "
+        "FROM price_snapshots "
+        "WHERE card_id = $1 AND captured_at >= NOW() - INTERVAL '60 days' "
+        "ORDER BY captured_at",
+        card_id)
+    if not snaps:
+        return False
+    # Never score across two pricing sources — see select_scoring_series.
+    series = card_scoring.select_scoring_series([dict(r) for r in snaps])
+    if not series:
+        return False
+    s = card_scoring.score_card(series, release_date)
+    await conn.execute(
+        "INSERT INTO card_scores (card_id, momentum_7d, momentum_30d, "
+        "liquidity_score, age_days, potential_score) VALUES ($1, $2, $3, $4, $5, $6)",
+        card_id, s["momentum_7d_pct"], s["momentum_30d_pct"],
+        s["liquidity_score"], s["age_days"], s["potential_score"])
+    return True
+
+
+async def run_scoring(pool) -> dict:
+    """Compute and store a card_scores row for every tracked card, from the
+    last 60 days of snapshots (enough history for a true 30d baseline)."""
     summary = {"scored": 0, "skipped": 0}
     async with pool.acquire() as conn:
-        cards = await conn.fetch("SELECT id, name, release_date FROM tracked_cards ORDER BY id")
+        cards = await conn.fetch("SELECT id, release_date FROM tracked_cards ORDER BY id")
         for c in cards:
-            snaps = await conn.fetch(
-                "SELECT captured_at, price_low, price_mid, price_high, source "
-                "FROM price_snapshots "
-                "WHERE card_id = $1 AND captured_at >= NOW() - INTERVAL '60 days' "
-                "ORDER BY captured_at",
-                c["id"])
-            if not snaps:
+            if await _score_one_card(conn, c["id"], c["release_date"]):
+                summary["scored"] += 1
+            else:
                 summary["skipped"] += 1
-                continue
-            # Never score across two pricing sources — see select_scoring_series.
-            series = card_scoring.select_scoring_series([dict(r) for r in snaps])
-            if not series:
-                summary["skipped"] += 1
-                continue
-            s = card_scoring.score_card(series, c["release_date"])
-            await conn.execute(
-                "INSERT INTO card_scores (card_id, momentum_7d, momentum_30d, "
-                "liquidity_score, age_days, potential_score) VALUES ($1, $2, $3, $4, $5, $6)",
-                c["id"], s["momentum_7d_pct"], s["momentum_30d_pct"],
-                s["liquidity_score"], s["age_days"], s["potential_score"])
-            summary["scored"] += 1
     logger.info("Scoring done: %d scored, %d skipped (no snapshots)",
                 summary["scored"], summary["skipped"])
     return summary
+
+
+async def refresh_one_card(client: httpx.AsyncClient, pool, card_id: int) -> dict:
+    """Ensure ONE card has today's price and a fresh score — called right
+    after a member adds a card to their portfolio (see
+    /api/card-tracker/portfolio/add) so the table's 7d/30d/score columns
+    aren't empty until the next scheduled sweep picks it up.
+
+    Pokemon only, and only spends a credit if the card is actually missing
+    today's price (an already-tracked card someone else added likely
+    already has one from the regular ingest — this must never double-bill
+    for the same day). One Piece has no equivalent here: pricing it needs a
+    JustTCG id resolved first, exactly like watchlist/import adds today, so
+    it still waits for the next run_ingest sweep.
+
+    Scoring runs regardless of game and regardless of whether a new price
+    was just fetched — covers the case where snapshots already exist (e.g.
+    a brand-new-to-catalog card's auto-backdate) but nothing has scored it
+    yet.
+    """
+    result = {"snapshot_added": False, "credits": 0, "scored": False}
+    async with pool.acquire() as conn:
+        card = await conn.fetchrow(
+            "SELECT game, tcgplayer_id, language, release_date, "
+            "EXISTS (SELECT 1 FROM price_snapshots p WHERE p.card_id = tracked_cards.id "
+            "AND (p.captured_at AT TIME ZONE 'UTC')::date = (NOW() AT TIME ZONE 'UTC')::date) "
+            "AS priced_today "
+            "FROM tracked_cards WHERE id = $1", card_id)
+    if card is None:
+        return result
+
+    tcg_id = (card["tcgplayer_id"] or "").strip()
+    if (card["game"] == "pokemon" and tcg_id and not card["priced_today"]
+            and price_sources.pokemonpricetracker_available()):
+        prices, status, _daily_remaining = await price_sources.fetch_ppt_card_prices(
+            client, tcg_id, language=card["language"])
+        if status != "rate_limited":   # a 429 isn't billed — same convention as _backdate_one_card
+            result["credits"] += 1
+        if status == "ok":
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO price_snapshots (card_id, price_low, price_mid, "
+                    "price_high, source) VALUES ($1, $2, $3, $4, $5)",
+                    card_id, prices.get("low"), prices.get("market"),
+                    prices.get("high"), PPT_SOURCE)
+            result["snapshot_added"] = True
+
+    async with pool.acquire() as conn:
+        result["scored"] = await _score_one_card(conn, card_id, card["release_date"])
+    return result
