@@ -35,7 +35,7 @@ from card_tracker import (ensure_card_tracker_schema, sync_watchlist, run_ingest
                           run_ppt_ingest, run_scoring, MAX_TRACKED_CARDS,
                           run_ppt_backdate, BACKDATE_DAY_CHOICES, BACKDATE_MAX_CARDS,
                           VALID_GAMES, MAX_USER_PORTFOLIO_CARDS, auto_backdate_new_card,
-                          refresh_one_card)
+                          refresh_one_card, TRACKER_COLUMN_KEYS, DEFAULT_VISIBLE_COLUMNS)
 import card_scoring
 import set_import
 import price_sources
@@ -1537,6 +1537,7 @@ async def card_tracker_page(request: Request):
         "is_admin": int(user["id"]) in ADMIN_USER_IDS,
         "is_mod": request.session.get("mod", False),
         "max_portfolio_cards": MAX_USER_PORTFOLIO_CARDS,
+        "default_visible_columns": DEFAULT_VISIBLE_COLUMNS,
     })
 
 def _f_num(x):
@@ -1570,6 +1571,7 @@ def _serialize_tracker_row(r) -> dict:
         "captured_at": r["captured_at"].isoformat() if r["captured_at"] else None,
         "momentum_7d": _f_num(r["momentum_7d"]),
         "momentum_30d": _f_num(r["momentum_30d"]),
+        "momentum_180d": _f_num(r["momentum_180d"]),
         "liquidity_score": _f_num(r["liquidity_score"]),
         "age_days": r["age_days"],
         "potential_score": _f_num(r["potential_score"]),
@@ -1580,7 +1582,7 @@ _TRACKER_ROW_COLUMNS = """
     tc.id, tc.name, tc.game, tc.language, tc.set_name, tc.card_number, tc.variant,
     tc.release_date, tc.justtcg_name, tc.justtcg_set, tc.justtcg_number,
     ps.price_low, ps.price_mid, ps.price_high, ps.captured_at,
-    cs.momentum_7d, cs.momentum_30d, cs.liquidity_score,
+    cs.momentum_7d, cs.momentum_30d, cs.momentum_180d, cs.liquidity_score,
     cs.age_days, cs.potential_score, cs.computed_at
 """
 _TRACKER_ROW_JOINS = """
@@ -1766,6 +1768,50 @@ async def api_portfolio_remove(request: Request, user=Depends(get_current_user))
             user_id, ids)
     removed = int(result.split()[-1]) if result else 0
     return JSONResponse({"ok": True, "removed": removed}, headers={"Cache-Control": "no-store"})
+
+@app.get("/api/card-tracker/prefs")
+async def api_tracker_prefs_get(request: Request, user=Depends(get_current_user)):
+    """Saved column-visibility choice for the card-tracker table. null
+    visible_columns means no preference saved yet — the page falls back to
+    DEFAULT_VISIBLE_COLUMNS client-side."""
+    async with request.app.state.db.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT visible_columns FROM card_tracker_prefs WHERE user_id = $1",
+            int(user["id"]))
+    columns = None
+    if row:
+        columns = row["visible_columns"]
+        if isinstance(columns, str):   # asyncpg hands back JSONB as text absent a registered codec
+            try:
+                columns = json.loads(columns)
+            except (TypeError, ValueError):
+                columns = None
+    return JSONResponse(
+        {"visible_columns": columns, "default_visible_columns": DEFAULT_VISIBLE_COLUMNS},
+        headers={"Cache-Control": "no-store"})
+
+@app.post("/api/card-tracker/prefs")
+@limiter.limit("30/hour")
+async def api_tracker_prefs_save(request: Request, user=Depends(get_current_user)):
+    body = await request.json()
+    columns = body.get("visible_columns")
+    if (not isinstance(columns, list)
+            or not all(isinstance(c, str) and c in TRACKER_COLUMN_KEYS for c in columns)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"visible_columns must be a list drawn from {TRACKER_COLUMN_KEYS}")
+    # Dedupe while preserving order — a stray double-toggle client-side
+    # shouldn't be able to write duplicate entries into storage.
+    columns = list(dict.fromkeys(columns))
+    async with request.app.state.db.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO card_tracker_prefs (user_id, visible_columns, updated_at) "
+            "VALUES ($1, $2::jsonb, NOW()) "
+            "ON CONFLICT (user_id) DO UPDATE SET visible_columns = EXCLUDED.visible_columns, "
+            "updated_at = NOW()",
+            int(user["id"]), json.dumps(columns))
+    return JSONResponse({"ok": True, "visible_columns": columns},
+                        headers={"Cache-Control": "no-store"})
 
 @app.get("/api/card-tracker/history")
 async def api_card_tracker_history(request: Request, card_id: int, user=Depends(get_current_user)):

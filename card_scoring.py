@@ -190,6 +190,12 @@ def score_card(snapshots: list, release_date, now: datetime = None) -> dict:
     now = now or _now_utc()
     m7 = momentum(snapshots, 7, now)
     m30 = momentum(snapshots, 30, now)
+    # 180d is display-only (card-tracker table + why-grid) — NOT in the
+    # weighted composite below. Folding it in would rebalance W_MOMENTUM_7D/
+    # 30D/AGE and silently change every existing card's potential_score;
+    # that's a deliberate call for whoever tunes the formula, not a side
+    # effect of adding a column.
+    m180 = momentum(snapshots, 180, now)
     n7 = normalize_momentum(m7)
     n30 = normalize_momentum(m30)
     liq = liquidity(snapshots, now)
@@ -203,6 +209,7 @@ def score_card(snapshots: list, release_date, now: datetime = None) -> dict:
     return {
         "momentum_7d_pct": None if m7 is None else round(m7 * 100, 2),
         "momentum_30d_pct": None if m30 is None else round(m30 * 100, 2),
+        "momentum_180d_pct": None if m180 is None else round(m180 * 100, 2),
         "momentum_7d_norm": round(n7, 3),
         "momentum_30d_norm": round(n30, 3),
         "age_days": age_d,

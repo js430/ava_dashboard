@@ -36,6 +36,18 @@
   .stat-value { font-size: 22px; font-weight: 600; color: #111; }
 
   .table-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; overflow: hidden; margin-bottom: 16px; }
+  .tracker-layout { display: flex; gap: 16px; align-items: flex-start; }
+  .tracker-layout .table-card { flex: 1; min-width: 0; }
+  .info-panel { width: 260px; flex-shrink: 0; background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; padding: 14px 16px; margin-bottom: 16px; }
+  .info-panel-title { font-size: 14px; font-weight: 600; color: #111; margin-bottom: 10px; }
+  .info-list dt { font-size: 12px; font-weight: 700; color: #111; margin-top: 10px; }
+  .info-list dt:first-child { margin-top: 0; }
+  .info-list dd { font-size: 12px; color: #666; line-height: 1.5; margin: 2px 0 0; }
+  .info-hidden-tag { font-size: 10px; font-weight: 600; color: #999; text-transform: none; }
+  html[data-theme="dark"] .info-panel { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .info-panel-title, html[data-theme="dark"] .info-list dt { color: #f0f0f0; }
+  html[data-theme="dark"] .info-list dd { color: #999; }
+  html[data-theme="dark"] .info-hidden-tag { color: #777; }
   .table-header { padding: 12px 16px; border-bottom: 1px solid #e4e4e7; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .table-header-title { font-size: 14px; font-weight: 600; color: #111; }
   .btn-group { display: flex; }
@@ -51,6 +63,15 @@
   .clear-filters-btn { font-size: 12px; color: #5865F2; background: none; border: none; cursor: pointer; padding: 0; white-space: nowrap; }
   .clear-filters-btn:hover { text-decoration: underline; }
   .filter-count { font-size: 12px; color: #999; white-space: nowrap; }
+  .col-toggle { position: relative; display: inline-flex; }
+  .col-menu { display: none; position: absolute; top: calc(100% + 4px); right: 0; min-width: 170px; padding: 6px; background: #fff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.10); z-index: 400; }
+  .col-toggle.open .col-menu { display: block; }
+  .col-menu label { display: flex; align-items: center; gap: 7px; padding: 5px 8px; font-size: 12px; color: #333; border-radius: 5px; cursor: pointer; white-space: nowrap; }
+  .col-menu label:hover { background: #f4f4f5; }
+  html[data-theme="dark"] .col-menu { background: #1c1c1f; border-color: #383838; box-shadow: 0 6px 20px rgba(0,0,0,0.45); }
+  html[data-theme="dark"] .col-menu label { color: #ccc; }
+  html[data-theme="dark"] .col-menu label:hover { background: #2e2e32; }
+
   .selection-bar { padding: 10px 16px; border-bottom: 1px solid #e4e4e7; background: #eef0ff; align-items: center; gap: 8px; flex-wrap: wrap; }
   .selection-bar #selectionCount { font-size: 12px; font-weight: 600; color: #333; }
   html[data-theme="dark"] .selection-bar { background: #1e2040; border-bottom-color: #303033; }
@@ -153,6 +174,9 @@
     .stat-grid { grid-template-columns: repeat(2,1fr); gap: 8px; }
     thead th, tbody td { padding: 7px 8px; }
     .chart-wrap { height: 220px; }
+    .tracker-layout { flex-direction: column; }
+    .info-panel { width: 100%; }
+    .col-menu { left: 0; right: auto; }
   }
   .theme-toggle { display: none; font-size: 16px; background: #f4f4f5; border: 1px solid #ddd; border-radius: 6px; padding: 4px 8px; cursor: pointer; line-height: 1; flex-shrink: 0; }
   html[data-theme="dark"] { color-scheme: dark; }
@@ -281,10 +305,11 @@
       <div class="chart-wrap"><canvas id="priceChart"></canvas></div>
       <div class="chart-note" id="chartNote"></div>
       <div class="why-grid" id="whyGrid"></div>
-      <div class="why-note">Score = 100 × (0.35·momentum7 + 0.25·momentum30 + 0.40·age bonus) × liquidity multiplier. Momentum saturates at ±30%; the age bonus peaks ~240 days after release; liquidity scales the total between 0.5× and 1×. Knobs live in <code>card_scoring.py</code>.<br><br>The score and the numbers below always use the full price history, no matter which range the graph is showing.<br><br>Every nightly refresh adds one more day and nothing is ever thrown away, so the 90-day view keeps filling in over time even when the price source only hands back a week of history. A card added today starts with whatever history the source gives it and builds from there.<br><br>If 7D and 30D show the same number, this card only has one or two prices so far, so both windows fall back to the same baseline. That usually sorts itself out after the next nightly refresh, now that missing days get filled in automatically.</div>
+      <div class="why-note">Score = 100 × (0.35·momentum7 + 0.25·momentum30 + 0.40·age bonus) × liquidity multiplier. Momentum saturates at ±30%; the age bonus peaks ~240 days after release; liquidity scales the total between 0.5× and 1×. 180d momentum is shown for context but doesn't feed the score. Knobs live in <code>card_scoring.py</code>.<br><br>The score and the numbers below always use the full price history, no matter which range the graph is showing.<br><br>Every nightly refresh adds one more day and nothing is ever thrown away, so the 90-day view keeps filling in over time even when the price source only hands back a week of history. A card added today starts with whatever history the source gives it and builds from there.<br><br>If 7D and 30D show the same number, this card only has one or two prices so far, so both windows fall back to the same baseline. That usually sorts itself out after the next nightly refresh, now that missing days get filled in automatically.</div>
     </div>
   </div>
 
+  <div class="tracker-layout">
   <div class="table-card">
     <div class="table-header">
       {% if is_admin %}
@@ -296,6 +321,10 @@
       <span class="table-header-title" id="tableTitle">My Portfolio</span>
       <button class="clear-filters-btn" onclick="clearFilters()">Clear filters</button>
       <span class="filter-count" id="filterCount"></span>
+      <div class="col-toggle" id="colToggle">
+        <button class="refresh-btn" style="background:#555" onclick="toggleColumnMenu(event)">Columns</button>
+        <div class="col-menu" id="colMenu" onclick="event.stopPropagation()"></div>
+      </div>
       {% if is_admin %}<button class="refresh-btn catalog-only" id="resetAllHistoryBtn" style="background:#d97706" onclick="resetAllHistory()" title="Rarely needed now — the nightly refresh backfills missing days automatically. Keeps all JustTCG matches and clears every card's price history so the next Refresh re-pulls the full window for everyone.">Re-fetch history (all)</button>{% endif %}
       {% if is_admin %}<button class="refresh-btn catalog-only" id="refreshBtn" onclick="refreshData()">Refresh prices</button>{% endif %}
       {% if is_admin %}<span class="refresh-note catalog-only" id="refreshNote"></span>{% endif %}
@@ -319,42 +348,73 @@
             <th class="left" style="width:28px;"><input type="checkbox" id="selectAllBox" onchange="toggleSelectAll(this.checked)" title="Select all shown"></th>
             <th class="left">#</th>
             <th class="left sortable" onclick="sortBy('name')">Card<span class="sort-arrow" id="arrow-name"></span></th>
-            <th class="left sortable" onclick="sortBy('set_name')">Set<span class="sort-arrow" id="arrow-set_name"></span></th>
-            <th class="left sortable" onclick="sortBy('variant')">Rarity<span class="sort-arrow" id="arrow-variant"></span></th>
-            <th class="left sortable" onclick="sortBy('game')">Game<span class="sort-arrow" id="arrow-game"></span></th>
-            <th class="sortable" onclick="sortBy('price_mid')">Price<span class="sort-arrow" id="arrow-price_mid"></span></th>
-            <th class="sortable" onclick="sortBy('momentum_7d')">7d<span class="sort-arrow" id="arrow-momentum_7d"></span></th>
-            <th class="sortable" onclick="sortBy('momentum_30d')">30d<span class="sort-arrow" id="arrow-momentum_30d"></span></th>
-            <th class="sortable" onclick="sortBy('age_days')">Age<span class="sort-arrow" id="arrow-age_days"></span></th>
-            <th class="sortable" onclick="sortBy('liquidity_score')">Liquidity<span class="sort-arrow" id="arrow-liquidity_score"></span></th>
-            <th class="sortable" onclick="sortBy('potential_score')">Score<span class="sort-arrow" id="arrow-potential_score"></span></th>
+            <th class="left sortable" data-col="set" onclick="sortBy('set_name')">Set<span class="sort-arrow" id="arrow-set_name"></span></th>
+            <th class="left sortable" data-col="rarity" onclick="sortBy('variant')">Rarity<span class="sort-arrow" id="arrow-variant"></span></th>
+            <th class="left sortable" data-col="game" onclick="sortBy('game')">Game<span class="sort-arrow" id="arrow-game"></span></th>
+            <th class="sortable" data-col="price" onclick="sortBy('price_mid')">Price<span class="sort-arrow" id="arrow-price_mid"></span></th>
+            <th class="sortable" data-col="momentum_7d" onclick="sortBy('momentum_7d')">7d<span class="sort-arrow" id="arrow-momentum_7d"></span></th>
+            <th class="sortable" data-col="momentum_30d" onclick="sortBy('momentum_30d')">30d<span class="sort-arrow" id="arrow-momentum_30d"></span></th>
+            <th class="sortable" data-col="momentum_180d" onclick="sortBy('momentum_180d')">180d<span class="sort-arrow" id="arrow-momentum_180d"></span></th>
+            <th class="sortable" data-col="age" onclick="sortBy('age_days')">Age<span class="sort-arrow" id="arrow-age_days"></span></th>
+            <th class="sortable" data-col="liquidity" onclick="sortBy('liquidity_score')">Liquidity<span class="sort-arrow" id="arrow-liquidity_score"></span></th>
+            <th class="sortable" data-col="score" onclick="sortBy('potential_score')">Score<span class="sort-arrow" id="arrow-potential_score"></span></th>
           </tr>
           <tr class="filter-row">
             <th></th>
             <th></th>
             <th class="left"><input class="col-filter" type="text" id="fCard" placeholder="Filter card…" oninput="onFilterChange()"></th>
-            <th class="left"><input class="col-filter" type="text" id="fSet" placeholder="Filter set…" oninput="onFilterChange()"></th>
-            <th class="left"><input class="col-filter" type="text" id="fRarity" placeholder="Filter rarity…" oninput="onFilterChange()"></th>
-            <th class="left">
+            <th class="left" data-col="set"><input class="col-filter" type="text" id="fSet" placeholder="Filter set…" oninput="onFilterChange()"></th>
+            <th class="left" data-col="rarity"><input class="col-filter" type="text" id="fRarity" placeholder="Filter rarity…" oninput="onFilterChange()"></th>
+            <th class="left" data-col="game">
               <select class="col-filter" id="fGame" onchange="onFilterChange()">
                 <option value="all">All</option>
                 <option value="pokemon">Pokémon</option>
                 <option value="one_piece">One Piece</option>
               </select>
             </th>
-            <th><div class="range-pair"><input class="range-input" type="number" id="fPriceMin" placeholder="min" oninput="onFilterChange()"><input class="range-input" type="number" id="fPriceMax" placeholder="max" oninput="onFilterChange()"></div></th>
-            <th><div class="range-pair"><input class="range-input" type="number" id="fM7Min" placeholder="min%" oninput="onFilterChange()"><input class="range-input" type="number" id="fM7Max" placeholder="max%" oninput="onFilterChange()"></div></th>
-            <th><div class="range-pair"><input class="range-input" type="number" id="fM30Min" placeholder="min%" oninput="onFilterChange()"><input class="range-input" type="number" id="fM30Max" placeholder="max%" oninput="onFilterChange()"></div></th>
-            <th><div class="range-pair"><input class="range-input" type="number" id="fAgeMin" placeholder="min d" oninput="onFilterChange()"><input class="range-input" type="number" id="fAgeMax" placeholder="max d" oninput="onFilterChange()"></div></th>
-            <th><div class="range-pair"><input class="range-input" type="number" id="fLiqMin" placeholder="min%" oninput="onFilterChange()"><input class="range-input" type="number" id="fLiqMax" placeholder="max%" oninput="onFilterChange()"></div></th>
-            <th><div class="range-pair"><input class="range-input" type="number" id="fScoreMin" placeholder="min" oninput="onFilterChange()"><input class="range-input" type="number" id="fScoreMax" placeholder="max" oninput="onFilterChange()"></div></th>
+            <th data-col="price"><div class="range-pair"><input class="range-input" type="number" id="fPriceMin" placeholder="min" oninput="onFilterChange()"><input class="range-input" type="number" id="fPriceMax" placeholder="max" oninput="onFilterChange()"></div></th>
+            <th data-col="momentum_7d"><div class="range-pair"><input class="range-input" type="number" id="fM7Min" placeholder="min%" oninput="onFilterChange()"><input class="range-input" type="number" id="fM7Max" placeholder="max%" oninput="onFilterChange()"></div></th>
+            <th data-col="momentum_30d"><div class="range-pair"><input class="range-input" type="number" id="fM30Min" placeholder="min%" oninput="onFilterChange()"><input class="range-input" type="number" id="fM30Max" placeholder="max%" oninput="onFilterChange()"></div></th>
+            <th data-col="momentum_180d"><div class="range-pair"><input class="range-input" type="number" id="fM180Min" placeholder="min%" oninput="onFilterChange()"><input class="range-input" type="number" id="fM180Max" placeholder="max%" oninput="onFilterChange()"></div></th>
+            <th data-col="age"><div class="range-pair"><input class="range-input" type="number" id="fAgeMin" placeholder="min d" oninput="onFilterChange()"><input class="range-input" type="number" id="fAgeMax" placeholder="max d" oninput="onFilterChange()"></div></th>
+            <th data-col="liquidity"><div class="range-pair"><input class="range-input" type="number" id="fLiqMin" placeholder="min%" oninput="onFilterChange()"><input class="range-input" type="number" id="fLiqMax" placeholder="max%" oninput="onFilterChange()"></div></th>
+            <th data-col="score"><div class="range-pair"><input class="range-input" type="number" id="fScoreMin" placeholder="min" oninput="onFilterChange()"><input class="range-input" type="number" id="fScoreMax" placeholder="max" oninput="onFilterChange()"></div></th>
           </tr>
         </thead>
         <tbody id="trackerBody">
-          <tr><td colspan="12" class="empty">Loading…</td></tr>
+          <tr><td colspan="13" class="empty">Loading…</td></tr>
         </tbody>
       </table>
     </div>
+  </div>
+
+  <aside class="info-panel">
+    <div class="info-panel-title">What each column means</div>
+    <dl class="info-list">
+      <dt>Card</dt>
+      <dd>Name, printed number, and (for Pokémon) an EN/JP badge for English vs Japanese.</dd>
+      <dt>Set</dt>
+      <dd>The expansion/set the card was printed in.</dd>
+      <dt>Rarity</dt>
+      <dd>The card's printed rarity or variant (e.g. Special Illustration Rare).</dd>
+      <dt>Game</dt>
+      <dd>Pokémon or One Piece.</dd>
+      <dt>Price</dt>
+      <dd>The most recent known market price.</dd>
+      <dt>7 day</dt>
+      <dd>Percent price change over the last 7 days. Green = up, red = down.</dd>
+      <dt>30 day</dt>
+      <dd>Percent price change over the last 30 days.</dd>
+      <dt>180 day</dt>
+      <dd>Percent price change over the last 180 days. Shown for context only — it isn't part of the Score below.</dd>
+      <dt>Age <span class="info-hidden-tag">hidden by default</span></dt>
+      <dd>Days since the card's set released. Scoring favors the window roughly 8 months after release — past the initial hype, before the card gets genuinely scarce.</dd>
+      <dt>Liquidity <span class="info-hidden-tag">hidden by default</span></dt>
+      <dd>How often the price has actually moved in the last 30 days (0–100%). A card that's been flat for weeks scores low here even if the price itself is high.</dd>
+      <dt>Score</dt>
+      <dd>0–100. Rolls 7d/30d momentum and age together, then scales the total by liquidity. 🟢 65+ is hot, 🟡 45–65 is worth watching, 🟠 under 45 is cold — it's a signal to look closer, not a buy/sell call.</dd>
+    </dl>
+  </aside>
   </div>
 
   {% if is_admin %}
@@ -405,9 +465,84 @@ let chartRange = 30;          // days of history shown on the graph
 let chartSnapshots = [];      // full snapshot list for the selected card
 let sortKey = 'potential_score';
 let sortAsc = false;
-const SORTABLE = ['name','set_name','variant','game','price_mid','momentum_7d','momentum_30d','age_days','liquidity_score','potential_score'];
+const SORTABLE = ['name','set_name','variant','game','price_mid','momentum_7d','momentum_30d','momentum_180d','age_days','liquidity_score','potential_score'];
 const FILTER_IDS = ['fCard','fSet','fRarity','fGame','fPriceMin','fPriceMax','fM7Min','fM7Max','fM30Min','fM30Max',
-                    'fAgeMin','fAgeMax','fLiqMin','fLiqMax','fScoreMin','fScoreMax'];
+                    'fM180Min','fM180Max','fAgeMin','fAgeMax','fLiqMin','fLiqMax','fScoreMin','fScoreMax'];
+
+// Every toggleable column — key matches the backend's TRACKER_COLUMN_KEYS
+// and each <th>/<td> data-col attribute. filterIds are cleared when a
+// column is hidden, so an invisible filter can never silently narrow the
+// list — matches how clearFilters() resets a text input to '' or a select
+// to 'all'.
+const COLUMN_DEFS = [
+  { key: 'set',           label: 'Set',        filterIds: ['fSet'] },
+  { key: 'rarity',        label: 'Rarity',     filterIds: ['fRarity'] },
+  { key: 'game',          label: 'Game',       filterIds: ['fGame'] },
+  { key: 'price',         label: 'Price',      filterIds: ['fPriceMin', 'fPriceMax'] },
+  { key: 'momentum_7d',   label: '7 day',      filterIds: ['fM7Min', 'fM7Max'] },
+  { key: 'momentum_30d',  label: '30 day',     filterIds: ['fM30Min', 'fM30Max'] },
+  { key: 'momentum_180d', label: '180 day',    filterIds: ['fM180Min', 'fM180Max'] },
+  { key: 'age',           label: 'Age',        filterIds: ['fAgeMin', 'fAgeMax'] },
+  { key: 'liquidity',     label: 'Liquidity',  filterIds: ['fLiqMin', 'fLiqMax'] },
+  { key: 'score',         label: 'Score',      filterIds: ['fScoreMin', 'fScoreMax'] },
+];
+const DEFAULT_VISIBLE_COLUMNS = {{ default_visible_columns | tojson }};
+let visibleColumns = new Set(DEFAULT_VISIBLE_COLUMNS);
+
+function clearFilterField(id){
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.value = el.tagName === 'SELECT' ? 'all' : '';
+}
+
+function applyColumnVisibility(){
+  document.querySelectorAll('[data-col]').forEach(el => {
+    el.style.display = visibleColumns.has(el.dataset.col) ? '' : 'none';
+  });
+}
+
+function renderColumnMenu(){
+  const menu = document.getElementById('colMenu');
+  if (!menu) return;
+  menu.innerHTML = COLUMN_DEFS.map(c => `
+    <label><input type="checkbox" ${visibleColumns.has(c.key) ? 'checked' : ''}
+      onchange="onColumnToggle('${c.key}', this.checked)"> ${esc(c.label)}</label>`).join('');
+}
+
+function onColumnToggle(key, checked){
+  if (checked) visibleColumns.add(key); else visibleColumns.delete(key);
+  if (!checked){
+    const def = COLUMN_DEFS.find(c => c.key === key);
+    if (def) def.filterIds.forEach(clearFilterField);
+  }
+  applyColumnVisibility();
+  renderTable();
+  saveColumnPrefs();
+}
+
+let saveColumnPrefsTimer = null;
+function saveColumnPrefs(){
+  clearTimeout(saveColumnPrefsTimer);
+  // Debounced — a quick run of toggles shouldn't fire a save per click.
+  saveColumnPrefsTimer = setTimeout(() => {
+    fetch('/api/card-tracker/prefs', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ visible_columns: Array.from(visibleColumns) })
+    }).catch(() => {});   // best-effort — a failed save just falls back to the default next visit
+  }, 500);
+}
+
+async function loadColumnPrefs(){
+  try {
+    const resp = await fetch('/api/card-tracker/prefs');
+    if (resp.ok){
+      const d = await resp.json();
+      if (Array.isArray(d.visible_columns)) visibleColumns = new Set(d.visible_columns);
+    }
+  } catch(e) { /* fall back to DEFAULT_VISIBLE_COLUMNS, already set above */ }
+  renderColumnMenu();
+  applyColumnVisibility();
+}
 
 function updateCatalogOnlyVisibility(){
   const show = IS_ADMIN && viewMode === 'catalog';
@@ -463,6 +598,7 @@ function getFilters(){
     priceMin: num('fPriceMin'), priceMax: num('fPriceMax'),
     m7Min: num('fM7Min'), m7Max: num('fM7Max'),
     m30Min: num('fM30Min'), m30Max: num('fM30Max'),
+    m180Min: num('fM180Min'), m180Max: num('fM180Max'),
     ageMin: num('fAgeMin'), ageMax: num('fAgeMax'),
     liqMin: num('fLiqMin'), liqMax: num('fLiqMax'),
     scoreMin: num('fScoreMin'), scoreMax: num('fScoreMax'),
@@ -486,6 +622,7 @@ function filterRows(rows, f){
     if (!inRange(r.price_mid, f.priceMin, f.priceMax)) return false;
     if (!inRange(r.momentum_7d, f.m7Min, f.m7Max)) return false;
     if (!inRange(r.momentum_30d, f.m30Min, f.m30Max)) return false;
+    if (!inRange(r.momentum_180d, f.m180Min, f.m180Max)) return false;
     if (!inRange(r.age_days, f.ageMin, f.ageMax)) return false;
     if (!inRange(r.liquidity_score == null ? null : r.liquidity_score * 100, f.liqMin, f.liqMax)) return false;
     if (!inRange(r.potential_score, f.scoreMin, f.scoreMax)) return false;
@@ -559,7 +696,7 @@ function renderTable(){
     const emptyMsg = allRows.length ? 'No cards match the current filters.'
       : (viewMode === 'catalog' ? 'No cards in the catalog yet.'
                                  : 'Your portfolio is empty — search for a card above to add one.');
-    body.innerHTML = `<tr><td colspan="12" class="empty">${emptyMsg}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="13" class="empty">${emptyMsg}</td></tr>`;
     updateSelectAllBox([]);
     updateSelectionBar();
     return;
@@ -572,18 +709,20 @@ function renderTable(){
         <div class="card-name">${esc(r.name)}${r.game === 'pokemon' ? langBadge(r.language) : ''}${r.match_suspect ? ' <span title="JustTCG matched a different card name — open the detail panel and re-match if wrong">⚠️</span>' : ''}</div>
         ${r.card_number ? `<div class="card-sub">#${esc(r.card_number)}</div>` : ''}
       </td>
-      <td class="left">${esc(r.set_name || '—')}</td>
-      <td class="left">${esc(r.variant || '—')}</td>
-      <td class="left">${esc(GAME_LABELS[r.game] || r.game)}</td>
-      <td>${money(r.price_mid)}</td>
-      <td>${pct(r.momentum_7d)}</td>
-      <td>${pct(r.momentum_30d)}</td>
-      <td>${ageStr(r.age_days)}</td>
-      <td>${r.liquidity_score == null ? '—' : (r.liquidity_score * 100).toFixed(0) + '%'}</td>
-      <td>${scoreBadge(r.potential_score)}</td>
+      <td class="left" data-col="set">${esc(r.set_name || '—')}</td>
+      <td class="left" data-col="rarity">${esc(r.variant || '—')}</td>
+      <td class="left" data-col="game">${esc(GAME_LABELS[r.game] || r.game)}</td>
+      <td data-col="price">${money(r.price_mid)}</td>
+      <td data-col="momentum_7d">${pct(r.momentum_7d)}</td>
+      <td data-col="momentum_30d">${pct(r.momentum_30d)}</td>
+      <td data-col="momentum_180d">${pct(r.momentum_180d)}</td>
+      <td data-col="age">${ageStr(r.age_days)}</td>
+      <td data-col="liquidity">${r.liquidity_score == null ? '—' : (r.liquidity_score * 100).toFixed(0) + '%'}</td>
+      <td data-col="score">${scoreBadge(r.potential_score)}</td>
     </tr>`).join('');
   updateSelectAllBox(rows);
   updateSelectionBar();
+  applyColumnVisibility();
 }
 
 function updateSelectAllBox(visibleRows){
@@ -764,6 +903,7 @@ async function showDetail(id){
       why.innerHTML = [
         `<span class="why-chip">7d momentum: <b>${e.momentum_7d_pct == null ? 'n/a' : (e.momentum_7d_pct > 0 ? '+' : '') + e.momentum_7d_pct + '%'}</b> → ${e.momentum_7d_norm}</span>`,
         `<span class="why-chip">30d momentum: <b>${e.momentum_30d_pct == null ? 'n/a' : (e.momentum_30d_pct > 0 ? '+' : '') + e.momentum_30d_pct + '%'}</b> → ${e.momentum_30d_norm}</span>`,
+        `<span class="why-chip">180d momentum: <b>${e.momentum_180d_pct == null ? 'n/a' : (e.momentum_180d_pct > 0 ? '+' : '') + e.momentum_180d_pct + '%'}</b> (informational — not in the score)</span>`,
         `<span class="why-chip">Age: <b>${e.age_days == null ? 'unknown' : e.age_days + 'd'}</b> → bonus ${e.age_bonus}</span>`,
         `<span class="why-chip">Liquidity: <b>${(e.liquidity_score * 100).toFixed(0)}%</b> → ×${e.liquidity_multiplier}</span>`,
         `<span class="why-chip">Potential: <b>${e.potential_score}</b> / 100</span>`,
@@ -1059,7 +1199,7 @@ async function load(){
     updateAddPortfolioCount();
   } catch (err) {
     document.getElementById('trackerBody').innerHTML =
-      '<tr><td colspan="12" class="empty">Failed to load data.</td></tr>';
+      '<tr><td colspan="13" class="empty">Failed to load data.</td></tr>';
   }
 }
 
@@ -1286,18 +1426,24 @@ async function showNextScheduled(){
 }
 
 updateCatalogOnlyVisibility();
-load();
-showNextScheduled();
+(async function init(){
+  await loadColumnPrefs();   // must resolve before the first render, or a saved preference flashes the default first
+  await load();
+  showNextScheduled();
+})();
 (function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();if(selectedId)showDetail(selectedId);};upd();})();
 </script>
 <script>
-// Admin Tools dropdown — click the button to open, click anywhere else or press Esc to close.
+// Admin Tools / Columns dropdowns — click the button to open, click anywhere
+// else or press Esc to close. Same pattern for both, so one pair of
+// listeners closes whichever is open.
 function closeNavGroups(){
   document.querySelectorAll('.nav-group.open').forEach(function(g){
     g.classList.remove('open');
     var b = g.querySelector('.nav-group-btn');
     if (b) b.setAttribute('aria-expanded', 'false');
   });
+  document.querySelectorAll('.col-toggle.open').forEach(function(g){ g.classList.remove('open'); });
 }
 function toggleNavGroup(ev){
   ev.preventDefault();
@@ -1305,6 +1451,13 @@ function toggleNavGroup(ev){
   var btn = ev.currentTarget, grp = btn.parentElement, wasOpen = grp.classList.contains('open');
   closeNavGroups();
   if (!wasOpen){ grp.classList.add('open'); btn.setAttribute('aria-expanded', 'true'); }
+}
+function toggleColumnMenu(ev){
+  ev.preventDefault();
+  ev.stopPropagation();
+  var grp = document.getElementById('colToggle'), wasOpen = grp.classList.contains('open');
+  closeNavGroups();
+  if (!wasOpen) grp.classList.add('open');
 }
 document.addEventListener('click', closeNavGroups);
 document.addEventListener('keydown', function(ev){ if (ev.key === 'Escape') closeNavGroups(); });

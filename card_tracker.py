@@ -148,6 +148,9 @@ CARD_TRACKER_SCHEMA = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_card_scores_card_time ON card_scores (card_id, computed_at)",
+    # Display-only alongside momentum_7d/30d (see card_scoring.score_card) —
+    # not part of potential_score's weighted formula.
+    "ALTER TABLE card_scores ADD COLUMN IF NOT EXISTS momentum_180d NUMERIC",
     # What JustTCG actually matched (visibility for wrong-match debugging).
     "ALTER TABLE tracked_cards ADD COLUMN IF NOT EXISTS justtcg_name TEXT",
     "ALTER TABLE tracked_cards ADD COLUMN IF NOT EXISTS justtcg_set TEXT",
@@ -195,7 +198,27 @@ CARD_TRACKER_SCHEMA = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_user_tracked_cards_user ON user_tracked_cards (user_id)",
+    # Saved column-visibility choice for the card-tracker table (see
+    # main.py's /api/card-tracker/prefs). One row per member; visible_columns
+    # is a JSON array of column keys, validated against TRACKER_COLUMN_KEYS
+    # before it's ever written. Absent row = the page's hardcoded default.
+    """
+    CREATE TABLE IF NOT EXISTS card_tracker_prefs (
+        user_id         BIGINT PRIMARY KEY,
+        visible_columns JSONB NOT NULL,
+        updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
 ]
+
+# Every toggleable table column, keyed by the same string both the frontend
+# and /api/card-tracker/prefs use — an allowlist so a saved preference can
+# never contain junk. Card name/# and the row checkbox are always shown and
+# aren't in this list. age/liquidity are excluded from DEFAULT_VISIBLE_COLUMNS
+# (hidden until a member opts in) but stay valid values to save as visible.
+TRACKER_COLUMN_KEYS = ("set", "rarity", "game", "price", "momentum_7d",
+                      "momentum_30d", "momentum_180d", "age", "liquidity", "score")
+DEFAULT_VISIBLE_COLUMNS = [k for k in TRACKER_COLUMN_KEYS if k not in ("age", "liquidity")]
 
 
 async def ensure_card_tracker_schema(pool) -> None:
@@ -928,9 +951,11 @@ async def run_ingest(pool) -> dict:
 
 
 async def _score_one_card(conn, card_id: int, release_date) -> bool:
-    """Compute + insert a card_scores row for ONE card from its last 60 days
-    of snapshots. False if there's nothing scoreable yet (no snapshots, or
-    not enough of a single-source series — see select_scoring_series).
+    """Compute + insert a card_scores row for ONE card from its last 190 days
+    of snapshots (180d momentum needs a baseline at or before that cutoff —
+    trimming any tighter would silently understate it). False if there's
+    nothing scoreable yet (no snapshots, or not enough of a single-source
+    series — see select_scoring_series).
 
     Takes an already-acquired connection rather than a pool: run_scoring
     reuses one connection across its whole sweep; refresh_one_card acquires
@@ -942,7 +967,7 @@ async def _score_one_card(conn, card_id: int, release_date) -> bool:
     snaps = await conn.fetch(
         "SELECT captured_at, price_low, price_mid, price_high, source "
         "FROM price_snapshots "
-        "WHERE card_id = $1 AND captured_at >= NOW() - INTERVAL '60 days' "
+        "WHERE card_id = $1 AND captured_at >= NOW() - INTERVAL '190 days' "
         "ORDER BY captured_at",
         card_id)
     if not snaps:
@@ -953,9 +978,9 @@ async def _score_one_card(conn, card_id: int, release_date) -> bool:
         return False
     s = card_scoring.score_card(series, release_date)
     await conn.execute(
-        "INSERT INTO card_scores (card_id, momentum_7d, momentum_30d, "
-        "liquidity_score, age_days, potential_score) VALUES ($1, $2, $3, $4, $5, $6)",
-        card_id, s["momentum_7d_pct"], s["momentum_30d_pct"],
+        "INSERT INTO card_scores (card_id, momentum_7d, momentum_30d, momentum_180d, "
+        "liquidity_score, age_days, potential_score) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        card_id, s["momentum_7d_pct"], s["momentum_30d_pct"], s["momentum_180d_pct"],
         s["liquidity_score"], s["age_days"], s["potential_score"])
     return True
 
