@@ -47,6 +47,19 @@ BACKDATE_DAY_CHOICES = (30, 60, 180)
 # Admin selects cards by hand for this action; capped so one click can't burn
 # through the shared PPT daily credit budget (2 credits/card at includeHistory).
 BACKDATE_MAX_CARDS = 10
+# A brand-new card gets backdated this many days automatically the moment it
+# resolves a tcgplayer_id (see resolve_tcgplayer_ids / run_ppt_ingest), so its
+# graph isn't a single flat point until someone remembers to backdate it by
+# hand. No admin confirmation gates this — unlike the manual action, it's an
+# unconditional +2 PPT credits per newly-resolved card.
+AUTO_BACKDATE_DAYS = 180
+# Max auto-backdates per run_ppt_ingest call (shared across the free-catalog
+# resolves in resolve_tcgplayer_ids and the paid-search resolves below it) —
+# without this, importing a whole set (50+ cards) would auto-spend the day's
+# PPT credit budget in one sweep. Cards beyond the cap still resolve and get
+# today's live price normally; they just don't get history until the next
+# sweep's cap resets, or a manual backdate.
+AUTO_BACKDATE_RUN_CAP = 25
 
 # Abort an ingest run after this many consecutive API failures — protects the
 # free-tier call budget from burning on an outage or a wrong endpoint shape.
@@ -244,15 +257,30 @@ def match_catalog_row(card: dict, candidates: list):
     return best
 
 
-async def resolve_tcgplayer_ids(pool) -> dict:
-    """Fill tracked_cards.tcgplayer_id from catalog_cards. No API calls.
+async def resolve_tcgplayer_ids(pool, client: httpx.AsyncClient, backdate_budget: int) -> dict:
+    """Fill tracked_cards.tcgplayer_id from catalog_cards, then auto-backdate
+    each newly-resolved card (see _auto_backdate_new_card) — this is the
+    first point a brand-new card (from watchlist sync or set import) has a
+    usable tcgplayer_id, so it's the earliest a backdate can happen.
+
+    The catalog match itself is free (no API calls); `client` is only for
+    the auto-backdate PPT call, which does cost credits (AUTO_BACKDATE_DAYS,
+    see the module docstring above it). `backdate_budget` caps how many of
+    THIS call's resolves may spend on it — shared with the paid-search
+    resolves in run_ppt_ingest via the returned 'backdate_budget_left', so a
+    big import can't blow the whole cap here before the search path ever
+    gets a turn. Cards beyond the cap still resolve (today's live price is
+    unaffected) — they just don't get history until the cap resets on the
+    next sweep, or a manual backdate.
 
     Only rows whose id is verified as a real TCGplayer product id are used —
     the same gate the catalog's buy links use, for the same reason: an
     unverified id is PPT's own, and pricing against it would return the wrong
     card's numbers.
     """
-    summary = {"resolved": 0, "unmatched": []}
+    summary = {"resolved": 0, "unmatched": [], "auto_backdated": 0,
+              "auto_backdate_credits": 0, "auto_backdate_deferred": 0}
+    remaining = backdate_budget
     async with pool.acquire() as conn:
         cards = await conn.fetch(
             "SELECT id, name, set_name, card_number, variant FROM tracked_cards "
@@ -278,6 +306,15 @@ async def resolve_tcgplayer_ids(pool) -> dict:
             logger.info("Tracker: matched %r -> catalog %r (#%s) tcgPlayerId=%s",
                         c["name"], match["card_name"], match["card_number"],
                         match["tcgplayer_id"])
+            if remaining > 0:
+                remaining -= 1
+                bd = await _auto_backdate_new_card(client, pool, c["id"], c["name"], match["tcgplayer_id"])
+                summary["auto_backdate_credits"] += bd["credits"]
+                if bd["inserted"]:
+                    summary["auto_backdated"] += 1
+            else:
+                summary["auto_backdate_deferred"] += 1
+    summary["backdate_budget_left"] = remaining
     if summary["unmatched"]:
         logger.info("Tracker: %d Pokemon card(s) not resolvable from the catalog — "
                     "stock their set on /catalog and they resolve next run",
@@ -349,28 +386,38 @@ async def run_ppt_ingest(pool) -> dict:
     one series would corrupt momentum.
     """
     summary = {"cards": 0, "snapshots": 0, "resolved": 0, "resolved_by_search": 0,
-               "skipped": 0, "credits": 0, "failed": [], "rate_limited": False,
-               "total": 0, "priced_today": 0, "missing": 0}
+               "auto_backdated": 0, "auto_backdate_deferred": 0, "skipped": 0, "credits": 0,
+               "failed": [], "rate_limited": False, "total": 0, "priced_today": 0, "missing": 0}
 
     if not price_sources.pokemonpricetracker_available():
         logger.info("Tracker: PokemonPriceTracker not configured — skipping Pokemon pricing")
         summary.update(await ppt_coverage(pool))
         return summary
 
-    res = await resolve_tcgplayer_ids(pool)
-    summary["resolved"] = res["resolved"]
-
-    async with pool.acquire() as conn:
-        cards = await conn.fetch(_MISSING_TODAY_SQL, PPT_RUN_CAP)
-    summary["cards"] = len(cards)
-    if not cards:
-        summary.update(await ppt_coverage(pool))
-        logger.info("Tracker: every Pokemon card already has a price for today "
-                    "(%d/%d) — no credits spent",
-                    summary["priced_today"], summary["total"])
-        return summary
-
     async with httpx.AsyncClient(timeout=30.0) as client:
+        # Resolution + auto-backdate for newly-resolved cards (see
+        # resolve_tcgplayer_ids) — needs the client, unlike before, since a
+        # first-time resolve now also costs a PPT call. The budget it leaves
+        # unspent carries over to the search-resolved cards below, so the
+        # AUTO_BACKDATE_RUN_CAP is shared across both resolve paths, not
+        # doubled.
+        res = await resolve_tcgplayer_ids(pool, client, AUTO_BACKDATE_RUN_CAP)
+        summary["resolved"] = res["resolved"]
+        summary["auto_backdated"] += res["auto_backdated"]
+        summary["credits"] += res["auto_backdate_credits"]
+        auto_backdate_budget_left = res["backdate_budget_left"]
+
+        async with pool.acquire() as conn:
+            cards = await conn.fetch(_MISSING_TODAY_SQL, PPT_RUN_CAP)
+        summary["cards"] = len(cards)
+        if not cards:
+            summary.update(await ppt_coverage(pool))
+            logger.info("Tracker: every Pokemon card already has a price for today "
+                        "(%d/%d) — %d credit(s) spent on auto-backdate (%d deferred to next sweep)",
+                        summary["priced_today"], summary["total"], summary["credits"],
+                        summary["auto_backdate_deferred"])
+            return summary
+
         # Free catalog lookup (pokemontcg.io), not a PPT call — costs no
         # credits. Scoring needs release_date for age_days, so this has to keep
         # running now that Pokemon no longer passes through the JustTCG ingest.
@@ -421,6 +468,17 @@ async def run_ppt_ingest(pool) -> dict:
                         "UPDATE tracked_cards SET tcgplayer_id = $1 WHERE id = $2",
                         tcg_id, c["id"])
                 summary["resolved_by_search"] += 1
+                # First tcgplayer_id this card has ever had — same auto-backdate
+                # a free catalog resolve gets in resolve_tcgplayer_ids, sharing
+                # the same run-level budget so the two paths can't double it.
+                if auto_backdate_budget_left > 0:
+                    auto_backdate_budget_left -= 1
+                    bd = await _auto_backdate_new_card(client, pool, c["id"], c["name"], tcg_id)
+                    summary["credits"] += bd["credits"]
+                    if bd["inserted"]:
+                        summary["auto_backdated"] += 1
+                else:
+                    summary["auto_backdate_deferred"] += 1
 
             prices, status = {}, "error"
             for attempt in range(PPT_RATE_RETRIES + 1):
@@ -459,10 +517,11 @@ async def run_ppt_ingest(pool) -> dict:
 
     summary.update(await ppt_coverage(pool))
     logger.info("Tracker (PPT): %d snapshot(s) from %d card(s) missing today, "
-                "%d resolved from catalog, %d by search, %d skipped, %d credit(s)%s "
-                "| coverage today: %d/%d priced, %d still missing",
+                "%d resolved from catalog, %d by search, %d auto-backdated (%d deferred), "
+                "%d skipped, %d credit(s)%s | coverage today: %d/%d priced, %d still missing",
                 summary["snapshots"], summary["cards"], summary["resolved"],
-                summary["resolved_by_search"], summary["skipped"], summary["credits"],
+                summary["resolved_by_search"], summary["auto_backdated"],
+                summary["auto_backdate_deferred"], summary["skipped"], summary["credits"],
                 " — STOPPED on rate limit" if summary["rate_limited"] else "",
                 summary["priced_today"], summary["total"], summary["missing"])
     if summary["missing"]:
@@ -471,14 +530,90 @@ async def run_ppt_ingest(pool) -> dict:
     return summary
 
 
+async def _backdate_one_card(client: httpx.AsyncClient, pool, card_id: int, card_name: str,
+                             tcgplayer_id: str, days: int) -> dict:
+    """Fetch + insert missing daily prices for ONE card. Shared by the manual
+    /api/card-tracker/backdate action (run_ppt_backdate) and the automatic
+    first-resolve backdate (_auto_backdate_new_card) — same PPT call, same
+    idempotent day-skip insert, just different callers and days.
+
+    Returns {"inserted": int, "credits": int, "status": "ok"|"rate_limited"|"empty"|"error"}.
+    Retries on a 429 the same way the rest of the tracker does (PPT_RATE_RETRIES,
+    exponential backoff) before giving up and reporting rate_limited.
+    """
+    history, status = [], "error"
+    for attempt in range(PPT_RATE_RETRIES + 1):
+        history, status, _daily_remaining = await price_sources.fetch_ppt_price_history(
+            client, tcgplayer_id, days)
+        if status != "rate_limited" or attempt >= PPT_RATE_RETRIES:
+            break
+        wait = PPT_RATE_WAIT_S * (2 ** attempt)
+        logger.warning("Backdate: rate limited on %r — waiting %.0fs (retry %d/%d)",
+                       card_name, wait, attempt + 1, PPT_RATE_RETRIES)
+        await asyncio.sleep(wait)
+
+    if status == "rate_limited":
+        return {"inserted": 0, "credits": 0, "status": "rate_limited"}
+    credits = 2   # base lookup + includeHistory, billed at limit=1
+    if status != "ok":
+        return {"inserted": 0, "credits": credits, "status": status}
+
+    async with pool.acquire() as conn:
+        known_days = {r["day"] for r in await conn.fetch(
+            "SELECT DISTINCT (captured_at AT TIME ZONE 'UTC')::date AS day "
+            "FROM price_snapshots WHERE card_id = $1", card_id)}
+        inserted = 0
+        for point in history:
+            if point["date"] in known_days:
+                continue
+            # Noon UTC, matching the stamp the JustTCG history backfill
+            # already uses for backfilled (as opposed to live) rows.
+            captured_at = datetime(point["date"].year, point["date"].month,
+                                   point["date"].day, 12, tzinfo=timezone.utc)
+            await conn.execute(
+                "INSERT INTO price_snapshots (card_id, captured_at, price_mid, source) "
+                "VALUES ($1, $2, $3, $4)",
+                card_id, captured_at, point["market"], PPT_HISTORY_SOURCE)
+            known_days.add(point["date"])
+            inserted += 1
+    return {"inserted": inserted, "credits": credits, "status": "ok"}
+
+
+async def _auto_backdate_new_card(client: httpx.AsyncClient, pool, card_id: int,
+                                  card_name: str, tcgplayer_id: str) -> dict:
+    """Best-effort AUTO_BACKDATE_DAYS-day backdate the moment a card gets its
+    tcgplayer_id for the first time (see resolve_tcgplayer_ids and the
+    search-fallback in run_ppt_ingest) — so a brand-new card's graph isn't a
+    single flat point until someone remembers to backdate it by hand.
+
+    Never raises: a failure here must not abort resolution for the rest of
+    the cards in this run. Swallowing is safe because this is pure upside —
+    worst case the card just waits for the next manual/nightly opportunity,
+    same as it would have without this at all.
+    """
+    try:
+        result = await _backdate_one_card(client, pool, card_id, card_name,
+                                          tcgplayer_id, AUTO_BACKDATE_DAYS)
+    except Exception:
+        logger.exception("Auto-backdate: failed for %r (id %d)", card_name, card_id)
+        return {"inserted": 0, "credits": 0, "status": "error"}
+    if result["status"] == "rate_limited":
+        logger.warning("Auto-backdate: rate limited on %r — skipping for this run", card_name)
+    elif result["inserted"]:
+        logger.info("Auto-backdate: %r -> %d day(s) of history backfilled on first resolve",
+                    card_name, result["inserted"])
+    return result
+
+
 async def run_ppt_backdate(pool, card_ids: list, days: int) -> dict:
     """Backfill day-by-day raw prices for specific tracked Pokemon cards via
     PPT's includeHistory param (price_sources.fetch_ppt_price_history).
 
-    Admin-triggered only, on cards picked by hand — NOT part of the nightly
-    ingest, which only ever asks for today's live price. One Piece cards are
-    reported as skipped (PPT has no coverage for them; JustTCG's own history
-    already backfills automatically in run_ingest).
+    Admin-triggered only, on cards picked by hand — separate from the
+    automatic first-resolve backdate (_auto_backdate_new_card), which covers
+    every new card without a manual click. One Piece cards are reported as
+    skipped (PPT has no coverage for them; JustTCG's own history already
+    backfills automatically in run_ingest).
 
     Idempotent the same way the JustTCG history backfill is: a day PPT offers
     that's already in price_snapshots is left alone, so re-running a backdate
@@ -509,49 +644,19 @@ async def run_ppt_backdate(pool, card_ids: list, days: int) -> dict:
                 summary["skipped"].append(f"{c['name']}: no resolved TCGplayer id yet — run a refresh first")
                 continue
 
-            history, status = [], "error"
-            for attempt in range(PPT_RATE_RETRIES + 1):
-                history, status, _daily_remaining = await price_sources.fetch_ppt_price_history(
-                    client, tcg_id, days)
-                if status != "rate_limited" or attempt >= PPT_RATE_RETRIES:
-                    break
-                wait = PPT_RATE_WAIT_S * (2 ** attempt)
-                logger.warning("Backdate: rate limited on %r — waiting %.0fs (retry %d/%d)",
-                               c["name"], wait, attempt + 1, PPT_RATE_RETRIES)
-                await asyncio.sleep(wait)
-
-            if status == "rate_limited":
+            result = await _backdate_one_card(client, pool, c["id"], c["name"], tcg_id, days)
+            summary["credits"] += result["credits"]
+            if result["status"] == "rate_limited":
                 summary["rate_limited"] = True
                 summary["failed"].append(
                     "stopped: PokemonPriceTracker is rate-limiting — remaining selected "
                     "cards were not backdated; try again shortly")
                 break
-            summary["credits"] += 2   # base lookup + includeHistory, billed at limit=1
-            if status != "ok":
-                summary["skipped"].append(f"{c['name']}: no history returned ({status})")
+            if result["status"] != "ok":
+                summary["skipped"].append(f"{c['name']}: no history returned ({result['status']})")
                 continue
-
-            async with pool.acquire() as conn:
-                known_days = {r["day"] for r in await conn.fetch(
-                    "SELECT DISTINCT (captured_at AT TIME ZONE 'UTC')::date AS day "
-                    "FROM price_snapshots WHERE card_id = $1", c["id"])}
-                inserted = 0
-                for point in history:
-                    if point["date"] in known_days:
-                        continue
-                    # Noon UTC, matching the stamp the JustTCG history backfill
-                    # already uses for backfilled (as opposed to live) rows.
-                    captured_at = datetime(point["date"].year, point["date"].month,
-                                           point["date"].day, 12, tzinfo=timezone.utc)
-                    await conn.execute(
-                        "INSERT INTO price_snapshots (card_id, captured_at, price_mid, source) "
-                        "VALUES ($1, $2, $3, $4)",
-                        c["id"], captured_at, point["market"], PPT_HISTORY_SOURCE)
-                    known_days.add(point["date"])
-                    inserted += 1
-            summary["inserted"] += inserted
-            logger.info("Backdate: %r -> %d day(s) of history requested, %d new row(s) inserted",
-                        c["name"], len(history), inserted)
+            summary["inserted"] += result["inserted"]
+            logger.info("Backdate: %r -> %d new row(s) inserted", c["name"], result["inserted"])
 
     logger.info("Backdate done: %d card(s), %d row(s) inserted, %d credit(s)%s, "
                 "%d skipped, %d failed",
