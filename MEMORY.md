@@ -3,6 +3,34 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-08-02 — Card tracker: tracked_cards gets a language column
+
+**Decided:** `tracked_cards` now has `language TEXT NOT NULL DEFAULT 'english'`,
+and its uniqueness widened from `(game, name, set_name, card_number)` to
+include `language`. Driven by the portfolio search labeling English/Japanese
+cards (catalog_cards already distinguishes them as separate PPT products) —
+without this, adding a Japanese printing with the same name/set/number as an
+already-tracked English one would have silently linked to the wrong card's
+price history.
+
+**Live-DB risk, flagged rather than hidden:** widening the constraint means
+dropping the old one first, and the drop targets a **guessed** constraint
+name (`tracked_cards_game_name_set_name_card_number_key`, Postgres's default
+auto-naming for an unnamed inline `UNIQUE(...)` — never verified against the
+actual production DB, since this session had no DB credentials to check
+with). If the guess is wrong, the fix fails LOUD, not silent: every insert
+into `tracked_cards` would start throwing "no unique constraint matches ON
+CONFLICT" until someone finds and drops the real constraint by hand.
+**If cards stop saving after this deploys, check `pg_constraint` for
+`tracked_cards`'s actual unique constraint name first** — that's the likely
+cause.
+
+**Language now threaded through the whole pricing pipeline**, not just
+search/add — `resolve_tcgplayer_ids`'s catalog match, `run_ppt_ingest`'s
+nightly price fetch and search fallback, and both backdate paths all pass
+`language` now. Skipping this would have meant a Japanese card saves fine
+but silently never prices correctly (defaults to English at the PPT call).
+
 ## 2026-08-02 — Card tracker: opened to all paid members, one portfolio each
 
 **Decided:** The card tracker moved from a single admin-only shared list to
