@@ -1767,12 +1767,19 @@ async def api_card_tracker_reset_history(request: Request, user=Depends(require_
     return JSONResponse({"ok": True, "cards_affected": 1}, headers={"Cache-Control": "no-store"})
 
 def _validate_card_ids(body: dict) -> list:
+    """No count cap — removal is just a DELETE, cheap regardless of how many
+    cards are selected. The cap belongs to backdate (see
+    _validate_backdate_card_ids), which spends PPT credits per card."""
     ids = body.get("card_ids")
     if not isinstance(ids, list) or not ids or not all(isinstance(i, int) for i in ids):
         raise HTTPException(status_code=400, detail="card_ids (non-empty list of int) required")
+    return ids
+
+def _validate_backdate_card_ids(body: dict) -> list:
+    ids = _validate_card_ids(body)
     if len(ids) > BACKDATE_MAX_CARDS:
         raise HTTPException(status_code=400,
-                            detail=f"Select at most {BACKDATE_MAX_CARDS} cards at a time")
+                            detail=f"Select at most {BACKDATE_MAX_CARDS} cards at a time for backdating")
     return ids
 
 @app.post("/api/card-tracker/remove")
@@ -1823,7 +1830,7 @@ async def api_card_tracker_backdate(request: Request, user=Depends(require_admin
     """Backfill day-by-day raw prices for selected Pokemon cards via PPT's
     includeHistory param (30/60/180 days). Costs 2 PPT credits per card."""
     body = await request.json()
-    card_ids = _validate_card_ids(body)
+    card_ids = _validate_backdate_card_ids(body)
     days = body.get("days")
     if days not in BACKDATE_DAY_CHOICES:
         raise HTTPException(status_code=400,
