@@ -1553,6 +1553,7 @@ def _serialize_tracker_row(r) -> dict:
         "id": r["id"],
         "name": r["name"],
         "game": r["game"],
+        "language": r["language"],
         "set_name": r["set_name"],
         "card_number": r["card_number"],
         "variant": r["variant"],
@@ -1576,7 +1577,7 @@ def _serialize_tracker_row(r) -> dict:
     }
 
 _TRACKER_ROW_COLUMNS = """
-    tc.id, tc.name, tc.game, tc.set_name, tc.card_number, tc.variant,
+    tc.id, tc.name, tc.game, tc.language, tc.set_name, tc.card_number, tc.variant,
     tc.release_date, tc.justtcg_name, tc.justtcg_set, tc.justtcg_number,
     ps.price_low, ps.price_mid, ps.price_high, ps.captured_at,
     cs.momentum_7d, cs.momentum_30d, cs.liquidity_score,
@@ -1630,7 +1631,12 @@ async def api_portfolio_search(request: Request, user=Depends(get_current_user))
     """Free (no PPT/JustTCG credits) — searches the already-populated
     catalog_cards table so a member can find a card to add without spending
     anything. If a card genuinely isn't in the catalog yet, it isn't
-    findable here; the same limitation resolve_tcgplayer_ids already has."""
+    findable here; the same limitation resolve_tcgplayer_ids already has.
+
+    Returns matches across BOTH languages for one query — English and
+    Japanese are separate products (see catalog.py), so `language` is
+    included in DISTINCT ON rather than filtered out, and each result is
+    labeled so a member can tell the two printings apart before adding."""
     body = await request.json()
     game = body.get("game", "")
     query = (body.get("query") or "").strip()
@@ -1640,14 +1646,15 @@ async def api_portfolio_search(request: Request, user=Depends(get_current_user))
         raise HTTPException(status_code=400, detail="query must be at least 2 characters")
     async with request.app.state.db.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT DISTINCT ON (card_name, set_name, card_number, rarity) "
-            "card_name, set_name, card_number, rarity, tcgplayer_id "
+            "SELECT DISTINCT ON (card_name, set_name, card_number, rarity, language) "
+            "card_name, set_name, card_number, rarity, tcgplayer_id, language "
             "FROM catalog_cards WHERE game = $1 AND card_name ILIKE $2 "
-            "ORDER BY card_name, set_name, card_number, rarity LIMIT 25",
+            "ORDER BY card_name, set_name, card_number, rarity, language LIMIT 25",
             game, f"%{query}%")
     return JSONResponse([
         {"name": r["card_name"], "set_name": r["set_name"], "card_number": r["card_number"],
-         "variant": r["rarity"] or None, "tcgplayer_id": r["tcgplayer_id"] or None}
+         "variant": r["rarity"] or None, "tcgplayer_id": r["tcgplayer_id"] or None,
+         "language": r["language"]}
         for r in rows
     ], headers={"Cache-Control": "no-store"})
 
@@ -1667,6 +1674,7 @@ async def api_portfolio_add(request: Request, user=Depends(get_current_user)):
     card_number = (body.get("card_number") or "").strip()[:40]
     variant = (body.get("variant") or "").strip()[:200] or None
     tcgplayer_id = (body.get("tcgplayer_id") or "").strip()[:40] or None
+    language = price_sources.ppt_language(body.get("language"))
     if game not in VALID_GAMES or not name:
         raise HTTPException(status_code=400, detail="game and name required")
 
@@ -1683,11 +1691,11 @@ async def api_portfolio_add(request: Request, user=Depends(get_current_user)):
 
         async with conn.transaction():
             insert_row = await conn.fetchrow(
-                "INSERT INTO tracked_cards (name, game, set_name, card_number, variant, tcgplayer_id) "
-                "VALUES ($1, $2, $3, $4, $5, $6) "
-                "ON CONFLICT (game, name, set_name, card_number) DO NOTHING RETURNING id",
+                "INSERT INTO tracked_cards (name, game, set_name, card_number, variant, "
+                "tcgplayer_id, language) VALUES ($1, $2, $3, $4, $5, $6, $7) "
+                "ON CONFLICT (game, name, set_name, card_number, language) DO NOTHING RETURNING id",
                 name, game, set_name, card_number,
-                variant, tcgplayer_id if game == "pokemon" else None)
+                variant, tcgplayer_id if game == "pokemon" else None, language)
             is_new = insert_row is not None
             if is_new:
                 card_id = insert_row["id"]
@@ -1702,8 +1710,8 @@ async def api_portfolio_add(request: Request, user=Depends(get_current_user)):
             else:
                 existing = await conn.fetchrow(
                     "SELECT id FROM tracked_cards WHERE game=$1 AND name=$2 "
-                    "AND set_name=$3 AND card_number=$4",
-                    game, name, set_name, card_number)
+                    "AND set_name=$3 AND card_number=$4 AND language=$5",
+                    game, name, set_name, card_number, language)
                 card_id = existing["id"]
             await conn.execute(
                 "INSERT INTO user_tracked_cards (user_id, card_id) VALUES ($1, $2) "
@@ -1712,7 +1720,7 @@ async def api_portfolio_add(request: Request, user=Depends(get_current_user)):
 
     if is_new and game == "pokemon" and tcgplayer_id:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            await auto_backdate_new_card(client, pool, card_id, name, tcgplayer_id)
+            await auto_backdate_new_card(client, pool, card_id, name, tcgplayer_id, language=language)
 
     logger.info("Portfolio: user %s added %r (card_id=%d, new_to_catalog=%s)",
                 user_id, name, card_id, is_new)
@@ -1744,7 +1752,7 @@ async def api_card_tracker_history(request: Request, card_id: int, user=Depends(
         return float(x) if x is not None else None
     async with request.app.state.db.acquire() as conn:
         card = await conn.fetchrow(
-            "SELECT id, name, game, set_name, card_number, variant, release_date, "
+            "SELECT id, name, game, language, set_name, card_number, variant, release_date, "
             "justtcg_name, justtcg_set, justtcg_number "
             "FROM tracked_cards WHERE id = $1", card_id)
         if card is None:
@@ -1758,6 +1766,7 @@ async def api_card_tracker_history(request: Request, card_id: int, user=Depends(
     return JSONResponse({
         "card": {
             "id": card["id"], "name": card["name"], "game": card["game"],
+            "language": card["language"],
             "set_name": card["set_name"], "card_number": card["card_number"],
             "variant": card["variant"],
             "justtcg_name": card["justtcg_name"], "justtcg_set": card["justtcg_set"],
@@ -2181,9 +2190,10 @@ async def api_import_run(request: Request):
             for c in new_cards:
                 result = await conn.execute(
                     """
-                    INSERT INTO tracked_cards (name, game, set_name, card_number, variant, release_date)
-                    VALUES ($1, $2, $3, $4, $5, $6)
-                    ON CONFLICT (game, name, set_name, card_number) DO NOTHING
+                    INSERT INTO tracked_cards
+                        (name, game, set_name, card_number, variant, release_date, language)
+                    VALUES ($1, $2, $3, $4, $5, $6, 'english')
+                    ON CONFLICT (game, name, set_name, card_number, language) DO NOTHING
                     """,
                     c["name"], game, set_name or "", c["card_number"], c["variant"] or None,
                     datetime.strptime(c["release_date"], "%Y-%m-%d").date() if c.get("release_date") else None,

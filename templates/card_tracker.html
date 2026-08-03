@@ -65,6 +65,10 @@
   #addResultsList .add-row .add-btn { font-size: 11px; font-weight: 700; color: #16a34a; }
   #addResultsList .add-row.tracked .add-btn { color: #999; }
   #addResultsList .add-empty { padding: 10px 16px; font-size: 12px; color: #999; }
+  .lang-badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: #eef0ff; color: #4338ca; margin-left: 5px; vertical-align: middle; }
+  .lang-badge.jp { background: #fee2e2; color: #b91c1c; }
+  html[data-theme="dark"] .lang-badge { background: #26264a; color: #a5b4fc; }
+  html[data-theme="dark"] .lang-badge.jp { background: #4a2323; color: #fca5a5; }
   html[data-theme="dark"] #addResultsList { border-top-color: #2a2a2d; }
   html[data-theme="dark"] #addResultsList .add-row { border-bottom-color: #242427; }
   html[data-theme="dark"] #addResultsList .add-row:hover { background: #222226; }
@@ -423,6 +427,11 @@ function setViewMode(mode){
   load();
 }
 
+function langBadge(lang){
+  const jp = lang === 'japanese';
+  return `<span class="lang-badge${jp ? ' jp' : ''}">${jp ? 'JP' : 'EN'}</span>`;
+}
+
 function money(v){ return v == null ? '—' : '$' + Number(v).toFixed(2); }
 function pct(v){
   if (v == null) return '<span class="muted">—</span>';
@@ -556,7 +565,7 @@ function renderTable(){
       <td class="left" onclick="event.stopPropagation()"><input type="checkbox" class="rowCheck" ${selectedIds.has(r.id) ? 'checked' : ''} onchange="toggleSelect(${r.id}, this.checked)"></td>
       <td class="left rank">${i + 1}</td>
       <td class="left">
-        <div class="card-name">${esc(r.name)}${r.match_suspect ? ' <span title="JustTCG matched a different card name — open the detail panel and re-match if wrong">⚠️</span>' : ''}</div>
+        <div class="card-name">${esc(r.name)}${r.game === 'pokemon' ? langBadge(r.language) : ''}${r.match_suspect ? ' <span title="JustTCG matched a different card name — open the detail panel and re-match if wrong">⚠️</span>' : ''}</div>
         ${r.card_number ? `<div class="card-sub">#${esc(r.card_number)}</div>` : ''}
       </td>
       <td class="left">${esc(r.set_name || '—')}</td>
@@ -729,7 +738,8 @@ async function showDetail(id){
     const c = d.card;
     document.getElementById('detailTitle').textContent = c.name;
     document.getElementById('detailSub').textContent =
-      [GAME_LABELS[c.game] || c.game, c.set_name, c.variant, c.card_number ? '#' + c.card_number : null,
+      [GAME_LABELS[c.game] || c.game, c.game === 'pokemon' ? (c.language === 'japanese' ? 'Japanese' : 'English') : null,
+       c.set_name, c.variant, c.card_number ? '#' + c.card_number : null,
        c.release_date ? 'released ' + c.release_date : 'release date unknown'].filter(Boolean).join(' · ');
     const matchedEl = document.getElementById('detailMatched');
     if (c.justtcg_name){
@@ -1098,7 +1108,7 @@ function renderAddResults(){
   }
   list.innerHTML = addSearchResults.map((c, i) => `
     <div class="add-row" onclick="addCardToPortfolio(${i})">
-      <span class="pname">${esc(c.name)}</span>
+      <span class="pname">${esc(c.name)}${langBadge(c.language)}</span>
       <span class="pmeta">${esc(c.set_name)}${c.card_number ? ' #' + esc(c.card_number) : ''}${c.variant ? ' · ' + esc(c.variant) : ''}</span>
       <span class="add-btn">+ Add</span>
     </div>`).join('');
@@ -1112,7 +1122,7 @@ async function addCardToPortfolio(i){
     const resp = await fetch('/api/card-tracker/portfolio/add', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ game, name: c.name, set_name: c.set_name, card_number: c.card_number,
-                             variant: c.variant, tcgplayer_id: c.tcgplayer_id })
+                             variant: c.variant, tcgplayer_id: c.tcgplayer_id, language: c.language })
     });
     const d = await resp.json();
     if (!resp.ok || !d.ok) throw new Error(d.detail || ('HTTP ' + resp.status));

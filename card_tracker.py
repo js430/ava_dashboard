@@ -113,13 +113,14 @@ CARD_TRACKER_SCHEMA = [
         id              SERIAL PRIMARY KEY,
         name            TEXT NOT NULL,
         game            TEXT NOT NULL CHECK (game IN ('pokemon','one_piece')),
+        language        TEXT NOT NULL DEFAULT 'english',
         set_name        TEXT NOT NULL DEFAULT '',
         card_number     TEXT NOT NULL DEFAULT '',
         variant         TEXT,
         release_date    DATE,
         justtcg_card_id TEXT,
         added_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        UNIQUE (game, name, set_name, card_number)
+        UNIQUE (game, name, set_name, card_number, language)
     )
     """,
     """
@@ -156,6 +157,31 @@ CARD_TRACKER_SCHEMA = [
     # a card only needs its set stocked once to be trackable forever.
     "ALTER TABLE tracked_cards ADD COLUMN IF NOT EXISTS tcgplayer_id TEXT",
     "ALTER TABLE tracked_cards ADD COLUMN IF NOT EXISTS catalog_matched_name TEXT",
+    # English and Japanese are genuinely separate PPT/catalog products (see
+    # catalog.py's language split) — a card's uniqueness has to include it or
+    # "Charizard, Obsidian Flames, 125" in English and in Japanese would
+    # collide into one row and silently share price history. Defaults
+    # 'english' so every pre-existing row (all implicitly English before this
+    # column existed) keeps its current identity with no data change.
+    "ALTER TABLE tracked_cards ADD COLUMN IF NOT EXISTS language TEXT NOT NULL DEFAULT 'english'",
+    # Postgres auto-names an inline table UNIQUE as {table}_{cols..}_key — this
+    # assumes that default naming held (the original CREATE TABLE above never
+    # named it explicitly). DROP...IF EXISTS is a safe no-op if the guess is
+    # wrong or it's already been dropped; the ADD below is wrapped so a
+    # duplicate-object error (already added by a prior run) is swallowed
+    # instead of failing every future startup.
+    "ALTER TABLE tracked_cards DROP CONSTRAINT IF EXISTS "
+    "tracked_cards_game_name_set_name_card_number_key",
+    """
+    DO $$
+    BEGIN
+        ALTER TABLE tracked_cards ADD CONSTRAINT
+            tracked_cards_game_name_set_name_card_number_language_key
+            UNIQUE (game, name, set_name, card_number, language);
+    EXCEPTION WHEN duplicate_object THEN
+        NULL;
+    END $$;
+    """,
     # Per-member portfolio membership. Deliberately just a join table — the
     # card itself and its price history are shared (see module docstring):
     # two members tracking the same card cost one PPT credit/day, not two,
@@ -196,15 +222,18 @@ async def sync_watchlist(pool) -> int:
                 continue
             result = await conn.execute(
                 """
-                INSERT INTO tracked_cards (name, game, set_name, card_number, variant)
-                VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT (game, name, set_name, card_number) DO NOTHING
+                INSERT INTO tracked_cards (name, game, set_name, card_number, variant, language)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (game, name, set_name, card_number, language) DO NOTHING
                 """,
                 name,
                 game,
                 (entry.get("set_name") or "").strip(),
                 (entry.get("card_number") or "").strip(),
                 (entry.get("variant") or None),
+                # Not exposed in watchlist.py yet (no entry needs it there);
+                # defaults to English like every pre-existing row.
+                (entry.get("language") or "english").strip().lower(),
             )
             if result.endswith("1"):
                 added += 1
@@ -313,7 +342,7 @@ async def resolve_tcgplayer_ids(pool, client: httpx.AsyncClient, backdate_budget
     remaining = backdate_budget
     async with pool.acquire() as conn:
         cards = await conn.fetch(
-            "SELECT id, name, set_name, card_number, variant FROM tracked_cards t "
+            "SELECT id, name, set_name, card_number, variant, language FROM tracked_cards t "
             "WHERE game = 'pokemon' AND (tcgplayer_id IS NULL OR tcgplayer_id = '') "
             # Same reasoning as _MISSING_TODAY_SQL: skip orphaned rows so an
             # abandoned/never-adopted card doesn't spend an auto-backdate
@@ -325,8 +354,11 @@ async def resolve_tcgplayer_ids(pool, client: httpx.AsyncClient, backdate_budget
                 "SELECT card_name, card_number, rarity, set_name, tcgplayer_id "
                 "FROM catalog_cards "
                 "WHERE game = 'pokemon' AND tcgplayer_verified = TRUE "
-                "  AND tcgplayer_id <> '' AND card_name ILIKE $1",
-                f"%{(c['name'] or '').strip()}%")
+                # language matters here: an English card must never match a
+                # Japanese catalog row (or vice versa) sharing a similar name —
+                # that would pin the wrong product's tcgplayer_id.
+                "  AND language = $1 AND tcgplayer_id <> '' AND card_name ILIKE $2",
+                c["language"], f"%{(c['name'] or '').strip()}%")
             match = match_catalog_row(dict(c), [dict(r) for r in candidates])
             if not match:
                 summary["unmatched"].append(
@@ -342,7 +374,8 @@ async def resolve_tcgplayer_ids(pool, client: httpx.AsyncClient, backdate_budget
                         match["tcgplayer_id"])
             if remaining > 0:
                 remaining -= 1
-                bd = await auto_backdate_new_card(client, pool, c["id"], c["name"], match["tcgplayer_id"])
+                bd = await auto_backdate_new_card(client, pool, c["id"], c["name"],
+                                                  match["tcgplayer_id"], c["language"])
                 summary["auto_backdate_credits"] += bd["credits"]
                 if bd["inserted"]:
                     summary["auto_backdated"] += 1
@@ -365,7 +398,7 @@ async def resolve_tcgplayer_ids(pool, client: httpx.AsyncClient, backdate_budget
 # from costing a credit every day forever. A card only gets priced while at
 # least one member is actually tracking it.
 _MISSING_TODAY_SQL = """
-    SELECT t.id, t.name, t.set_name, t.card_number, t.variant, t.tcgplayer_id,
+    SELECT t.id, t.name, t.set_name, t.card_number, t.variant, t.tcgplayer_id, t.language,
            (SELECT MAX(p.captured_at) FROM price_snapshots p WHERE p.card_id = t.id)
                AS last_priced
     FROM tracked_cards t
@@ -494,7 +527,8 @@ async def run_ppt_ingest(pool) -> dict:
                     continue
                 searches_left -= 1
                 tcg_id, r_status = await price_sources.resolve_ppt_tcgplayer_id(
-                    client, c["name"], c["set_name"] or "", c["card_number"] or "")
+                    client, c["name"], c["set_name"] or "", c["card_number"] or "",
+                    language=c["language"])
                 summary["credits"] += price_sources.PPT_SEARCH_LIMIT
                 if r_status == "rate_limited":
                     summary["rate_limited"] = True
@@ -515,7 +549,8 @@ async def run_ppt_ingest(pool) -> dict:
                 # the same run-level budget so the two paths can't double it.
                 if auto_backdate_budget_left > 0:
                     auto_backdate_budget_left -= 1
-                    bd = await auto_backdate_new_card(client, pool, c["id"], c["name"], tcg_id)
+                    bd = await auto_backdate_new_card(client, pool, c["id"], c["name"], tcg_id,
+                                                      language=c["language"])
                     summary["credits"] += bd["credits"]
                     if bd["inserted"]:
                         summary["auto_backdated"] += 1
@@ -524,7 +559,8 @@ async def run_ppt_ingest(pool) -> dict:
 
             prices, status = {}, "error"
             for attempt in range(PPT_RATE_RETRIES + 1):
-                prices, status, _daily_remaining = await price_sources.fetch_ppt_card_prices(client, tcg_id)
+                prices, status, _daily_remaining = await price_sources.fetch_ppt_card_prices(
+                    client, tcg_id, language=c["language"])
                 if status != "rate_limited" or attempt >= PPT_RATE_RETRIES:
                     break
                 wait = PPT_RATE_WAIT_S * (2 ** attempt)
@@ -573,7 +609,8 @@ async def run_ppt_ingest(pool) -> dict:
 
 
 async def _backdate_one_card(client: httpx.AsyncClient, pool, card_id: int, card_name: str,
-                             tcgplayer_id: str, days: int) -> dict:
+                             tcgplayer_id: str, days: int,
+                             language: str = price_sources.PPT_DEFAULT_LANGUAGE) -> dict:
     """Fetch + insert missing daily prices for ONE card. Shared by the manual
     /api/card-tracker/backdate action (run_ppt_backdate) and the automatic
     first-resolve backdate (auto_backdate_new_card) — same PPT call, same
@@ -586,7 +623,7 @@ async def _backdate_one_card(client: httpx.AsyncClient, pool, card_id: int, card
     history, status = [], "error"
     for attempt in range(PPT_RATE_RETRIES + 1):
         history, status, _daily_remaining = await price_sources.fetch_ppt_price_history(
-            client, tcgplayer_id, days)
+            client, tcgplayer_id, days, language=language)
         if status != "rate_limited" or attempt >= PPT_RATE_RETRIES:
             break
         wait = PPT_RATE_WAIT_S * (2 ** attempt)
@@ -622,7 +659,8 @@ async def _backdate_one_card(client: httpx.AsyncClient, pool, card_id: int, card
 
 
 async def auto_backdate_new_card(client: httpx.AsyncClient, pool, card_id: int,
-                                  card_name: str, tcgplayer_id: str) -> dict:
+                                  card_name: str, tcgplayer_id: str,
+                                  language: str = price_sources.PPT_DEFAULT_LANGUAGE) -> dict:
     """Best-effort AUTO_BACKDATE_DAYS-day backdate the moment a card gets its
     tcgplayer_id for the first time (see resolve_tcgplayer_ids and the
     search-fallback in run_ppt_ingest) — so a brand-new card's graph isn't a
@@ -635,7 +673,7 @@ async def auto_backdate_new_card(client: httpx.AsyncClient, pool, card_id: int,
     """
     try:
         result = await _backdate_one_card(client, pool, card_id, card_name,
-                                          tcgplayer_id, AUTO_BACKDATE_DAYS)
+                                          tcgplayer_id, AUTO_BACKDATE_DAYS, language=language)
     except Exception:
         logger.exception("Auto-backdate: failed for %r (id %d)", card_name, card_id)
         return {"inserted": 0, "credits": 0, "status": "error"}
@@ -672,7 +710,7 @@ async def run_ppt_backdate(pool, card_ids: list, days: int) -> dict:
 
     async with pool.acquire() as conn:
         cards = await conn.fetch(
-            "SELECT id, name, game, tcgplayer_id FROM tracked_cards "
+            "SELECT id, name, game, tcgplayer_id, language FROM tracked_cards "
             "WHERE id = ANY($1::int[]) ORDER BY id", card_ids)
     summary["cards"] = len(cards)
 
@@ -686,7 +724,8 @@ async def run_ppt_backdate(pool, card_ids: list, days: int) -> dict:
                 summary["skipped"].append(f"{c['name']}: no resolved TCGplayer id yet — run a refresh first")
                 continue
 
-            result = await _backdate_one_card(client, pool, c["id"], c["name"], tcg_id, days)
+            result = await _backdate_one_card(client, pool, c["id"], c["name"], tcg_id, days,
+                                              language=c["language"])
             summary["credits"] += result["credits"]
             if result["status"] == "rate_limited":
                 summary["rate_limited"] = True
