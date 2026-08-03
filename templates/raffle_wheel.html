@@ -140,7 +140,7 @@
     <div class="nav-group">
       <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Nexus Playground<span class="nav-caret">&#9662;</span></button>
       <div class="nav-menu">
-        {% if is_admin %}<a href="/card-tracker">Tracker</a>{% endif %}
+        <a href="/card-tracker">Tracker</a>
         <a href="/grading-calculator">Grading Calculator</a>
         <a href="/catalog">Card Catalog</a>
         {% if request.session.get('inventory_access', False) %}<a href="/inventory">Inventory</a>{% endif %}
