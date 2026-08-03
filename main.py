@@ -365,8 +365,7 @@ ADMIN_USER_IDS           = {
 # Where a demo/no-role Discord account goes to get the community role — the
 # sample pages' existing "Get premium access" CTA, and now also the Nexus
 # Playground guest-tier disclaimers extended to demo accounts.
-DEMO_UPGRADE_URL = os.getenv(
-    "DEMO_UPGRADE_URL", "https://discord.com/channels/1406738815854317658/1502114854335549470")
+DEMO_UPGRADE_URL = os.getenv("DEMO_UPGRADE_URL", "https://whop.com/avatcg")
 # The community server itself — shown on the landing page's access-tiers breakdown.
 DISCORD_INVITE_URL = os.getenv("DISCORD_INVITE_URL", "https://discord.gg/paRbvUmtVS")
 
