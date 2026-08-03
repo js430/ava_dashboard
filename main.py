@@ -32,7 +32,8 @@ from dotenv import load_dotenv
 from content_size_limit_asgi import ContentSizeLimitMiddleware
 
 from card_tracker import (ensure_card_tracker_schema, sync_watchlist, run_ingest,
-                          run_ppt_ingest, run_scoring, MAX_TRACKED_CARDS)
+                          run_ppt_ingest, run_scoring, MAX_TRACKED_CARDS,
+                          run_ppt_backdate, BACKDATE_DAY_CHOICES, BACKDATE_MAX_CARDS)
 import card_scoring
 import set_import
 import price_sources
@@ -212,6 +213,9 @@ async def lifespan(app: FastAPI):
     # Background, never awaited: seeding the catalog must not delay startup or
     # take the app down if PPT is unreachable.
     catalog_backfill_task = asyncio.create_task(_catalog_backfill_startup(app))
+    # Same reasoning: geocoding is an external call and shouldn't block boot,
+    # or take the app down if Google Geocoding is unreachable/not yet enabled.
+    tips_geocode_backfill_task = asyncio.create_task(_tips_geocode_backfill_startup(app))
     # Runs shortly after boot, which is also the catch-up for a night the
     # 11pm ingest missed because the process restarted.
     price_sweep_task = asyncio.create_task(_card_price_sweep_scheduler(app))
@@ -221,6 +225,7 @@ async def lifespan(app: FastAPI):
     finally:
         scheduler_task.cancel()
         catalog_backfill_task.cancel()
+        tips_geocode_backfill_task.cancel()
         price_sweep_task.cancel()
         catalog_price_sweep_task.cancel()
         await app.state.db.close()
@@ -289,11 +294,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "https://maps.googleapis.com https://maps.gstatic.com https://assets.pokemon.com; "
             "connect-src 'self' https://maps.googleapis.com; "
             "font-src 'self' data:; "
-            # frame-src narrowly permits Google's Maps Embed iframe (Tips,
-            # Tricks, and Guide's per-location map) — nothing else may be
-            # framed. frame-ancestors stays 'none': this only controls what
-            # WE embed, not who may embed us.
-            "frame-ancestors 'none'; frame-src https://www.google.com; "
+            # frame-src back to 'none' — Tips, Tricks, and Guide's locations
+            # used to embed Google's Maps Embed iframe per-location; that's
+            # gone now in favor of one Maps JavaScript API map per module
+            # (script-src/connect-src above), so nothing needs framing at all.
+            "frame-ancestors 'none'; frame-src 'none'; "
             "object-src 'none'; base-uri 'self';"
         )
         return response
@@ -1761,6 +1766,83 @@ async def api_card_tracker_reset_history(request: Request, user=Depends(require_
                 card["name"], card_id, user["id"], deleted)
     return JSONResponse({"ok": True, "cards_affected": 1}, headers={"Cache-Control": "no-store"})
 
+def _validate_card_ids(body: dict) -> list:
+    ids = body.get("card_ids")
+    if not isinstance(ids, list) or not ids or not all(isinstance(i, int) for i in ids):
+        raise HTTPException(status_code=400, detail="card_ids (non-empty list of int) required")
+    if len(ids) > BACKDATE_MAX_CARDS:
+        raise HTTPException(status_code=400,
+                            detail=f"Select at most {BACKDATE_MAX_CARDS} cards at a time")
+    return ids
+
+@app.post("/api/card-tracker/remove")
+@limiter.limit("30/hour")
+async def api_card_tracker_remove(request: Request, user=Depends(require_admin)):
+    """Permanently delete selected tracked cards (cascades to their price
+    history and scores). Cards seeded from watchlist.py reappear on the next
+    refresh unless also removed from that file — sync_watchlist never deletes."""
+    body = await request.json()
+    card_ids = _validate_card_ids(body)
+    async with request.app.state.db.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, name FROM tracked_cards WHERE id = ANY($1::int[])", card_ids)
+        if not rows:
+            raise HTTPException(status_code=404, detail="No matching cards found")
+        await conn.execute("DELETE FROM tracked_cards WHERE id = ANY($1::int[])", card_ids)
+    logger.info("Card tracker: removed %d card(s) by admin %s: %s",
+                len(rows), user["id"], ", ".join(r["name"] for r in rows))
+    return JSONResponse({"ok": True, "removed": len(rows),
+                        "names": [r["name"] for r in rows]},
+                       headers={"Cache-Control": "no-store"})
+
+# Backdate runs as a background task, same reasoning as the refresh flow: PPT's
+# rate-limit pacing across up to BACKDATE_MAX_CARDS cards could run long enough
+# to be a bad fit for a single request/response cycle.
+def _tracker_backdate_state(app) -> dict:
+    st = getattr(app.state, "tracker_backdate", None)
+    if st is None:
+        st = {"running": False, "started_at": None, "finished_at": None,
+              "result": None, "error": None}
+        app.state.tracker_backdate = st
+    return st
+
+async def _run_tracker_backdate(app, card_ids: list, days: int) -> None:
+    st = app.state.tracker_backdate
+    try:
+        st["result"] = await run_ppt_backdate(app.state.db, card_ids, days)
+    except Exception as e:
+        logger.exception("Card tracker backdate failed")
+        st["error"] = str(e)
+    finally:
+        st["running"] = False
+        st["finished_at"] = datetime.utcnow().isoformat() + "Z"
+
+@app.post("/api/card-tracker/backdate")
+@limiter.limit("10/hour")
+async def api_card_tracker_backdate(request: Request, user=Depends(require_admin)):
+    """Backfill day-by-day raw prices for selected Pokemon cards via PPT's
+    includeHistory param (30/60/180 days). Costs 2 PPT credits per card."""
+    body = await request.json()
+    card_ids = _validate_card_ids(body)
+    days = body.get("days")
+    if days not in BACKDATE_DAY_CHOICES:
+        raise HTTPException(status_code=400,
+                            detail=f"days must be one of {BACKDATE_DAY_CHOICES}")
+    st = _tracker_backdate_state(request.app)
+    if st["running"]:
+        raise HTTPException(status_code=409, detail="A backdate is already running")
+    st.update(running=True, started_at=datetime.utcnow().isoformat() + "Z",
+              finished_at=None, result=None, error=None)
+    asyncio.create_task(_run_tracker_backdate(request.app, card_ids, days))
+    logger.info("Card tracker: backdate (%d days) started by admin %s for %d card(s)",
+                days, user["id"], len(card_ids))
+    return JSONResponse({"ok": True, "started": True}, headers={"Cache-Control": "no-store"})
+
+@app.get("/api/card-tracker/backdate/status")
+async def api_card_tracker_backdate_status(request: Request, user=Depends(require_admin)):
+    return JSONResponse(dict(_tracker_backdate_state(request.app)),
+                        headers={"Cache-Control": "no-store"})
+
 # ── Set import (admin-only): enumerate a set from the free catalog APIs,
 #    preview, then import into tracked_cards. The import re-fetches from the
 #    source API server-side — the client never supplies card data directly. ──
@@ -1976,11 +2058,56 @@ async def tips_page(request: Request):
         "user_id": user["id"],
         "is_admin": int(user["id"]) in ADMIN_USER_IDS,
         "is_mod": request.session.get("mod", False),
-        # For the per-location Google Maps embed — same key/pattern map.html
-        # already uses, client-visible by design (Maps Embed/JS API keys are
+        # For the per-module Google Maps JavaScript API map — same key/pattern
+        # map.html already uses, client-visible by design (Maps API keys are
         # restricted by HTTP referrer in Google Cloud Console, not secrecy).
         "google_maps_api_key": GOOGLE_MAPS_API_KEY,
     })
+
+
+async def _geocode_address(client: httpx.AsyncClient, address: str):
+    """(lat, lng) for one address via Google's Geocoding API, or None if the
+    key is missing, the address doesn't resolve, or the request fails —
+    callers treat all three the same: leave the location's coordinates NULL
+    and skip its pin, everything else about the location still works."""
+    if not GOOGLE_MAPS_API_KEY:
+        return None
+    try:
+        resp = await client.get(
+            "https://maps.googleapis.com/maps/api/geocode/json",
+            params={"address": address, "key": GOOGLE_MAPS_API_KEY})
+        data = resp.json()
+    except Exception:
+        logger.exception("Geocoding request failed for address=%r", address)
+        return None
+    if data.get("status") != "OK" or not data.get("results"):
+        return None
+    loc = data["results"][0]["geometry"]["location"]
+    return (loc["lat"], loc["lng"])
+
+
+TIPS_GEOCODE_BACKFILL_START_DELAY_S = float(os.getenv("TIPS_GEOCODE_BACKFILL_START_DELAY_S", "15"))
+
+
+async def _tips_geocode_backfill_startup(app) -> None:
+    """One-time (per location) catch-up for rows saved before geocode-on-save
+    existed, or whose address failed to resolve at save time. Idempotent
+    across deploys: once every location has coordinates, later boots find
+    nothing to do."""
+    try:
+        await asyncio.sleep(TIPS_GEOCODE_BACKFILL_START_DELAY_S)
+        missing = await tips.get_locations_missing_coords(app.state.db)
+        if not missing:
+            return
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for loc in missing:
+                coords = await _geocode_address(client, loc["address"])
+                if coords:
+                    await tips.set_location_coords(app.state.db, loc["id"], coords[0], coords[1])
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("Tips location geocode backfill failed")
 
 
 def _require_tips_admin(user) -> None:
@@ -2077,8 +2204,11 @@ async def api_tips_create_location(request: Request, user=Depends(get_current_di
         module_id = int(body.get("module_id"))
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid module.")
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        coords = await _geocode_address(client, address)
+    lat, lng = coords if coords else (None, None)
     result = await tips.create_location(
-        request.app.state.db, module_id, int(user["id"]), user["username"], name, address)
+        request.app.state.db, module_id, int(user["id"]), user["username"], name, address, lat, lng)
     return JSONResponse(result)
 
 
@@ -2096,7 +2226,10 @@ async def api_tips_update_location(request: Request, location_id: int,
     address = (body.get("address") or "").strip()
     if not name or not address:
         raise HTTPException(status_code=400, detail="Location name and address are both required.")
-    await tips.update_location(request.app.state.db, location_id, name, address)
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        coords = await _geocode_address(client, address)
+    lat, lng = coords if coords else (None, None)
+    await tips.update_location(request.app.state.db, location_id, name, address, lat, lng)
     return JSONResponse({"ok": True})
 
 

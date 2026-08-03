@@ -97,6 +97,12 @@ TIPS_SCHEMA = [
     "ALTER TABLE tips_locations ADD COLUMN IF NOT EXISTS module_id INTEGER "
     "REFERENCES tips_modules(id) ON DELETE CASCADE",
     "ALTER TABLE tips_locations ALTER COLUMN topic_id DROP NOT NULL",
+    # Geocoded once server-side when a location is saved (see main.py's
+    # _geocode_address), not looked up client-side on every page view — NULL
+    # means "not geocoded yet" (brand new, or the address didn't resolve),
+    # which the per-module map just skips rather than erroring on.
+    "ALTER TABLE tips_locations ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION",
+    "ALTER TABLE tips_locations ADD COLUMN IF NOT EXISTS lng DOUBLE PRECISION",
     "CREATE INDEX IF NOT EXISTS idx_tips_locations_module ON tips_locations (module_id)",
     # One row per (item, user) — the UNIQUE constraint is what makes "like"
     # idempotent and race-safe at the DB level: a double-click can't produce
@@ -246,7 +252,7 @@ async def list_tree(pool, viewer_user_id=None) -> list:
             "SELECT id, module_id, user_id, username, content, created_at, edited_at "
             "FROM tips_entries WHERE module_id IS NOT NULL")
         locations = await conn.fetch(
-            "SELECT id, module_id, name, address, user_id, username, created_at "
+            "SELECT id, module_id, name, address, lat, lng, user_id, username, created_at "
             "FROM tips_locations WHERE module_id IS NOT NULL")
         photos = await conn.fetch(
             "SELECT id, module_id, caption, user_id, username, created_at "
@@ -302,6 +308,8 @@ async def list_tree(pool, viewer_user_id=None) -> list:
             "username": l["username"],
             "name": l["name"],
             "address": l["address"],
+            "lat": l["lat"],
+            "lng": l["lng"],
             "created_at": l["created_at"].isoformat(),
             "like_count": len(likers),
             "liked_by_me": viewer_user_id is not None and viewer_user_id in likers,
@@ -577,20 +585,22 @@ async def toggle_entry_like(pool, entry_id: int, user_id: int) -> dict:
 
 # ---- Locations (member-submitted, per module) ----
 # A place worth knowing about for a module — "Mandarake Akihabara" with an
-# address, shown as an embedded map on the page. Same member-submits,
-# author-or-admin-edits model as entries; main.py enforces ownership, this
-# module just does the writes.
+# address, plotted as a pin on that module's single shared map. Same
+# member-submits, author-or-admin-edits model as entries; main.py enforces
+# ownership and does the geocoding (an HTTP call, so it belongs with the
+# other external-API code in main.py, not here), this module just does the
+# writes.
 
 async def create_location(pool, module_id: int, user_id: int, username: str,
-                          name: str, address: str) -> dict:
+                          name: str, address: str, lat=None, lng=None) -> dict:
     name = name.strip()[:MAX_NAME_LENGTH]
     address = address.strip()[:MAX_ADDRESS_LENGTH]
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "INSERT INTO tips_locations (module_id, user_id, username, name, address) "
-            "VALUES ($1, $2, $3, $4, $5) "
+            "INSERT INTO tips_locations (module_id, user_id, username, name, address, lat, lng) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7) "
             "RETURNING id, created_at",
-            module_id, user_id, username, name, address)
+            module_id, user_id, username, name, address, lat, lng)
     return {"id": row["id"], "created_at": row["created_at"].isoformat()}
 
 
@@ -602,13 +612,34 @@ async def get_location_owner(pool, location_id: int):
     return row["user_id"] if row else None
 
 
-async def update_location(pool, location_id: int, name: str, address: str) -> None:
+async def update_location(pool, location_id: int, name: str, address: str, lat=None, lng=None) -> None:
+    """lat/lng are always overwritten with whatever the caller passes —
+    when the address changes, main.py re-geocodes and passes the fresh
+    result (or None on failure), so a changed address never keeps stale
+    coordinates from the old one."""
     name = name.strip()[:MAX_NAME_LENGTH]
     address = address.strip()[:MAX_ADDRESS_LENGTH]
     async with pool.acquire() as conn:
         await conn.execute(
-            "UPDATE tips_locations SET name = $1, address = $2 WHERE id = $3",
-            name, address, location_id)
+            "UPDATE tips_locations SET name = $1, address = $2, lat = $3, lng = $4 WHERE id = $5",
+            name, address, lat, lng, location_id)
+
+
+async def get_locations_missing_coords(pool) -> list:
+    """Locations saved before geocode-on-save existed (or whose address
+    failed to resolve at save time) — main.py's startup backfill geocodes
+    these once so existing data catches up with no manual migration."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, address FROM tips_locations WHERE lat IS NULL OR lng IS NULL")
+    return [{"id": r["id"], "address": r["address"]} for r in rows]
+
+
+async def set_location_coords(pool, location_id: int, lat: float, lng: float) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE tips_locations SET lat = $1, lng = $2 WHERE id = $3",
+            lat, lng, location_id)
 
 
 async def delete_location(pool, location_id: int) -> None:

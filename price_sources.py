@@ -490,6 +490,66 @@ async def fetch_ppt_card_prices(client: httpx.AsyncClient, tcgplayer_id: str,
     return out, "ok", daily_remaining
 
 
+# Condition PPT's raw/ungraded prices key off of. Matches what this app already
+# tracks as "market" via fetch_ppt_card_prices (TCGPlayer's Near Mint price).
+PPT_HISTORY_CONDITION = "Near Mint"
+
+
+async def fetch_ppt_price_history(client: httpx.AsyncClient, tcgplayer_id: str,
+                                  days: int, language: str = PPT_DEFAULT_LANGUAGE) -> tuple:
+    """([{date, market}], status, daily_remaining) — daily raw-price backfill
+    for ONE card, oldest first.
+
+    Manual/on-demand only (the card-tracker "Backdate" action) — NOT part of
+    the nightly ingest, which only ever asks for today's live price
+    (fetch_ppt_card_prices). `includeHistory=true` bills a second credit per
+    card on top of the base lookup (2 credits total at limit=1), so this is
+    deliberately a separate, explicitly-triggered call rather than something
+    that runs automatically for every tracked card every night.
+
+    Reads priceHistory.conditions["Near Mint"].history — falls back to
+    whatever single condition PPT actually returned if Near Mint isn't present
+    (some variants only carry one condition).
+    """
+    tcg_id = str(tcgplayer_id or "").strip()
+    if not tcg_id:
+        return [], "error", None
+    rows, resp = await _ppt_get(client, "/cards",
+                                {"tcgPlayerId": tcg_id, "limit": 1, "includeHistory": "true",
+                                 "days": int(days), "language": ppt_language(language)},
+                                f"price-history({tcg_id}, days={days})")
+    daily_remaining = _ppt_daily_remaining(resp)
+    if not rows:
+        return [], _ppt_empty_status(resp), daily_remaining
+
+    conditions = ((rows[0] or {}).get("priceHistory") or {}).get("conditions") or {}
+    entry = conditions.get(PPT_HISTORY_CONDITION)
+    if entry is None and conditions:
+        entry = next(iter(conditions.values()))
+    points = (entry or {}).get("history") or []
+
+    out = []
+    for point in points:
+        if not isinstance(point, dict):
+            continue
+        try:
+            market = float(point.get("market"))
+        except (TypeError, ValueError):
+            continue
+        date_str = str(point.get("date") or "")[:10]
+        if market <= 0 or not date_str:
+            continue
+        try:
+            day = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        out.append({"date": day, "market": round(market, 2)})
+
+    if not out:
+        return [], "empty", daily_remaining
+    return out, "ok", daily_remaining
+
+
 async def fetch_ppt_population(client: httpx.AsyncClient, tcgplayer_id: str,
                                language: str = PPT_DEFAULT_LANGUAGE) -> tuple:
     """(population_dict, status) — GemRate grading-population data for ONE

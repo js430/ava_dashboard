@@ -10,6 +10,7 @@ import os
 import re
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 import httpx
 
@@ -36,6 +37,16 @@ PPT_RATE_RETRIES = int(os.getenv("TRACKER_PPT_RATE_RETRIES", "2"))
 # Source label written to price_snapshots.source. Scoring groups by this, so
 # it must stay distinct from the JustTCG labels.
 PPT_SOURCE = "pokemonpricetracker"
+# Manual backdate rows (run_ppt_backdate) — same estimator as PPT_SOURCE so it
+# shares a scoring family (see card_scoring.SOURCE_FAMILIES), tagged separately
+# so a backdated row is distinguishable from a live nightly one in the DB.
+PPT_HISTORY_SOURCE = "pokemonpricetracker-history"
+# Days a single backdate request may ask PPT for — matches the buttons on the
+# card-tracker page. An arbitrary value is not accepted from the client.
+BACKDATE_DAY_CHOICES = (30, 60, 180)
+# Admin selects cards by hand for this action; capped so one click can't burn
+# through the shared PPT daily credit budget (2 credits/card at includeHistory).
+BACKDATE_MAX_CARDS = 10
 
 # Abort an ingest run after this many consecutive API failures — protects the
 # free-tier call budget from burning on an outage or a wrong endpoint shape.
@@ -457,6 +468,96 @@ async def run_ppt_ingest(pool) -> dict:
     if summary["missing"]:
         logger.warning("Tracker: %d Pokemon card(s) still have no price for today — "
                        "the next sweep retries them", summary["missing"])
+    return summary
+
+
+async def run_ppt_backdate(pool, card_ids: list, days: int) -> dict:
+    """Backfill day-by-day raw prices for specific tracked Pokemon cards via
+    PPT's includeHistory param (price_sources.fetch_ppt_price_history).
+
+    Admin-triggered only, on cards picked by hand — NOT part of the nightly
+    ingest, which only ever asks for today's live price. One Piece cards are
+    reported as skipped (PPT has no coverage for them; JustTCG's own history
+    already backfills automatically in run_ingest).
+
+    Idempotent the same way the JustTCG history backfill is: a day PPT offers
+    that's already in price_snapshots is left alone, so re-running a backdate
+    (e.g. widening 30d to 180d) only ever adds what's missing.
+    """
+    summary = {"cards": 0, "inserted": 0, "credits": 0, "skipped": [], "failed": [],
+               "rate_limited": False}
+    if not price_sources.pokemonpricetracker_available():
+        summary["failed"].append("PokemonPriceTracker is not configured")
+        return summary
+    if days not in BACKDATE_DAY_CHOICES:
+        summary["failed"].append(f"days must be one of {BACKDATE_DAY_CHOICES}")
+        return summary
+
+    async with pool.acquire() as conn:
+        cards = await conn.fetch(
+            "SELECT id, name, game, tcgplayer_id FROM tracked_cards "
+            "WHERE id = ANY($1::int[]) ORDER BY id", card_ids)
+    summary["cards"] = len(cards)
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for c in cards:
+            if c["game"] != "pokemon":
+                summary["skipped"].append(f"{c['name']}: One Piece isn't covered by PokemonPriceTracker")
+                continue
+            tcg_id = (c["tcgplayer_id"] or "").strip()
+            if not tcg_id:
+                summary["skipped"].append(f"{c['name']}: no resolved TCGplayer id yet — run a refresh first")
+                continue
+
+            history, status = [], "error"
+            for attempt in range(PPT_RATE_RETRIES + 1):
+                history, status, _daily_remaining = await price_sources.fetch_ppt_price_history(
+                    client, tcg_id, days)
+                if status != "rate_limited" or attempt >= PPT_RATE_RETRIES:
+                    break
+                wait = PPT_RATE_WAIT_S * (2 ** attempt)
+                logger.warning("Backdate: rate limited on %r — waiting %.0fs (retry %d/%d)",
+                               c["name"], wait, attempt + 1, PPT_RATE_RETRIES)
+                await asyncio.sleep(wait)
+
+            if status == "rate_limited":
+                summary["rate_limited"] = True
+                summary["failed"].append(
+                    "stopped: PokemonPriceTracker is rate-limiting — remaining selected "
+                    "cards were not backdated; try again shortly")
+                break
+            summary["credits"] += 2   # base lookup + includeHistory, billed at limit=1
+            if status != "ok":
+                summary["skipped"].append(f"{c['name']}: no history returned ({status})")
+                continue
+
+            async with pool.acquire() as conn:
+                known_days = {r["day"] for r in await conn.fetch(
+                    "SELECT DISTINCT (captured_at AT TIME ZONE 'UTC')::date AS day "
+                    "FROM price_snapshots WHERE card_id = $1", c["id"])}
+                inserted = 0
+                for point in history:
+                    if point["date"] in known_days:
+                        continue
+                    # Noon UTC, matching the stamp the JustTCG history backfill
+                    # already uses for backfilled (as opposed to live) rows.
+                    captured_at = datetime(point["date"].year, point["date"].month,
+                                           point["date"].day, 12, tzinfo=timezone.utc)
+                    await conn.execute(
+                        "INSERT INTO price_snapshots (card_id, captured_at, price_mid, source) "
+                        "VALUES ($1, $2, $3, $4)",
+                        c["id"], captured_at, point["market"], PPT_HISTORY_SOURCE)
+                    known_days.add(point["date"])
+                    inserted += 1
+            summary["inserted"] += inserted
+            logger.info("Backdate: %r -> %d day(s) of history requested, %d new row(s) inserted",
+                        c["name"], len(history), inserted)
+
+    logger.info("Backdate done: %d card(s), %d row(s) inserted, %d credit(s)%s, "
+                "%d skipped, %d failed",
+                summary["cards"], summary["inserted"], summary["credits"],
+                " — STOPPED on rate limit" if summary["rate_limited"] else "",
+                len(summary["skipped"]), len(summary["failed"]))
     return summary
 
 

@@ -69,6 +69,7 @@ SOURCE_FAMILIES = {
     "justtcg": "justtcg",
     "justtcg-history": "justtcg",
     "pokemonpricetracker": "pokemonpricetracker",
+    "pokemonpricetracker-history": "pokemonpricetracker",
 }
 # Below this, a family isn't enough of a series to prefer over an established
 # one — momentum needs at least two points to mean anything.

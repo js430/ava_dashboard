@@ -51,6 +51,10 @@
   .clear-filters-btn { font-size: 12px; color: #5865F2; background: none; border: none; cursor: pointer; padding: 0; white-space: nowrap; }
   .clear-filters-btn:hover { text-decoration: underline; }
   .filter-count { font-size: 12px; color: #999; white-space: nowrap; }
+  .selection-bar { padding: 10px 16px; border: 1px solid #e4e4e7; border-radius: 12px; margin-bottom: 16px; background: #eef0ff; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .selection-bar #selectionCount { font-size: 12px; font-weight: 600; color: #333; }
+  html[data-theme="dark"] .selection-bar { background: #1e2040; border-color: #303033; }
+  html[data-theme="dark"] .selection-bar #selectionCount { color: #ccc; }
 
   .table-scroll { overflow-x: auto; }
   table { border-collapse: collapse; width: 100%; font-size: 12px; }
@@ -257,6 +261,7 @@
       <table>
         <thead>
           <tr>
+            {% if is_admin %}<th class="left" style="width:28px;"><input type="checkbox" id="selectAllBox" onchange="toggleSelectAll(this.checked)" title="Select all shown"></th>{% endif %}
             <th class="left">#</th>
             <th class="left sortable" onclick="sortBy('name')">Card<span class="sort-arrow" id="arrow-name"></span></th>
             <th class="left sortable" onclick="sortBy('set_name')">Set<span class="sort-arrow" id="arrow-set_name"></span></th>
@@ -270,6 +275,7 @@
             <th class="sortable" onclick="sortBy('potential_score')">Score<span class="sort-arrow" id="arrow-potential_score"></span></th>
           </tr>
           <tr class="filter-row">
+            {% if is_admin %}<th></th>{% endif %}
             <th></th>
             <th class="left"><input class="col-filter" type="text" id="fCard" placeholder="Filter card…" oninput="onFilterChange()"></th>
             <th class="left"><input class="col-filter" type="text" id="fSet" placeholder="Filter set…" oninput="onFilterChange()"></th>
@@ -290,11 +296,24 @@
           </tr>
         </thead>
         <tbody id="trackerBody">
-          <tr><td colspan="11" class="empty">Loading…</td></tr>
+          <tr><td colspan="{{ '12' if is_admin else '11' }}" class="empty">Loading…</td></tr>
         </tbody>
       </table>
     </div>
   </div>
+
+  {% if is_admin %}
+  <div class="selection-bar" id="selectionBar" style="display:none;">
+    <span id="selectionCount"></span>
+    <button class="refresh-btn" style="background:#dc2626" onclick="removeSelected()">Remove from tracker</button>
+    <span style="font-size:12px;color:#999;margin-left:6px;">Backdate:</span>
+    <button class="refresh-btn" style="background:#16a34a" onclick="backdateSelected(30)">30 days</button>
+    <button class="refresh-btn" style="background:#16a34a" onclick="backdateSelected(60)">60 days</button>
+    <button class="refresh-btn" style="background:#16a34a" onclick="backdateSelected(180)">180 days</button>
+    <button class="clear-filters-btn" onclick="clearSelection()">Clear selection</button>
+    <span class="refresh-note" id="selectionNote"></span>
+  </div>
+  {% endif %}
 
   {% if is_admin %}
   <div class="import-card">
@@ -327,8 +346,10 @@
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 
 const GAME_LABELS = { pokemon: 'Pokémon', one_piece: 'One Piece' };
+const IS_ADMIN = {{ 'true' if is_admin else 'false' }};
 let allRows = [];
 let selectedId = null;
+let selectedIds = new Set();
 let chart = null;
 let chartRange = 30;          // days of history shown on the graph
 let chartSnapshots = [];      // full snapshot list for the selected card
@@ -457,12 +478,16 @@ function renderTable(){
     : `${rows.length} of ${allRows.length} shown`;
 
   const body = document.getElementById('trackerBody');
+  const colspan = IS_ADMIN ? 12 : 11;
   if (!rows.length){
-    body.innerHTML = `<tr><td colspan="11" class="empty">${allRows.length ? 'No cards match the current filters.' : 'No cards yet — run the ingest (scripts/ingest_prices) or hit Refresh prices.'}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="${colspan}" class="empty">${allRows.length ? 'No cards match the current filters.' : 'No cards yet — run the ingest (scripts/ingest_prices) or hit Refresh prices.'}</td></tr>`;
+    if (IS_ADMIN) updateSelectAllBox([]);
+    updateSelectionBar();
     return;
   }
   body.innerHTML = rows.map((r, i) => `
     <tr data-id="${r.id}" class="${r.id === selectedId ? 'selected' : ''}" onclick="showDetail(${r.id})">
+      ${IS_ADMIN ? `<td class="left" onclick="event.stopPropagation()"><input type="checkbox" class="rowCheck" ${selectedIds.has(r.id) ? 'checked' : ''} onchange="toggleSelect(${r.id}, this.checked)"></td>` : ''}
       <td class="left rank">${i + 1}</td>
       <td class="left">
         <div class="card-name">${esc(r.name)}${r.match_suspect ? ' <span title="JustTCG matched a different card name — open the detail panel and re-match if wrong">⚠️</span>' : ''}</div>
@@ -478,6 +503,42 @@ function renderTable(){
       <td>${r.liquidity_score == null ? '—' : (r.liquidity_score * 100).toFixed(0) + '%'}</td>
       <td>${scoreBadge(r.potential_score)}</td>
     </tr>`).join('');
+  if (IS_ADMIN) updateSelectAllBox(rows);
+  updateSelectionBar();
+}
+
+function updateSelectAllBox(visibleRows){
+  const box = document.getElementById('selectAllBox');
+  if (!box) return;
+  box.checked = visibleRows.length > 0 && visibleRows.every(r => selectedIds.has(r.id));
+}
+
+function toggleSelect(id, checked){
+  if (checked) selectedIds.add(id); else selectedIds.delete(id);
+  updateSelectionBar();
+  const box = document.getElementById('selectAllBox');
+  if (box) box.checked = false;   // any manual uncheck breaks "all shown" state; recomputed on next render
+}
+
+function toggleSelectAll(checked){
+  const f = getFilters();
+  const visible = sortRows(filterRows(allRows, f));
+  visible.forEach(r => { if (checked) selectedIds.add(r.id); else selectedIds.delete(r.id); });
+  renderTable();
+}
+
+function clearSelection(){
+  selectedIds.clear();
+  renderTable();
+}
+
+function updateSelectionBar(){
+  const bar = document.getElementById('selectionBar');
+  if (!bar) return;
+  const n = selectedIds.size;
+  bar.style.display = n ? 'flex' : 'none';
+  const countEl = document.getElementById('selectionCount');
+  if (countEl) countEl.textContent = `${n} selected`;
 }
 
 function buildStats(){
@@ -720,6 +781,106 @@ async function resetAllHistory(){
   } finally {
     btn.disabled = false;
   }
+}
+
+async function removeSelected(){
+  if (!selectedIds.size) return;
+  const ids = Array.from(selectedIds);
+  const names = allRows.filter(r => ids.includes(r.id)).map(r => r.name);
+  const preview = names.slice(0, 8).join(', ') + (names.length > 8 ? `, +${names.length - 8} more` : '');
+  if (!confirm(`Remove ${ids.length} card(s) from the tracker?\n\n${preview}\n\n`
+             + `This permanently deletes their price history and scores and cannot be undone. `
+             + `Cards seeded from watchlist.py will reappear on the next refresh unless also `
+             + `removed from that file.`)) return;
+  const note = document.getElementById('selectionNote');
+  try {
+    const resp = await fetch('/api/card-tracker/remove', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ card_ids: ids })
+    });
+    const d = await resp.json();
+    if (!resp.ok || !d.ok) throw new Error(d.detail || ('HTTP ' + resp.status));
+    if (note) note.textContent = `Removed ${d.removed} card(s).`;
+    if (selectedId != null && ids.includes(selectedId)){
+      selectedId = null;
+      document.getElementById('detailCard').classList.remove('visible');
+    }
+    selectedIds.clear();
+    await load();
+  } catch (e) {
+    if (note) note.textContent = 'Failed: ' + e.message;
+  }
+}
+
+const PPT_BACKDATE_CREDIT_COST = 2;   // per card: base lookup + includeHistory, at limit=1
+
+async function backdateSelected(days){
+  if (!selectedIds.size) return;
+  const ids = Array.from(selectedIds);
+  const rows = allRows.filter(r => ids.includes(r.id));
+  const pokeCount = rows.filter(r => r.game === 'pokemon').length;
+  const opCount = rows.length - pokeCount;
+  if (!pokeCount){
+    alert('No Pokémon cards in the selection — PokemonPriceTracker has no One Piece coverage, so there is nothing to backdate.');
+    return;
+  }
+  let msg = `Backdate ${pokeCount} Pokémon card(s) with up to ${days} days of price history?\n\n`
+          + `Estimated cost: ~${pokeCount * PPT_BACKDATE_CREDIT_COST} PokemonPriceTracker credit(s) `
+          + `(${PPT_BACKDATE_CREDIT_COST} per card).`;
+  if (opCount) msg += `\n\n${opCount} One Piece card(s) in the selection will be skipped.`;
+  if (!confirm(msg)) return;
+
+  const note = document.getElementById('selectionNote');
+  try {
+    const resp = await fetch('/api/card-tracker/backdate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ card_ids: ids, days })
+    });
+    if (resp.status === 409){ note.textContent = 'A backdate is already running…'; pollBackdate(Date.now()); return; }
+    const d = await resp.json();
+    if (!resp.ok || !d.ok) throw new Error(d.detail || ('HTTP ' + resp.status));
+    note.textContent = `Backdating ${pokeCount} card(s)…`;
+    pollBackdate(Date.now());
+  } catch (e) {
+    if (note) note.textContent = 'Failed: ' + e.message;
+  }
+}
+
+let backdateTimer = null;
+
+function pollBackdate(t0){
+  const note = document.getElementById('selectionNote');
+  if (backdateTimer) clearInterval(backdateTimer);
+  backdateTimer = setInterval(async () => {
+    try {
+      const resp = await fetch('/api/card-tracker/backdate/status');
+      if (!resp.ok) throw new Error(resp.status);
+      const st = await resp.json();
+      if (st.running){
+        if (note) note.textContent = `Backdating… ${Math.round((Date.now() - t0) / 1000)}s`;
+        return;
+      }
+      clearInterval(backdateTimer); backdateTimer = null;
+      if (st.error){
+        if (note) note.textContent = 'Backdate failed: ' + st.error;
+      } else if (st.result){
+        const r = st.result;
+        if (note) note.textContent = `Done — ${r.inserted} row(s) backfilled across ${r.cards} card(s), `
+          + `${r.credits} credit(s) used`
+          + (r.skipped && r.skipped.length ? `, ${r.skipped.length} skipped` : '')
+          + (r.rate_limited ? ' — stopped early on a rate limit, re-select the rest to resume' : '')
+          + (r.failed && r.failed.length ? `, ${r.failed.length} issue(s) (see logs)` : '');
+      } else if (note) {
+        note.textContent = 'Backdate finished.';
+      }
+      selectedIds.clear();
+      await load();
+      if (selectedId) await showDetail(selectedId);
+    } catch (e) {
+      clearInterval(backdateTimer); backdateTimer = null;
+      if (note) note.textContent = 'Lost track of the backdate — reload the page.';
+    }
+  }, 3000);
 }
 
 function pollRefresh(t0){
