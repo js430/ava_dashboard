@@ -116,6 +116,9 @@
   .rarity-chip { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 8px; background: #f3f4f6; color: #6b7280; white-space: nowrap; }
   .col-updated { color: #999; white-space: nowrap; }
   .check-col { width: 28px; text-align: center; }
+  .col-track { width: 92px; text-align: center; }
+  .track-btn.added { color: #2e7d32; border-color: #a5d6a7; }
+  html[data-theme="dark"] .track-btn.added { color: #81c784; border-color: #2e5a31; }
   .table-wrap { overflow-x: auto; }
 
   .pager { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px solid #f0f0f0; }
@@ -151,7 +154,7 @@
     /* Admin selection and "last updated" are secondary on a phone-width
        table — hidden here rather than fought into the same four-column
        budget the filters already need every percent of. */
-    .check-col, .col-updated { display: none; }
+    .check-col, .col-updated, .col-track { display: none; }
     table.rows th.col-card, table.rows td.col-card { width: 33%; }
     table.rows th.col-set, table.rows td.col-set { width: 24%; }
     table.rows th.col-rarity, table.rows td.col-rarity { width: 22%; }
@@ -339,6 +342,7 @@
                 <th class="col-rarity sortable" onclick="onHeaderSortClick('rarity')" data-sort-col="rarity">Rarity<span class="sort-arrow"></span></th>
                 <th class="right col-price sortable" onclick="onHeaderSortClick('price')" data-sort-col="price">Raw price<span class="sort-arrow"></span></th>
                 <th class="col-updated sortable" onclick="onHeaderSortClick('updated')" data-sort-col="updated">Last updated<span class="sort-arrow"></span></th>
+                {% if not is_guest %}<th class="col-track"></th>{% endif %}
               </tr>
               <!-- Filters live in the header rather than a sidebar: each one
                    sits under the column it acts on, and on a phone that's one
@@ -374,6 +378,7 @@
                   </div>
                 </th>
                 <th class="col-updated"></th>
+                {% if not is_guest %}<th class="col-track"></th>{% endif %}
               </tr>
             </thead>
             <tbody id="cardRows"></tbody>
@@ -568,6 +573,66 @@ function refreshEligible(c){
 // — loadCards() replaces the whole tbody every time, which would otherwise
 // silently clear it.
 const selectedCards = new Set();
+
+// "Add to tracker" — real premium members only (IS_GUEST covers both true
+// guests and demo/no-role accounts, same as the refresh-select column).
+// cardsById is rebuilt on every loadCards() so the onclick handler can look
+// up the full row by catalog_cards.id without re-serializing it into the
+// attribute. portfolioKeys mirrors tracked_cards' own natural key (game is
+// always 'pokemon' here) so a card already in the member's portfolio shows
+// as already-added instead of inviting a redundant click.
+let cardsById = new Map();
+let portfolioKeys = new Set();
+function cardKey(c){
+  return [c.name, c.set_name, c.card_number, c.language || 'english'].join('|');
+}
+async function loadPortfolioKeys(){
+  if (IS_GUEST) return;
+  try {
+    const resp = await fetch('/api/card-tracker/portfolio');
+    if (!resp.ok) return;
+    const rows = await resp.json();
+    portfolioKeys = new Set(rows.map(cardKey));
+  } catch(e){ /* non-fatal — Track buttons just start off unmarked */ }
+}
+function trackButtonHtml(c){
+  if (portfolioKeys.has(cardKey(c))){
+    return `<button type="button" class="btn btn-plain btn-sm track-btn added" disabled>In tracker</button>`;
+  }
+  return `<button type="button" class="btn btn-plain btn-sm track-btn" onclick="addToTracker(this, ${c.id})"
+            title="Add to your Card Tracker portfolio">+ Track</button>`;
+}
+async function addToTracker(btn, id){
+  const c = cardsById.get(id);
+  if (!c) return;
+  btn.disabled = true;
+  btn.textContent = 'Adding…';
+  try {
+    const resp = await fetch('/api/card-tracker/portfolio/add', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        game: 'pokemon',
+        name: c.name,
+        set_name: c.set_name,
+        card_number: c.card_number,
+        variant: c.rarity,
+        tcgplayer_id: c.tcgplayer_id,
+        language: c.language,
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || ('HTTP ' + resp.status));
+    portfolioKeys.add(cardKey(c));
+    btn.textContent = 'In tracker';
+    btn.classList.add('added');
+    btn.title = 'View it in the Card Tracker';
+  } catch(e){
+    btn.disabled = false;
+    btn.textContent = '+ Track';
+    alert('Couldn’t add to tracker: ' + e.message);
+  }
+}
 
 function updateRefreshButton(){
   const btn = document.getElementById('refreshSelectedBtn');
@@ -978,6 +1043,7 @@ async function loadCards(){
   if (d.facets) applyFacets(d.facets);
   const tbody = document.getElementById('cardRows');
   const empty = document.getElementById('emptyState');
+  cardsById = new Map(d.cards.map(c => [c.id, c]));
 
   tbody.innerHTML = d.cards.map(c => {
     // TCGplayer when the id is trustworthy, otherwise an eBay search — so a
@@ -998,6 +1064,7 @@ async function loadCards(){
     const checkCell = IS_GUEST ? '' : `<td class="check-col"><input type="checkbox" class="row-check" data-id="${c.id}"
           ${selectedCards.has(c.id) ? 'checked' : ''} ${eligible.ok ? '' : 'disabled'}
           title="${esc(eligible.reason)}" onchange="onCardCheck(this)"></td>`;
+    const trackCell = IS_GUEST ? '' : `<td class="col-track">${trackButtonHtml(c)}</td>`;
     return `<tr>
     ${checkCell}
     <td class="col-card">${nameCell}${c.card_number ? `<span class="cnum">${esc(c.card_number)}</span>` : ''}</td>
@@ -1009,6 +1076,7 @@ async function loadCards(){
         ? '<span class="price-none">no price</span>'
         : `<span class="price">${money(c.raw_price)}</span>`}</td>
     <td class="col-updated" title="${c.priced_at ? esc(new Date(c.priced_at).toLocaleString()) : ''}">${timeAgo(c.priced_at)}</td>
+    ${trackCell}
   </tr>`;
   }).join('');
 
@@ -1346,7 +1414,7 @@ document.getElementById('qSort').addEventListener('change', () => { updateSortIn
 
 updateSortIndicators();
 loadFacets();
-loadCards();
+loadPortfolioKeys().then(loadCards);
 
 (function(){
   var btn = document.getElementById('themeToggle');
