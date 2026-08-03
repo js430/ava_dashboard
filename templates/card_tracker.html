@@ -846,6 +846,8 @@ async function backdateSelected(days){
     const d = await resp.json();
     if (!resp.ok || !d.ok) throw new Error(d.detail || ('HTTP ' + resp.status));
     note.textContent = `Backdating ${pokeCount} card(s)…`;
+    selectedIds.clear();
+    renderTable();
     pollBackdate(Date.now());
   } catch (e) {
     if (note) note.textContent = 'Failed: ' + e.message;
@@ -879,7 +881,6 @@ function pollBackdate(t0){
       } else if (note) {
         note.textContent = 'Backdate finished.';
       }
-      selectedIds.clear();
       await load();
       if (selectedId) await showDetail(selectedId);
     } catch (e) {
