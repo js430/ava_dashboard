@@ -3,6 +3,42 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-08-03 — Incident: the flagged constraint-rename risk actually hit
+
+The live-DB risk called out in the 2026-08-02 "language column" entry below
+materialized in production: `ensure_card_tracker_schema` started throwing
+`DuplicateTableError` on every call after the first. Root cause was more
+specific than "wrong constraint name" — the DO block's exception handler
+caught `duplicate_object` (42710), but a duplicate **constraint name**
+surfaces as `duplicate_table` (42P07), because a UNIQUE constraint's backing
+index is itself a relation. Caught the wrong SQLSTATE class entirely.
+
+**Real consequence, not just log noise:** `ensure_card_tracker_schema`'s DDL
+loop has no per-statement try/except, so the exception aborted the whole
+loop. Everything positioned after the constraint swap in
+`CARD_TRACKER_SCHEMA` — `user_tracked_cards`, and `card_tracker_prefs`
+(added in the *same* deploy that already had this bug live) — silently
+never got created. And because this ran through `/api/card-tracker/refresh`
+(the manual button + the 11pm scheduler) *before* `sync_watchlist`/
+`run_ppt_ingest`/`run_ingest`/`run_scoring`, every one of those was skipped
+too. `run_ingest` (One Piece pricing) has no other caller, so One Piece
+prices were likely stale for as long as this was live. Pokemon pricing was
+fine — the 3-hourly sweep calls `run_ppt_ingest` directly, bypassing
+`/refresh` entirely.
+
+**Fixed**: catch both `duplicate_object` and `duplicate_table`, and moved
+the constraint swap to the END of `CARD_TRACKER_SCHEMA` — so this exact
+failure mode can only ever block itself now, never the tables everything
+else depends on. Self-healing on the next run, no manual migration needed
+(`card_tracker_prefs` finally gets created the moment this deploys, since
+it's now ordered before the risky statement).
+
+**Lesson for next time a constraint gets renamed by guessed name**: don't
+assume the exception class from first principles — a "duplicate X" error's
+SQLSTATE depends on what kind of database object X's *backing structure*
+actually is, not what you called it in the DDL. When in doubt, put the
+risky statement last in a DDL list, not first.
+
 ## 2026-08-02 — Card tracker: tracked_cards gets a language column
 
 **Decided:** `tracked_cards` now has `language TEXT NOT NULL DEFAULT 'english'`,
