@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/brand/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/brand/icon-180.png">
+<script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Card Tracker Trial — Restock Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .header-title { font-size: 16px; font-weight: 600; color: #111; display: inline-flex; align-items: center; gap: 8px; }
+  .header-sub { font-size: 12px; color: #999; margin-top: 1px; }
+  .trial-badge { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; color: #854d0e; background: #fef9c3; border: 1px solid #f5d76e; border-radius: 5px; padding: 2px 7px; }
+  .nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; }
+  .nav a:hover { background: #f4f4f5; }
+  .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-group { position: relative; display: inline-flex; }
+  .nav-group-btn { font-family: inherit; font-size: 12px; color: #555; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+  .nav-group-btn:hover { background: #f4f4f5; }
+  .nav-group-btn.active, .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-caret { font-size: 9px; line-height: 1; }
+  .nav-menu { display: none; position: absolute; top: calc(100% + 4px); right: 0; min-width: 150px; padding: 4px; background: #fff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.10); z-index: 400; }
+  .nav-group.open .nav-menu { display: block; }
+  .nav-menu a { display: block; padding: 6px 10px; border: none; border-radius: 5px; background: none; font-size: 12px; color: #555; text-decoration: none; white-space: nowrap; }
+  .nav-menu a:hover { background: #f4f4f5; }
+  .nav-menu a.active { background: #5865F2; color: #fff; }
+  .main { padding: 24px; max-width: 1400px; margin: 0 auto; }
+
+  .promo { background: #fff; border: 1px solid #e4e4e7; border-left: 4px solid #5865F2; border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .promo-text { flex: 1; min-width: 220px; }
+  .promo-title { font-size: 14px; font-weight: 700; color: #111; margin-bottom: 3px; }
+  .promo-sub { font-size: 12px; color: #666; line-height: 1.5; }
+  .cta-btn { font-size: 13px; font-weight: 600; color: #fff; background: #5865F2; border: none; border-radius: 8px; padding: 9px 18px; text-decoration: none; white-space: nowrap; cursor: pointer; }
+  .cta-btn:hover { background: #4752d4; }
+
+  .table-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; overflow: hidden; margin-bottom: 16px; }
+  .table-header { padding: 12px 16px; border-bottom: 1px solid #e4e4e7; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .table-header-title { font-size: 14px; font-weight: 600; color: #111; }
+  .clear-filters-btn { font-size: 12px; color: #5865F2; background: none; border: none; cursor: pointer; padding: 0; white-space: nowrap; }
+  .clear-filters-btn:hover { text-decoration: underline; }
+  .filter-count { font-size: 12px; color: #999; white-space: nowrap; }
+  .btn-group { display: flex; }
+  .btn-group button { font-size: 12px; height: 30px; padding: 0 11px; border: 1px solid #ddd; background: #fff; color: #333; cursor: pointer; white-space: nowrap; }
+  .btn-group button:first-child { border-radius: 6px 0 0 6px; }
+  .btn-group button:last-child { border-radius: 0 6px 6px 0; }
+  .btn-group button:not(:first-child) { border-left: none; }
+  .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+
+  .table-scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  thead th { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; padding: 9px 12px; text-align: right; border-bottom: 1px solid #e4e4e7; background: #fafafa; white-space: nowrap; }
+  thead th.left { text-align: left; }
+  thead th.sortable { cursor: pointer; user-select: none; }
+  thead th.sortable:hover { color: #333; }
+  thead th.sort-active { color: #5865F2; }
+  .sort-arrow { display: inline-block; margin-left: 3px; font-size: 10px; color: #5865F2; width: 8px; }
+  tr.filter-row th { padding: 5px 8px; background: #fff; border-bottom: 1px solid #e4e4e7; font-weight: 400; text-transform: none; letter-spacing: normal; cursor: default; }
+  .col-filter { width: 100%; box-sizing: border-box; font-size: 12px; height: 24px; padding: 0 6px; border: 1px solid #ddd; border-radius: 5px; background: #fff; color: #111; }
+  .range-pair { display: flex; gap: 3px; justify-content: flex-end; }
+  .range-input { width: 52px; box-sizing: border-box; font-size: 12px; height: 24px; padding: 0 4px; border: 1px solid #ddd; border-radius: 5px; background: #fff; color: #111; }
+  tbody tr { border-bottom: 1px solid #f0f0f0; cursor: pointer; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: #fafafa; }
+  tbody tr.selected { background: #eef0ff; }
+  tbody td { padding: 8px 12px; color: #333; text-align: right; white-space: nowrap; }
+  tbody td.left { text-align: left; }
+  .rank { color: #aaa; width: 30px; }
+  .card-name { font-weight: 600; color: #111; }
+  .card-sub { font-size: 12px; color: #999; }
+  .pos { color: #16a34a; font-weight: 600; }
+  .neg { color: #dc2626; font-weight: 600; }
+  .muted { color: #aaa; }
+  .score-badge { display: inline-block; min-width: 44px; text-align: center; font-weight: 700; padding: 2px 8px; border-radius: 12px; font-size: 12px; }
+  .score-hi   { background: #dcfce7; color: #166534; }
+  .score-mid  { background: #fef9c3; color: #854d0e; }
+  .score-low  { background: #ffedd5; color: #9a3412; }
+  .score-none { background: #f3f4f6; color: #6b7280; }
+  .empty { text-align: center; padding: 36px; color: #aaa; font-size: 12px; }
+  .lang-badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: #eef0ff; color: #4338ca; margin-left: 5px; vertical-align: middle; }
+  .lang-badge.jp { background: #fee2e2; color: #b91c1c; }
+
+  .detail-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; overflow: hidden; display: none; margin-bottom: 16px; }
+  .detail-card.visible { display: block; }
+  .detail-header { padding: 14px 16px 10px; border-bottom: 1px solid #f0f0f0; }
+  .detail-head-row { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+  .detail-head-row .btn-group { margin-left: auto; }
+  .detail-title { font-size: 15px; font-weight: 700; color: #111; }
+  .detail-sub { font-size: 12px; color: #999; margin-top: 2px; }
+  .detail-body { padding: 14px 16px; }
+  .chart-wrap { position: relative; height: 300px; margin-bottom: 14px; }
+  .chart-note { font-size: 12px; color: #999; margin: -8px 0 12px; }
+  .why-grid { display: flex; gap: 8px; flex-wrap: wrap; }
+  .why-chip { font-size: 12px; background: #f6f6f8; border: 1px solid #ececef; border-radius: 8px; padding: 6px 10px; color: #444; }
+  .why-chip b { color: #111; }
+
+  @media (max-width: 720px) {
+    .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px; }
+    .nav { gap: 5px; }
+    .nav-menu { left: 0; right: auto; }
+    .main { padding: 12px; }
+    thead th, tbody td { padding: 7px 8px; }
+    .chart-wrap { height: 220px; }
+  }
+  .theme-toggle { display: none; font-size: 16px; background: #f4f4f5; border: 1px solid #ddd; border-radius: 6px; padding: 4px 8px; cursor: pointer; line-height: 1; flex-shrink: 0; }
+  html[data-theme="dark"] { color-scheme: dark; }
+  html[data-theme="dark"] body { background: #111113; color: #f0f0f0; }
+  html[data-theme="dark"] .header { background: #1c1c1f; border-bottom-color: #303033; }
+  html[data-theme="dark"] .header-title { color: #f0f0f0; }
+  html[data-theme="dark"] .nav a { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .nav a:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .nav-group-btn { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .nav-group-btn:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav-group-btn.active, html[data-theme="dark"] .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .nav-menu { background: #1c1c1f; border-color: #383838; box-shadow: 0 6px 20px rgba(0,0,0,0.45); }
+  html[data-theme="dark"] .nav-menu a { color: #bbbbc5; }
+  html[data-theme="dark"] .nav-menu a:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav-menu a.active { background: #5865F2; color: #fff; }
+  html[data-theme="dark"] .promo, html[data-theme="dark"] .table-card, html[data-theme="dark"] .detail-card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .promo-title, html[data-theme="dark"] .table-header-title, html[data-theme="dark"] .detail-title, html[data-theme="dark"] .card-name { color: #f0f0f0; }
+  html[data-theme="dark"] .table-header, html[data-theme="dark"] .detail-header { border-bottom-color: #303033; }
+  html[data-theme="dark"] .btn-group button { background: #252528; border-color: #383838; color: #ccc; }
+  html[data-theme="dark"] .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] thead th { background: #161618; border-bottom-color: #303033; }
+  html[data-theme="dark"] thead th.sortable:hover { color: #ccc; }
+  html[data-theme="dark"] thead th.sort-active { color: #818cf8; }
+  html[data-theme="dark"] .sort-arrow { color: #818cf8; }
+  html[data-theme="dark"] tr.filter-row th { background: #1c1c1f; border-bottom-color: #303033; }
+  html[data-theme="dark"] .col-filter, html[data-theme="dark"] .range-input { background: #252528; border-color: #383838; color: #f0f0f0; }
+  html[data-theme="dark"] tbody tr { border-bottom-color: #2a2a2d; }
+  html[data-theme="dark"] tbody tr:hover { background: #222226; }
+  html[data-theme="dark"] tbody tr.selected { background: #1e2040; }
+  html[data-theme="dark"] tbody td { color: #ccc; }
+  html[data-theme="dark"] .why-chip { background: #232327; border-color: #303033; color: #bbb; }
+  html[data-theme="dark"] .why-chip b { color: #f0f0f0; }
+  html[data-theme="dark"] .lang-badge { background: #26264a; color: #a5b4fc; }
+  html[data-theme="dark"] .lang-badge.jp { background: #4a2323; color: #fca5a5; }
+  html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="header-title">Card Tracker <span class="trial-badge">TRIAL</span></div>
+    <div class="header-sub">A live sample portfolio — view only</div>
+  </div>
+  <div class="nav">
+    <a href="/sample">Dashboard</a>
+    <a href="/sample-map">Map</a>
+    <a href="/sample-status">Status</a>
+    <a href="/tips">Tips, Tricks, and Guide</a>
+    <div class="nav-group">
+      <button class="nav-group-btn active" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Nexus Playground<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        <a href="/sample-card-tracker" class="active">Tracker</a>
+        <a href="/grading-calculator">Grading Calculator</a>
+        <a href="/catalog">Card Catalog</a>
+      </div>
+    </div>
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
+    <a href="/logout">Log out</a>
+  </div>
+</div>
+
+<div class="main">
+
+  <div class="promo">
+    <div class="promo-text">
+      <div class="promo-title">You're viewing a live sample portfolio</div>
+      <div class="promo-sub">Real cards, real prices, real scores — just a random 10-card slice, view-only. Get the Intel or Monitor role to build and manage your own portfolio of up to 100 cards.</div>
+    </div>
+    {% if upgrade_url %}<a class="cta-btn" href="{{ upgrade_url }}" target="_blank" rel="noopener noreferrer">Get Intel or Monitor role</a>{% endif %}
+  </div>
+
+  <div class="detail-card" id="detailCard">
+    <div class="detail-header">
+      <div class="detail-head-row">
+        <div>
+          <div class="detail-title" id="detailTitle">—</div>
+          <div class="detail-sub" id="detailSub"></div>
+        </div>
+        <div class="btn-group">
+          <button id="range7" onclick="setChartRange(7)">7 days</button>
+          <button id="range14" onclick="setChartRange(14)">14 days</button>
+          <button id="range30" class="active" onclick="setChartRange(30)">30 days</button>
+          <button id="range90" onclick="setChartRange(90)">90 days</button>
+          <button id="range180" onclick="setChartRange(180)">180 days</button>
+        </div>
+      </div>
+    </div>
+    <div class="detail-body">
+      <div class="chart-wrap"><canvas id="priceChart"></canvas></div>
+      <div class="chart-note" id="chartNote"></div>
+      <div class="why-grid" id="whyGrid"></div>
+    </div>
+  </div>
+
+  <div class="table-card">
+    <div class="table-header">
+      <span class="table-header-title">Sample portfolio</span>
+      <button class="clear-filters-btn" onclick="clearFilters()">Clear filters</button>
+      <span class="filter-count" id="filterCount"></span>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th class="left">#</th>
+            <th class="left sortable" onclick="sortBy('name')">Card<span class="sort-arrow" id="arrow-name"></span></th>
+            <th class="left sortable" onclick="sortBy('set_name')">Set<span class="sort-arrow" id="arrow-set_name"></span></th>
+            <th class="left sortable" onclick="sortBy('variant')">Rarity<span class="sort-arrow" id="arrow-variant"></span></th>
+            <th class="left sortable" onclick="sortBy('game')">Game<span class="sort-arrow" id="arrow-game"></span></th>
+            <th class="sortable" onclick="sortBy('price_mid')">Price<span class="sort-arrow" id="arrow-price_mid"></span></th>
+            <th class="sortable" onclick="sortBy('momentum_7d')">7d<span class="sort-arrow" id="arrow-momentum_7d"></span></th>
+            <th class="sortable" onclick="sortBy('momentum_30d')">30d<span class="sort-arrow" id="arrow-momentum_30d"></span></th>
+            <th class="sortable" onclick="sortBy('momentum_180d')">180d<span class="sort-arrow" id="arrow-momentum_180d"></span></th>
+            <th class="sortable" onclick="sortBy('potential_score')">Score<span class="sort-arrow" id="arrow-potential_score"></span></th>
+          </tr>
+          <tr class="filter-row">
+            <th></th>
+            <th class="left"><input class="col-filter" type="text" id="fCard" placeholder="Filter card…" oninput="onFilterChange()"></th>
+            <th class="left"><input class="col-filter" type="text" id="fSet" placeholder="Filter set…" oninput="onFilterChange()"></th>
+            <th class="left"><input class="col-filter" type="text" id="fRarity" placeholder="Filter rarity…" oninput="onFilterChange()"></th>
+            <th class="left">
+              <select class="col-filter" id="fGame" onchange="onFilterChange()">
+                <option value="all">All</option>
+                <option value="pokemon">Pokémon</option>
+                <option value="one_piece">One Piece</option>
+              </select>
+            </th>
+            <th><div class="range-pair"><input class="range-input" type="number" id="fPriceMin" placeholder="min" oninput="onFilterChange()"><input class="range-input" type="number" id="fPriceMax" placeholder="max" oninput="onFilterChange()"></div></th>
+            <th><div class="range-pair"><input class="range-input" type="number" id="fM7Min" placeholder="min%" oninput="onFilterChange()"><input class="range-input" type="number" id="fM7Max" placeholder="max%" oninput="onFilterChange()"></div></th>
+            <th><div class="range-pair"><input class="range-input" type="number" id="fM30Min" placeholder="min%" oninput="onFilterChange()"><input class="range-input" type="number" id="fM30Max" placeholder="max%" oninput="onFilterChange()"></div></th>
+            <th><div class="range-pair"><input class="range-input" type="number" id="fM180Min" placeholder="min%" oninput="onFilterChange()"><input class="range-input" type="number" id="fM180Max" placeholder="max%" oninput="onFilterChange()"></div></th>
+            <th><div class="range-pair"><input class="range-input" type="number" id="fScoreMin" placeholder="min" oninput="onFilterChange()"><input class="range-input" type="number" id="fScoreMax" placeholder="max" oninput="onFilterChange()"></div></th>
+          </tr>
+        </thead>
+        <tbody id="trackerBody">
+          <tr><td colspan="10" class="empty">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+
+const GAME_LABELS = { pokemon: 'Pokémon', one_piece: 'One Piece' };
+let allRows = [];
+let selectedId = null;
+let chart = null;
+let chartRange = 30;
+let chartSnapshots = [];
+let sortKey = 'potential_score';
+let sortAsc = false;
+const SORTABLE = ['name','set_name','variant','game','price_mid','momentum_7d','momentum_30d','momentum_180d','potential_score'];
+const FILTER_IDS = ['fCard','fSet','fRarity','fGame','fPriceMin','fPriceMax','fM7Min','fM7Max','fM30Min','fM30Max',
+                    'fM180Min','fM180Max','fScoreMin','fScoreMax'];
+
+function langBadge(lang){
+  const jp = lang === 'japanese';
+  return `<span class="lang-badge${jp ? ' jp' : ''}">${jp ? 'JP' : 'EN'}</span>`;
+}
+function money(v){ return v == null ? '—' : '$' + Number(v).toFixed(2); }
+function pct(v){
+  if (v == null) return '<span class="muted">—</span>';
+  const cls = v > 0.005 ? 'pos' : v < -0.005 ? 'neg' : 'muted';
+  const sign = v > 0 ? '+' : '';
+  return `<span class="${cls}">${sign}${Number(v).toFixed(1)}%</span>`;
+}
+function scoreBadge(v){
+  if (v == null) return '<span class="score-badge score-none">—</span>';
+  const cls = v >= 65 ? 'score-hi' : v >= 45 ? 'score-mid' : 'score-low';
+  return `<span class="score-badge ${cls}">${Number(v).toFixed(0)}</span>`;
+}
+
+function getFilters(){
+  const num = id => { const v = document.getElementById(id).value.trim(); return v === '' ? null : parseFloat(v); };
+  return {
+    card: document.getElementById('fCard').value.trim().toLowerCase(),
+    set: document.getElementById('fSet').value.trim().toLowerCase(),
+    rarity: document.getElementById('fRarity').value.trim().toLowerCase(),
+    game: document.getElementById('fGame').value,
+    priceMin: num('fPriceMin'), priceMax: num('fPriceMax'),
+    m7Min: num('fM7Min'), m7Max: num('fM7Max'),
+    m30Min: num('fM30Min'), m30Max: num('fM30Max'),
+    m180Min: num('fM180Min'), m180Max: num('fM180Max'),
+    scoreMin: num('fScoreMin'), scoreMax: num('fScoreMax'),
+  };
+}
+
+function inRange(v, min, max){
+  if (v == null) return min == null && max == null;
+  if (min != null && v < min) return false;
+  if (max != null && v > max) return false;
+  return true;
+}
+
+function filterRows(rows, f){
+  return rows.filter(r => {
+    if (f.card && !r.name.toLowerCase().includes(f.card) && !(r.set_name||'').toLowerCase().includes(f.card)
+        && !(r.card_number||'').toLowerCase().includes(f.card) && !(r.variant||'').toLowerCase().includes(f.card)) return false;
+    if (f.set && !(r.set_name||'').toLowerCase().includes(f.set)) return false;
+    if (f.rarity && !(r.variant||'').toLowerCase().includes(f.rarity)) return false;
+    if (f.game !== 'all' && r.game !== f.game) return false;
+    if (!inRange(r.price_mid, f.priceMin, f.priceMax)) return false;
+    if (!inRange(r.momentum_7d, f.m7Min, f.m7Max)) return false;
+    if (!inRange(r.momentum_30d, f.m30Min, f.m30Max)) return false;
+    if (!inRange(r.momentum_180d, f.m180Min, f.m180Max)) return false;
+    if (!inRange(r.potential_score, f.scoreMin, f.scoreMax)) return false;
+    return true;
+  });
+}
+
+function sortValue(r, key){
+  if (key === 'name') return r.name.toLowerCase();
+  if (key === 'set_name') return (r.set_name || '').toLowerCase() || null;
+  if (key === 'variant') return (r.variant || '').toLowerCase() || null;
+  if (key === 'game') return (GAME_LABELS[r.game] || r.game).toLowerCase();
+  return r[key];
+}
+
+function sortRows(rows){
+  const rowsCopy = rows.slice();
+  rowsCopy.sort((a, b) => {
+    const va = sortValue(a, sortKey), vb = sortValue(b, sortKey);
+    const aNull = va == null, bNull = vb == null;
+    if (aNull && bNull) return 0;
+    if (aNull) return 1;
+    if (bNull) return -1;
+    if (va < vb) return sortAsc ? -1 : 1;
+    if (va > vb) return sortAsc ? 1 : -1;
+    return 0;
+  });
+  return rowsCopy;
+}
+
+function sortBy(key){
+  if (!SORTABLE.includes(key)) return;
+  if (sortKey === key){ sortAsc = !sortAsc; }
+  else { sortKey = key; sortAsc = (key === 'name' || key === 'set_name' || key === 'variant' || key === 'game'); }
+  renderTable();
+}
+
+function updateSortArrows(){
+  SORTABLE.forEach(key => {
+    const th = document.querySelector(`[onclick="sortBy('${key}')"]`);
+    const arrow = document.getElementById('arrow-' + key);
+    if (!th || !arrow) return;
+    if (key === sortKey){ th.classList.add('sort-active'); arrow.textContent = sortAsc ? '▲' : '▼'; }
+    else { th.classList.remove('sort-active'); arrow.textContent = ''; }
+  });
+}
+
+function onFilterChange(){ renderTable(); }
+
+function clearFilters(){
+  FILTER_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    el.value = el.tagName === 'SELECT' ? 'all' : '';
+  });
+  renderTable();
+}
+
+function renderTable(){
+  const f = getFilters();
+  const filtered = filterRows(allRows, f);
+  const rows = sortRows(filtered);
+  updateSortArrows();
+
+  const countEl = document.getElementById('filterCount');
+  if (countEl) countEl.textContent = rows.length === allRows.length
+    ? `${allRows.length} card${allRows.length !== 1 ? 's' : ''}`
+    : `${rows.length} of ${allRows.length} shown`;
+
+  const body = document.getElementById('trackerBody');
+  if (!rows.length){
+    body.innerHTML = `<tr><td colspan="10" class="empty">${allRows.length ? 'No cards match the current filters.' : 'No sample cards available right now.'}</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map((r, i) => `
+    <tr data-id="${r.id}" class="${r.id === selectedId ? 'selected' : ''}" onclick="showDetail(${r.id})">
+      <td class="left rank">${i + 1}</td>
+      <td class="left">
+        <div class="card-name">${esc(r.name)}${r.game === 'pokemon' ? langBadge(r.language) : ''}</div>
+        ${r.card_number ? `<div class="card-sub">#${esc(r.card_number)}</div>` : ''}
+      </td>
+      <td class="left">${esc(r.set_name || '—')}</td>
+      <td class="left">${esc(r.variant || '—')}</td>
+      <td class="left">${esc(GAME_LABELS[r.game] || r.game)}</td>
+      <td>${money(r.price_mid)}</td>
+      <td>${pct(r.momentum_7d)}</td>
+      <td>${pct(r.momentum_30d)}</td>
+      <td>${pct(r.momentum_180d)}</td>
+      <td>${scoreBadge(r.potential_score)}</td>
+    </tr>`).join('');
+}
+
+const CHART_RANGES = [7, 14, 30, 90, 180];
+
+function setChartRange(days){
+  chartRange = days;
+  CHART_RANGES.forEach(d => {
+    const btn = document.getElementById('range' + d);
+    if (btn) btn.classList.toggle('active', d === days);
+  });
+  if (chartSnapshots.length) renderChart();
+}
+
+function dayStart(snapshot){
+  const d = new Date(snapshot.captured_at);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function dailySeries(snaps){
+  const byDay = new Map();
+  snaps.forEach(s => byDay.set(dayStart(s), s));
+  return Array.from(byDay.values());
+}
+
+function snapshotsInRange(){
+  const daily = dailySeries(chartSnapshots);
+  if (!daily.length) return [];
+  const cutoff = new Date(dayStart(daily[daily.length - 1]));
+  cutoff.setDate(cutoff.getDate() - (chartRange - 1));
+  const kept = daily.filter(s => dayStart(s) >= cutoff.getTime());
+  return kept.length ? kept : daily.slice(-1);
+}
+
+function renderChart(){
+  const snaps = snapshotsInRange();
+  const labels = snaps.map(s => new Date(s.captured_at).toLocaleDateString('en-US', { month:'short', day:'numeric' }));
+  const mids = snaps.map(s => s.price_mid);
+  const lows = snaps.map(s => s.price_low);
+  const highs = snaps.map(s => s.price_high);
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  const gridColor = dark ? '#2a2a2d' : '#f0f0f0';
+  const tickColor = dark ? '#888' : '#999';
+
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById('priceChart'), {
+    type: 'line',
+    data: { labels, datasets: [
+      { label: 'Mid', data: mids, borderColor: '#5865F2', backgroundColor: 'rgba(88,101,242,0.08)', fill: true, tension: 0.25, pointRadius: snaps.length > 45 ? 0 : 2, borderWidth: 2 },
+      { label: 'Low', data: lows, borderColor: 'rgba(34,197,94,0.6)', borderDash: [4,3], pointRadius: 0, borderWidth: 1, fill: false },
+      { label: 'High', data: highs, borderColor: 'rgba(239,68,68,0.55)', borderDash: [4,3], pointRadius: 0, borderWidth: 1, fill: false },
+    ]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { labels: { color: tickColor, boxWidth: 18, font: { size: 11 } } } },
+      scales: {
+        x: { grid: { color: gridColor }, ticks: { color: tickColor, maxTicksLimit: 10 } },
+        y: { grid: { color: gridColor }, ticks: { color: tickColor, callback: v => '$' + v } },
+      },
+    },
+  });
+
+  const note = document.getElementById('chartNote');
+  if (!note) return;
+  if (!snaps.length){ note.textContent = 'No prices yet for this card.'; return; }
+  if (snaps.length < 2){ note.textContent = 'Only one day of prices so far.'; return; }
+  const days = d => d === 1 ? '1 day' : d + ' days';
+  const spanDays = Math.round((dayStart(snaps[snaps.length - 1]) - dayStart(snaps[0])) / 86400000) + 1;
+  note.textContent = `Showing ${snaps.length} daily price${snaps.length === 1 ? '' : 's'} across ${days(spanDays)}.`;
+}
+
+async function showDetail(id){
+  selectedId = id;
+  renderTable();
+  try {
+    const resp = await fetch('/api/card-tracker/trial/history?card_id=' + id);
+    if (!resp.ok) throw new Error(resp.status);
+    const d = await resp.json();
+    const c = d.card;
+    document.getElementById('detailTitle').textContent = c.name;
+    document.getElementById('detailSub').textContent =
+      [GAME_LABELS[c.game] || c.game, c.game === 'pokemon' ? (c.language === 'japanese' ? 'Japanese' : 'English') : null,
+       c.set_name, c.variant, c.card_number ? '#' + c.card_number : null].filter(Boolean).join(' · ');
+
+    chartSnapshots = d.snapshots;
+    renderChart();
+
+    const e = d.explain;
+    const why = document.getElementById('whyGrid');
+    if (e){
+      why.innerHTML = [
+        `<span class="why-chip">7d momentum: <b>${e.momentum_7d_pct == null ? 'n/a' : (e.momentum_7d_pct > 0 ? '+' : '') + e.momentum_7d_pct + '%'}</b></span>`,
+        `<span class="why-chip">30d momentum: <b>${e.momentum_30d_pct == null ? 'n/a' : (e.momentum_30d_pct > 0 ? '+' : '') + e.momentum_30d_pct + '%'}</b></span>`,
+        `<span class="why-chip">180d momentum: <b>${e.momentum_180d_pct == null ? 'n/a' : (e.momentum_180d_pct > 0 ? '+' : '') + e.momentum_180d_pct + '%'}</b></span>`,
+        `<span class="why-chip">Liquidity: <b>${(e.liquidity_score * 100).toFixed(0)}%</b></span>`,
+        `<span class="why-chip">Potential: <b>${e.potential_score}</b> / 100</span>`,
+      ].join('');
+    } else {
+      why.innerHTML = '<span class="why-chip">No snapshots yet — no score to explain.</span>';
+    }
+    document.getElementById('detailCard').classList.add('visible');
+    document.getElementById('detailCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch (err) {
+    chartSnapshots = [];
+    document.getElementById('detailCard').classList.remove('visible');
+  }
+}
+
+async function load(){
+  try {
+    const resp = await fetch('/api/card-tracker/trial');
+    if (!resp.ok) throw new Error(resp.status);
+    allRows = await resp.json();
+    renderTable();
+  } catch (err) {
+    document.getElementById('trackerBody').innerHTML =
+      '<tr><td colspan="10" class="empty">Failed to load the sample.</td></tr>';
+  }
+}
+
+load();
+(function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();if(selectedId)showDetail(selectedId);};upd();})();
+function closeNavGroups(){
+  document.querySelectorAll('.nav-group.open').forEach(function(g){
+    g.classList.remove('open');
+    var b = g.querySelector('.nav-group-btn');
+    if (b) b.setAttribute('aria-expanded', 'false');
+  });
+}
+function toggleNavGroup(ev){
+  ev.preventDefault();
+  ev.stopPropagation();
+  var btn = ev.currentTarget, grp = btn.parentElement, wasOpen = grp.classList.contains('open');
+  closeNavGroups();
+  if (!wasOpen){ grp.classList.add('open'); btn.setAttribute('aria-expanded', 'true'); }
+}
+document.addEventListener('click', closeNavGroups);
+document.addEventListener('keydown', function(ev){ if (ev.key === 'Escape') closeNavGroups(); });
+</script>
+</body>
+</html>

@@ -1378,6 +1378,19 @@ def require_admin(request: Request) -> dict:
         raise HTTPException(status_code=403, detail="Not authorized")
     return user
 
+def require_trial_viewer(request: Request) -> dict:
+    """Session gate for the card-tracker trial (/sample-card-tracker and its
+    read-only API): demo/no-role members, plus staff previewing it — same
+    audience as /sample. A real premium member has the live tracker already
+    and has no reason to be here."""
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    is_staff = int(user["id"]) in ADMIN_USER_IDS or request.session.get("mod", False)
+    if not is_demo(request) and not is_staff:
+        raise HTTPException(status_code=403, detail="Not available to premium members")
+    return user
+
 def require_inventory_access(request: Request) -> dict:
     """Gate for /inventory: admins, plus INVENTORY_ROLE_IDS via the
     'inventory_access' session flag set at login. Deliberately separate from
@@ -1563,7 +1576,7 @@ async def card_tracker_page(request: Request):
                         "momentum, and a profit-potential score. Sign in with Discord to build "
                         "your portfolio.")
     if is_demo(request):
-        return RedirectResponse("/sample")
+        return RedirectResponse("/sample-card-tracker")
     return templates.TemplateResponse("card_tracker.html", {
         "request": request,
         "username": user["username"],
@@ -1573,6 +1586,36 @@ async def card_tracker_page(request: Request):
         "is_mod": request.session.get("mod", False),
         "max_portfolio_cards": MAX_USER_PORTFOLIO_CARDS,
         "default_visible_columns": DEFAULT_VISIBLE_COLUMNS,
+    })
+
+# The trial's data source: a real, curated portfolio (not synthetic data like
+# /sample's) shown read-only to demo members as a taste of the live tracker.
+# Owned by this one Discord user deliberately — an admin curates it exactly
+# like their own portfolio, via the same Add/Remove tools on the real page.
+TRIAL_PORTFOLIO_USER_ID = 96718322170597376
+TRIAL_PORTFOLIO_SAMPLE_SIZE = 10
+
+@app.get("/sample-card-tracker", response_class=HTMLResponse)
+async def sample_card_tracker_page(request: Request):
+    """Read-only trial for demo/no-role members: up to 10 random cards from
+    TRIAL_PORTFOLIO_USER_ID's real portfolio, view + sort/filter only — no
+    add, remove, or any other mutation. Same escape hatch as /sample: staff
+    can preview it too; a real premium member is sent to their own portfolio."""
+    user = request.session.get("user")
+    if not user:
+        return login_redirect_or_preview(
+            request, title="Card Tracker Trial — Nexus Card Co",
+            description="See the Card Tracker in action with a live sample portfolio. "
+                        "Sign in with Discord to try it.")
+    is_staff = int(user["id"]) in ADMIN_USER_IDS or request.session.get("mod", False)
+    if not is_demo(request) and not is_staff:
+        return RedirectResponse("/card-tracker")
+    return templates.TemplateResponse("sample_card_tracker.html", {
+        "request": request,
+        "username": user["username"],
+        "avatar": user.get("avatar"),
+        "user_id": user["id"],
+        "upgrade_url": DEMO_UPGRADE_URL,
     })
 
 def _f_num(x):
@@ -1659,6 +1702,27 @@ async def api_portfolio_list(request: Request, user=Depends(get_current_user)):
             WHERE utc.user_id = $1
             ORDER BY cs.potential_score DESC NULLS LAST, tc.name ASC
             """, int(user["id"]))
+    return JSONResponse([_serialize_tracker_row(r) for r in rows],
+                        headers={"Cache-Control": "no-store"})
+
+@app.get("/api/card-tracker/trial")
+async def api_trial_list(request: Request, user=Depends(require_trial_viewer)):
+    """Up to TRIAL_PORTFOLIO_SAMPLE_SIZE random cards from
+    TRIAL_PORTFOLIO_USER_ID's real portfolio — read-only, re-randomized on
+    every call. Detail lookups (api_trial_history) aren't limited to this
+    exact sample, so re-randomizing on reload never makes a card
+    unreachable."""
+    async with request.app.state.db.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT {_TRACKER_ROW_COLUMNS}
+            FROM user_tracked_cards utc
+            JOIN tracked_cards tc ON tc.id = utc.card_id
+            {_TRACKER_ROW_JOINS}
+            WHERE utc.user_id = $1
+            ORDER BY RANDOM()
+            LIMIT $2
+            """, TRIAL_PORTFOLIO_USER_ID, TRIAL_PORTFOLIO_SAMPLE_SIZE)
     return JSONResponse([_serialize_tracker_row(r) for r in rows],
                         headers={"Cache-Control": "no-store"})
 
@@ -1848,24 +1912,25 @@ async def api_tracker_prefs_save(request: Request, user=Depends(get_current_user
     return JSONResponse({"ok": True, "visible_columns": columns},
                         headers={"Cache-Control": "no-store"})
 
-@app.get("/api/card-tracker/history")
-async def api_card_tracker_history(request: Request, card_id: int, user=Depends(get_current_user)):
+async def _card_history_payload(conn, card_id: int):
+    """Shared body for api_card_tracker_history and api_trial_history — full
+    price history + a live score explanation for one card. None if the card
+    doesn't exist."""
     def _f(x):
         return float(x) if x is not None else None
-    async with request.app.state.db.acquire() as conn:
-        card = await conn.fetchrow(
-            "SELECT id, name, game, language, set_name, card_number, variant, release_date, "
-            "justtcg_name, justtcg_set, justtcg_number "
-            "FROM tracked_cards WHERE id = $1", card_id)
-        if card is None:
-            raise HTTPException(status_code=404, detail="Card not found")
-        snaps = await conn.fetch(
-            "SELECT captured_at, price_low, price_mid, price_high FROM price_snapshots "
-            "WHERE card_id = $1 ORDER BY captured_at ASC", card_id)
+    card = await conn.fetchrow(
+        "SELECT id, name, game, language, set_name, card_number, variant, release_date, "
+        "justtcg_name, justtcg_set, justtcg_number "
+        "FROM tracked_cards WHERE id = $1", card_id)
+    if card is None:
+        return None
+    snaps = await conn.fetch(
+        "SELECT captured_at, price_low, price_mid, price_high FROM price_snapshots "
+        "WHERE card_id = $1 ORDER BY captured_at ASC", card_id)
     # Recompute the full component breakdown live so the UI can show WHY the
     # card scores what it does (card_scores stores only the headline numbers).
     explain = card_scoring.score_card([dict(s) for s in snaps], card["release_date"]) if snaps else None
-    return JSONResponse({
+    return {
         "card": {
             "id": card["id"], "name": card["name"], "game": card["game"],
             "language": card["language"],
@@ -1882,7 +1947,33 @@ async def api_card_tracker_history(request: Request, card_id: int, user=Depends(
             for s in snaps
         ],
         "explain": explain,
-    }, headers={"Cache-Control": "no-store"})
+    }
+
+@app.get("/api/card-tracker/history")
+async def api_card_tracker_history(request: Request, card_id: int, user=Depends(get_current_user)):
+    async with request.app.state.db.acquire() as conn:
+        payload = await _card_history_payload(conn, card_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Card not found")
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+@app.get("/api/card-tracker/trial/history")
+async def api_trial_history(request: Request, card_id: int, user=Depends(require_trial_viewer)):
+    """Same payload as api_card_tracker_history, restricted to cards that are
+    actually in TRIAL_PORTFOLIO_USER_ID's portfolio — a trial viewer can look
+    up any card that's ever been in the demo portfolio, not just whichever
+    TRIAL_PORTFOLIO_SAMPLE_SIZE the random sample happened to include on this
+    particular load."""
+    async with request.app.state.db.acquire() as conn:
+        owned = await conn.fetchval(
+            "SELECT 1 FROM user_tracked_cards WHERE user_id = $1 AND card_id = $2",
+            TRIAL_PORTFOLIO_USER_ID, card_id)
+        if not owned:
+            raise HTTPException(status_code=404, detail="Card not found")
+        payload = await _card_history_payload(conn, card_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Card not found")
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 # Refresh runs as a background task: properly paced for JustTCG's 10/min
 # limit, a full run can take several minutes — far too long for one request.
