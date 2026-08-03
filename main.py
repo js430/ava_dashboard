@@ -944,8 +944,9 @@ async def login(request: Request):
 @app.get("/guest", response_class=HTMLResponse)
 async def guest_entry(request: Request):
     """Public entry point: no Discord account needed. Marks the session as a
-    guest and lands on a menu of the two Nexus Playground tools guests may
-    use — Tracker stays admin-only regardless, so it's never listed here."""
+    guest and lands on a menu of the Nexus Playground tools guests may
+    use — Grading Calculator, Card Catalog, and the read-only Card Tracker
+    trial (require_trial_viewer allows guests too)."""
     request.session["guest"] = True
     return templates.TemplateResponse("guest_home.html", {
         "request": request,
@@ -1378,11 +1379,16 @@ def require_admin(request: Request) -> dict:
         raise HTTPException(status_code=403, detail="Not authorized")
     return user
 
-def require_trial_viewer(request: Request) -> dict:
+def require_trial_viewer(request: Request):
     """Session gate for the card-tracker trial (/sample-card-tracker and its
-    read-only API): demo/no-role members, plus staff previewing it — same
-    audience as /sample. A real premium member has the live tracker already
-    and has no reason to be here."""
+    read-only API): guests (no Discord identity), demo/no-role members, and
+    staff previewing it — same guest-tier extension as the Grading
+    Calculator/Catalog. A real premium member has the live tracker already
+    and has no reason to be here. Returns None for a guest (the trial
+    endpoints never look at the caller's own id, only
+    TRIAL_PORTFOLIO_USER_ID's), or the session's user dict otherwise."""
+    if is_guest(request):
+        return None
     user = request.session.get("user")
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -1597,25 +1603,25 @@ TRIAL_PORTFOLIO_SAMPLE_SIZE = 10
 
 @app.get("/sample-card-tracker", response_class=HTMLResponse)
 async def sample_card_tracker_page(request: Request):
-    """Read-only trial for demo/no-role members: up to 10 random cards from
-    TRIAL_PORTFOLIO_USER_ID's real portfolio, view + sort/filter only — no
-    add, remove, or any other mutation. Same escape hatch as /sample: staff
-    can preview it too; a real premium member is sent to their own portfolio."""
+    """Read-only trial: guests (no Discord account), demo/no-role members,
+    and staff previewing it — up to 10 random cards from
+    TRIAL_PORTFOLIO_USER_ID's real portfolio, view + sort/filter only, no
+    add/remove/anything else. Same guest-tier extension as the Grading
+    Calculator/Catalog; a real premium member is sent to their own
+    portfolio instead."""
     user = request.session.get("user")
-    if not user:
+    if user:
+        is_staff = int(user["id"]) in ADMIN_USER_IDS or request.session.get("mod", False)
+        if not is_demo(request) and not is_staff:
+            return RedirectResponse("/card-tracker")
+    elif not is_guest(request):
         return login_redirect_or_preview(
             request, title="Card Tracker Trial — Nexus Card Co",
             description="See the Card Tracker in action with a live sample portfolio. "
-                        "Sign in with Discord to try it.")
-    is_staff = int(user["id"]) in ADMIN_USER_IDS or request.session.get("mod", False)
-    if not is_demo(request) and not is_staff:
-        return RedirectResponse("/card-tracker")
+                        "Sign in with Discord or continue as a guest to try it.")
     return templates.TemplateResponse("sample_card_tracker.html", {
         "request": request,
-        "username": user["username"],
-        "avatar": user.get("avatar"),
-        "user_id": user["id"],
-        "upgrade_url": DEMO_UPGRADE_URL,
+        **_viewer_context(request, user),
     })
 
 def _f_num(x):
