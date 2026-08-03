@@ -167,24 +167,6 @@ CARD_TRACKER_SCHEMA = [
     # 'english' so every pre-existing row (all implicitly English before this
     # column existed) keeps its current identity with no data change.
     "ALTER TABLE tracked_cards ADD COLUMN IF NOT EXISTS language TEXT NOT NULL DEFAULT 'english'",
-    # Postgres auto-names an inline table UNIQUE as {table}_{cols..}_key — this
-    # assumes that default naming held (the original CREATE TABLE above never
-    # named it explicitly). DROP...IF EXISTS is a safe no-op if the guess is
-    # wrong or it's already been dropped; the ADD below is wrapped so a
-    # duplicate-object error (already added by a prior run) is swallowed
-    # instead of failing every future startup.
-    "ALTER TABLE tracked_cards DROP CONSTRAINT IF EXISTS "
-    "tracked_cards_game_name_set_name_card_number_key",
-    """
-    DO $$
-    BEGIN
-        ALTER TABLE tracked_cards ADD CONSTRAINT
-            tracked_cards_game_name_set_name_card_number_language_key
-            UNIQUE (game, name, set_name, card_number, language);
-    EXCEPTION WHEN duplicate_object THEN
-        NULL;
-    END $$;
-    """,
     # Per-member portfolio membership. Deliberately just a join table — the
     # card itself and its price history are shared (see module docstring):
     # two members tracking the same card cost one PPT credit/day, not two,
@@ -208,6 +190,29 @@ CARD_TRACKER_SCHEMA = [
         visible_columns JSONB NOT NULL,
         updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+    """,
+    # Widen tracked_cards' uniqueness to include language (added above) so an
+    # English and a Japanese printing of the same name/set/number don't
+    # collide into one row. Deliberately LAST in this list: the DROP+ADD
+    # dance below touches an existing constraint by a guessed name, and a
+    # prior version of this got the exception class wrong (constraint name
+    # collisions surface as duplicate_table/42P07, since a UNIQUE
+    # constraint's backing index is itself a relation — NOT duplicate_object)
+    # and threw on every run after the first, aborting this whole loop before
+    # user_tracked_cards/card_tracker_prefs above ever got created. Ending
+    # the list with it means that class of mistake can only ever block
+    # itself, never the tables everything else depends on.
+    "ALTER TABLE tracked_cards DROP CONSTRAINT IF EXISTS "
+    "tracked_cards_game_name_set_name_card_number_key",
+    """
+    DO $$
+    BEGIN
+        ALTER TABLE tracked_cards ADD CONSTRAINT
+            tracked_cards_game_name_set_name_card_number_language_key
+            UNIQUE (game, name, set_name, card_number, language);
+    EXCEPTION WHEN duplicate_object OR duplicate_table THEN
+        NULL;
+    END $$;
     """,
 ]
 
