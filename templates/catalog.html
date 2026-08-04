@@ -362,12 +362,6 @@
             <option value="updated_desc" hidden></option>
             <option value="updated_asc" hidden></option>
           </select>
-          <select id="qPageSize" style="width:auto" title="Cards per page">
-            <option value="50">50 / page</option>
-            <option value="100">100 / page</option>
-            <option value="250">250 / page</option>
-            <option value="500">500 / page</option>
-          </select>
           <button class="btn btn-plain btn-sm" id="resetBtn" onclick="clearFilters()">Reset</button>
           <button class="btn btn-plain btn-sm" id="exportBtn" onclick="exportCsv()"
                   title="Download every card matching the current filters as a CSV">Export CSV</button>
@@ -474,6 +468,12 @@
         <div class="empty" id="emptyState" style="display:none"></div>
         <div class="pager">
           <span class="sub" id="pageInfo"></span>
+          <select id="qPageSize" style="width:auto" title="Cards per page">
+            <option value="50">50 / page</option>
+            <option value="100">100 / page</option>
+            <option value="250">250 / page</option>
+            <option value="500">500 / page</option>
+          </select>
           <button class="btn btn-plain btn-sm" id="prevBtn" onclick="changePage(-1)">Previous</button>
           <button class="btn btn-plain btn-sm" id="nextBtn" onclick="changePage(1)">Next</button>
         </div>
