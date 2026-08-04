@@ -3755,8 +3755,9 @@ async def _run_catalog_price_sweep(app) -> dict:
                     raw_price = (prices or {}).get("market")
                     if raw_price is None:
                         raw_price = (prices or {}).get("low")
-                    await catalog.update_card_price(pool, card["id"], raw_price,
-                                                    "pokemonpricetracker")
+                    await catalog.update_card_price(
+                        pool, card["id"], raw_price, "pokemonpricetracker",
+                        printing_prices=(prices or {}).get("printing_prices"))
                     if raw_price is not None:
                         summary["refreshed"] += 1
                     else:
@@ -4105,7 +4106,9 @@ async def api_catalog_refresh_cards(request: Request, user=Depends(get_current_u
             raw_price = (prices or {}).get("market")
             if raw_price is None:
                 raw_price = (prices or {}).get("low")
-            await catalog.update_card_price(pool, card_id, raw_price, "pokemonpricetracker")
+            await catalog.update_card_price(
+                pool, card_id, raw_price, "pokemonpricetracker",
+                printing_prices=(prices or {}).get("printing_prices"))
             results.append({
                 "id": card_id, "status": status, "name": row["name"],
                 "raw_price": raw_price,

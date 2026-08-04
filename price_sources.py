@@ -525,8 +525,8 @@ def _ppt_daily_remaining(resp) -> int | None:
 
 async def fetch_ppt_card_prices(client: httpx.AsyncClient, tcgplayer_id: str,
                                 language: str = PPT_DEFAULT_LANGUAGE) -> tuple:
-    """({low, market, high}, status, daily_remaining) — ungraded prices for
-    ONE card.
+    """({low, market, high, printing_prices}, status, daily_remaining) —
+    ungraded prices for ONE card.
 
     Deliberately the cheapest per-card refresh available: pinned by
     tcgPlayerId so no search is needed, and WITHOUT includeEbay, which bills a
@@ -562,7 +562,11 @@ async def fetch_ppt_card_prices(client: httpx.AsyncClient, tcgplayer_id: str,
             return None
         return round(value, 2) if value > 0 else None
 
-    out = {"low": _num("low"), "market": _num("market"), "high": _num("high")}
+    out = {"low": _num("low"), "market": _num("market"), "high": _num("high"),
+           # Same variants block a set re-stock reads — this endpoint hits
+           # the identical PPT row, just filtered by tcgPlayerId instead of
+           # set, so the per-printing breakdown is free here too.
+           "printing_prices": _ppt_printing_prices(rows[0])}
     if out["market"] is None and out["low"] is None and out["high"] is None:
         # A 200 with a row but no usable numbers — the call happened and was
         # billed, so this is 'empty', not an error.

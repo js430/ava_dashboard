@@ -424,12 +424,19 @@ async def get_cards_by_id(pool, game: str, language, ids) -> list:
              "priced_at": r["priced_at"]} for r in rows]
 
 
-async def update_card_price(pool, card_id: int, raw_price, price_source: str) -> None:
+async def update_card_price(pool, card_id: int, raw_price, price_source: str,
+                            printing_prices=None) -> None:
     """Write a single card's refreshed price by primary key.
 
-    Same "the new response is truth" rule as `upsert_set_cards`: a None
-    price CLEARS the stored price and priced_at rather than leaving a stale
-    number looking current.
+    Same "the new response is truth" rule as `upsert_set_cards` for
+    raw_price: a None price CLEARS the stored price and priced_at rather
+    than leaving a stale number looking current.
+
+    `printing_prices` (price_sources._ppt_printing_prices) is COALESCEd
+    instead — the per-card lookup this feeds from (fetch_ppt_card_prices)
+    hits the same PPT row a full set re-stock does, so it's free to capture
+    here too, but a call that happens not to carry it must not blank a
+    breakdown already on record.
     """
     price = _as_numeric(raw_price)
     async with pool.acquire() as conn:
@@ -438,11 +445,13 @@ async def update_card_price(pool, card_id: int, raw_price, price_source: str) ->
             UPDATE catalog_cards
             SET raw_price = $1::NUMERIC,
                 price_source = $2,
+                printing_prices = COALESCE($4::JSONB, printing_prices),
                 priced_at = CASE WHEN $1::NUMERIC IS NULL THEN NULL ELSE NOW() END,
                 refreshed_at = NOW()
             WHERE id = $3
             """,
-            price, price_source if price is not None else None, card_id)
+            price, price_source if price is not None else None, card_id,
+            json.dumps(printing_prices) if printing_prices else None)
 
 
 def _norm_languages(language) -> list:
