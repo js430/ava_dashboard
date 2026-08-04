@@ -539,15 +539,11 @@ def _build_filters(game: str, language, set_ids=None, rarities=None,
     if priced_only:
         where.append("raw_price IS NOT NULL")
     if search:
-        # Comma-separated terms are OR'd together, but only when excluding —
-        # "master ball, poke ball, pattern" means "not any of these three".
-        # Plain (non-excluded) search keeps treating the whole string as one
-        # literal phrase, unchanged: that's the existing, expected behavior
-        # and nobody asked for OR-matching there.
-        if exclude.get("search"):
-            terms = [t.strip() for t in search.split(",") if t.strip()] or [search]
-        else:
-            terms = [search]
+        # Comma-separated terms are OR'd together in both directions:
+        # matching-mode "pikachu, raichu" means "either name"; excluding-mode
+        # "master ball, poke ball, pattern" means "not any of these three". A
+        # single term with no comma behaves exactly as before either way.
+        terms = [t.strip() for t in search.split(",") if t.strip()] or [search]
         clauses = []
         for term in terms:
             # ILIKE with a bound pattern: the % wrappers are part of the
@@ -558,8 +554,12 @@ def _build_filters(game: str, language, set_ids=None, rarities=None,
             n = len(params)
             clauses.append(f"(card_name ILIKE ${n} ESCAPE '\\' "
                            f"OR card_number ILIKE ${n} ESCAPE '\\')")
-        combined = " OR ".join(clauses)
-        where.append(f"NOT ({combined})" if exclude.get("search") else combined)
+        # Always parenthesized, even for a single term: `where` is joined
+        # with AND below, so an unparenthesized multi-term OR here would
+        # bind looser than intended and match term 2 regardless of every
+        # other filter.
+        combined = "(" + " OR ".join(clauses) + ")"
+        where.append(f"NOT {combined}" if exclude.get("search") else combined)
     return " AND ".join(where), params
 
 
