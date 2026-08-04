@@ -3512,8 +3512,18 @@ async def _run_catalog_backfill(app, limit: int | None = None,
         # credit/card) that would only confirm nothing was missing. Not
         # worth doing for mode='next'/'window': those sets aren't cached yet,
         # so there's nothing to compare against.
+        #
+        # Card-count completeness alone isn't enough to skip, though: a set
+        # stocked before catalog_cards.image_url existed is "complete" here
+        # but every row's image_url is NULL (the price-only refresh never
+        # backfills it — see cached_set_missing_image_counts). Skipping those
+        # too would mean the grid view's "No image yet" placeholder never
+        # clears for anything stocked before that column shipped.
         cached_counts = (await catalog.cached_set_counts(pool, CATALOG_GAME, language)
                          if mode == "refresh" else {})
+        missing_image_counts = (await catalog.cached_set_missing_image_counts(
+                                    pool, CATALOG_GAME, language)
+                                 if mode == "refresh" else {})
         preflight_client = httpx.AsyncClient(timeout=15.0) if mode == "refresh" else None
 
         error_streak = 0
@@ -3525,9 +3535,10 @@ async def _run_catalog_backfill(app, limit: int | None = None,
                     total = await price_sources.fetch_ppt_set_total(
                         preflight_client, entry["id"], language)
                     cached = cached_counts.get(entry["id"], 0)
-                    if total is not None and cached >= total:
+                    missing_images = missing_image_counts.get(entry["id"], 0)
+                    if total is not None and cached >= total and missing_images == 0:
                         logger.info("Catalog backfill [refresh]: %r already complete "
-                                   "(%d/%d card(s)) — skipping the full re-fetch",
+                                   "(%d/%d card(s), images present) — skipping the full re-fetch",
                                    entry["id"], cached, total)
                         st["done"] += 1
                         st["skipped"] += 1

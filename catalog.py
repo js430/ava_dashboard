@@ -825,3 +825,21 @@ async def cached_set_counts(pool, game: str, language: str = "english") -> dict:
             "WHERE game = $1 AND language = $2 GROUP BY set_id",
             game, language)
     return {r["set_id"]: int(r["n"]) for r in rows}
+
+
+async def cached_set_missing_image_counts(pool, game: str, language: str = "english") -> dict:
+    """{set_id: cards with no image_url} for sets already in the catalog.
+
+    image_url only gets written by a full set re-stock (upsert_set_cards) —
+    the price-only refresh never touches it — so a set can be "complete" by
+    cached_set_counts and still be all-NULL here if it was stocked before
+    the image column existed. The refresh preflight uses this so those sets
+    aren't skipped as already-complete forever.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT set_id, COUNT(*) AS n FROM catalog_cards "
+            "WHERE game = $1 AND language = $2 AND image_url IS NULL "
+            "GROUP BY set_id",
+            game, language)
+    return {r["set_id"]: int(r["n"]) for r in rows}
