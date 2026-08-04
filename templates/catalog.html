@@ -50,6 +50,44 @@
   .chk-toggle { font-size: 11px; color: #5865F2; cursor: pointer; background: none; border: none; padding: 0; font-family: inherit; }
   .chk-toggle:hover { text-decoration: underline; }
   .head-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #888; cursor: pointer; white-space: nowrap; }
+
+  /* ── List / grid view toggle ── */
+  .view-toggle { display: inline-flex; border: 1px solid #ddd; border-radius: 6px; overflow: hidden; }
+  .view-toggle button { font-family: inherit; font-size: 12px; padding: 5px 11px; border: none; background: #fff; color: #555; cursor: pointer; }
+  .view-toggle button + button { border-left: 1px solid #ddd; }
+  .view-toggle button.on { background: #5865F2; color: #fff; }
+
+  /* ── Grid view ──
+     The filter controls live in the table's <thead>, so grid mode hides only
+     the column-label row and the <tbody>. The table element itself stays put,
+     which keeps one copy of the filters rather than maintaining a second set
+     for this view. */
+  body.view-grid #cardRows,
+  body.view-grid table.rows thead tr:not(.filter-row) { display: none; }
+  body.view-grid .table-wrap { overflow-x: visible; }
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 12px; padding: 14px 16px; }
+  .gcard { border: 1px solid #e4e4e7; border-radius: 10px; overflow: hidden; background: #fff; display: flex; flex-direction: column; }
+  /* Fixed aspect box reserves the space before the image loads — without it a
+     lazy-loaded grid reflows continuously as you scroll. */
+  .gcard-img { aspect-ratio: 5 / 7; background: #f4f4f5; display: flex; align-items: center; justify-content: center; position: relative; }
+  .gcard-img img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .gcard-noimg { font-size: 11px; color: #bbb; text-align: center; padding: 8px; line-height: 1.4; }
+  .gcard-body { padding: 8px 9px 9px; display: flex; flex-direction: column; gap: 3px; }
+  .gcard-name { font-size: 12px; font-weight: 600; color: #111; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .gcard-name a { color: inherit; text-decoration: none; }
+  .gcard-name a:hover { color: #5865F2; text-decoration: underline; }
+  .gcard-meta { font-size: 11px; color: #999; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Wraps rather than squeezing: at the narrowest tile the price and Track
+     button don't both fit on one line, and a clipped button is worse than a
+     second row. */
+  .gcard-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 3px; flex-wrap: wrap; }
+  .gcard-foot .track-btn { height: 26px; padding: 0 9px; font-size: 11px; flex-shrink: 0; }
+  .gcard-price { font-size: 13px; font-weight: 700; color: #16a34a; }
+  .gcard-price.none { color: #bbb; font-weight: 400; font-size: 11px; }
+  .gcard-check { position: absolute; top: 6px; left: 6px; z-index: 1; width: 18px; height: 18px; accent-color: #5865F2; cursor: pointer; }
+  @media (max-width: 560px) {
+    .card-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 9px; padding: 10px; }
+  }
   .head-check input { width: auto; height: auto; margin: 0; accent-color: #5865F2; }
   .lang-group { display: inline-flex; align-items: center; gap: 10px; padding: 3px 9px; border: 1px solid #ddd; border-radius: 6px; }
   .lang-badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 6px; background: #ede9fe; color: #5b21b6; margin-left: 6px; vertical-align: middle; }
@@ -210,6 +248,13 @@
   html[data-theme="dark"] table.rows td { border-bottom-color: #242427; }
   html[data-theme="dark"] table.rows tbody tr:hover { background: #232326; }
   html[data-theme="dark"] .cname { color: #f0f0f0; }
+  html[data-theme="dark"] .view-toggle { border-color: #383838; }
+  html[data-theme="dark"] .view-toggle button { background: #252528; color: #bbbbc5; }
+  html[data-theme="dark"] .view-toggle button + button { border-left-color: #383838; }
+  html[data-theme="dark"] .view-toggle button.on { background: #5865F2; color: #fff; }
+  html[data-theme="dark"] .gcard { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .gcard-img { background: #232326; }
+  html[data-theme="dark"] .gcard-name { color: #f0f0f0; }
   html[data-theme="dark"] a.clink:hover { color: #a5b4fc; }
   html[data-theme="dark"] .rarity-chip { background: #2a2a2d; color: #bbbbc5; }
   html[data-theme="dark"] .setrow:hover { background: #232326; }
@@ -268,6 +313,12 @@
         <div class="card-head">
           <span class="card-title">Cards</span>
           <span class="status" id="resultCount"></span>
+          <div class="view-toggle" role="group" aria-label="View mode">
+            <button type="button" id="viewListBtn" class="on"
+                    onclick="setViewMode('list')" title="List view">List</button>
+            <button type="button" id="viewGridBtn"
+                    onclick="setViewMode('grid')" title="Card images">Grid</button>
+          </div>
           <span class="lang-group" title="English and Japanese printings are different products with different prices. Tick both to see them together.">
             <label class="head-check">
               <input type="checkbox" id="langEnglish" checked> English
@@ -384,6 +435,10 @@
             <tbody id="cardRows"></tbody>
           </table>
         </div>
+        <!-- Grid view. The filter row lives in the table header, so the table
+             stays in the DOM (just visually hidden) in grid mode — moving the
+             filters would mean maintaining two copies of them. -->
+        <div class="card-grid" id="cardGrid" style="display:none"></div>
         <div class="empty" id="emptyState" style="display:none"></div>
         <div class="pager">
           <span class="sub" id="pageInfo"></span>
@@ -512,6 +567,13 @@ function saveLanguages(){
   document.getElementById('langEnglish').checked = langs.includes('english');
   document.getElementById('langJapanese').checked = langs.includes('japanese');
 })();
+// list | grid. Persisted like the language and theme choices — a view
+// preference the user re-picks on every visit isn't a preference.
+let viewMode = 'list';
+try {
+  const savedView = localStorage.getItem('catalogView');
+  if (savedView === 'list' || savedView === 'grid') viewMode = savedView;
+} catch(e){}
 let offset = 0;
 let total = 0;
 let loadTimer = null;
@@ -1027,6 +1089,61 @@ window.addEventListener('scroll', (ev) => {
   closePicker();
 }, true);
 
+function setViewMode(mode){
+  viewMode = (mode === 'grid') ? 'grid' : 'list';
+  try { localStorage.setItem('catalogView', viewMode); } catch(e){}
+  applyViewMode();
+}
+
+function applyViewMode(){
+  const grid = viewMode === 'grid';
+  document.body.classList.toggle('view-grid', grid);
+  document.getElementById('cardGrid').style.display = grid ? 'grid' : 'none';
+  document.getElementById('viewListBtn').classList.toggle('on', !grid);
+  document.getElementById('viewGridBtn').classList.toggle('on', grid);
+}
+
+// Grid tiles. Built from the SAME response the table uses — no second request
+// and no separate filter state, so the two views can never disagree about what
+// they're showing.
+function renderGrid(cards){
+  const wrap = document.getElementById('cardGrid');
+  if (!wrap) return;
+  wrap.innerHTML = (cards || []).map(c => {
+    const href = c.tcgplayer_url || c.ebay_url;
+    const rel = (!c.tcgplayer_url && EBAY_AFFILIATE)
+      ? 'sponsored nofollow noopener noreferrer' : 'noopener noreferrer';
+    // onerror swaps in the placeholder: a stored URL can still 404 if the CDN
+    // drops a product, and a broken-image icon in a grid looks like a bug.
+    const img = c.image_url
+      ? `<img src="${esc(c.image_url)}" alt="${esc(c.name)}" loading="lazy" decoding="async"
+             onerror="this.parentNode.innerHTML='&lt;div class=\\'gcard-noimg\\'&gt;No image&lt;/div&gt;'">`
+      : `<div class="gcard-noimg">No image yet</div>`;
+    const eligible = refreshEligible(c);
+    const check = IS_GUEST ? '' :
+      `<input type="checkbox" class="gcard-check row-check" data-id="${c.id}"
+              ${selectedCards.has(c.id) ? 'checked' : ''} ${eligible.ok ? '' : 'disabled'}
+              title="${esc(eligible.reason)}" onchange="onCardCheck(this)">`;
+    const nameHtml = href
+      ? `<a href="${esc(href)}" target="_blank" rel="${rel}">${esc(c.name)}</a>`
+      : esc(c.name);
+    const lang = (currentLanguages().length > 1 && c.language)
+      ? `<span class="lang-badge">${c.language === 'japanese' ? 'JP' : 'EN'}</span>` : '';
+    return `<div class="gcard">
+      <div class="gcard-img">${check}${img}</div>
+      <div class="gcard-body">
+        <div class="gcard-name">${nameHtml}</div>
+        <div class="gcard-meta">${c.card_number ? '#' + esc(c.card_number) + ' · ' : ''}${esc(c.set_name || c.set_id)}${lang}</div>
+        <div class="gcard-foot">
+          <span class="gcard-price ${c.raw_price == null ? 'none' : ''}">${
+            c.raw_price == null ? 'no price' : money(c.raw_price)}</span>
+          ${IS_GUEST ? '' : trackButtonHtml(c)}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
 async function loadCards(){
   const countEl = document.getElementById('resultCount');
   countEl.textContent = 'Loading…';
@@ -1044,6 +1161,7 @@ async function loadCards(){
   const tbody = document.getElementById('cardRows');
   const empty = document.getElementById('emptyState');
   cardsById = new Map(d.cards.map(c => [c.id, c]));
+  renderGrid(d.cards);
 
   tbody.innerHTML = d.cards.map(c => {
     // TCGplayer when the id is trustworthy, otherwise an eBay search — so a
@@ -1413,6 +1531,7 @@ document.getElementById('qSort').addEventListener('change', () => { updateSortIn
   }));
 
 updateSortIndicators();
+applyViewMode();
 loadFacets();
 loadPortfolioKeys().then(loadCards);
 

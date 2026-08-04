@@ -27,6 +27,7 @@ import logging
 from collections import deque
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -281,6 +282,49 @@ def _ppt_raw_price(row: dict):
             continue
         if value > 0:
             return round(value, 2)
+    return None
+
+
+# Card image, preferred size first. 400x400 is the grid target: crisp on a
+# retina tile without paying 800x800's weight on every card. The others are
+# fallbacks — PPT documents all four, but a given row may not carry every one.
+_PPT_IMAGE_FIELDS = ("imageCdnUrl400", "imageCdnUrl200", "imageCdnUrl",
+                     "imageCdnUrl800", "imageUrl")
+
+# Whatever host PPT points at has to be allow-listed in the CSP's img-src
+# (main.py). Kept here next to the parser so the two can't drift apart
+# silently: if PPT ever moves to a different CDN, this list is the thing that
+# has to change alongside the policy.
+PPT_IMAGE_HOSTS = ("tcgplayer-cdn.tcgplayer.com",)
+
+
+def _ppt_image_url(row: dict):
+    """Card image URL off a PPT row, or None.
+
+    Only https URLs on a known host are accepted. PPT is a paid, trusted
+    source, but this value is written to the DB and then rendered as an <img
+    src> for every visitor — validating it here means a surprise value in the
+    feed can't put an arbitrary origin (or a javascript:/data: URL) into the
+    page. Anything unrecognised is dropped and the card simply shows no image.
+    """
+    for key in _PPT_IMAGE_FIELDS:
+        value = (row or {}).get(key)
+        if not value or not isinstance(value, str):
+            continue
+        value = value.strip()
+        try:
+            parts = urlsplit(value)
+        except ValueError:
+            continue
+        # Parsed rather than string-sliced: urlsplit resolves userinfo and
+        # port correctly, so "https://tcgplayer-cdn...@evil.com/x" reads as
+        # host=evil.com and is refused. A hand-rolled split can get that
+        # backwards. Credentials are rejected outright — a real PPT URL never
+        # carries them, so their presence means something is off.
+        if parts.scheme != "https" or parts.username or parts.password:
+            continue
+        if (parts.hostname or "").lower() in PPT_IMAGE_HOSTS:
+            return value[:500]
     return None
 
 
@@ -783,6 +827,13 @@ async def fetch_ppt_set_cards_detailed(client: httpx.AsyncClient, set_name: str,
             # prices for a whole set for free. The grading calculator's picker
             # ignores this key.
             "raw_price": _ppt_raw_price(row),
+            # Same deal: PPT documents imageCdnUrl* on every /cards row, so the
+            # image arrives with a response we're already paying for. We STORE
+            # the URL PPT hands us rather than constructing one from
+            # tcgplayer_id — if the CDN's path scheme ever changes, PPT's field
+            # changes with it and a re-stock heals every card, instead of every
+            # image breaking at once.
+            "image_url": _ppt_image_url(row),
         })
 
     def _sort_key(card):

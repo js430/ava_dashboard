@@ -322,7 +322,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "script-src 'self' 'unsafe-inline' https://maps.googleapis.com https://maps.gstatic.com "
             "https://unpkg.com https://cdnjs.cloudflare.com; "
             "style-src 'self' 'unsafe-inline' https://unpkg.com; "
+            # tcgplayer-cdn: card images for the catalog's grid view. The URLs
+            # are stored exactly as PokemonPriceTracker returns them
+            # (price_sources._ppt_image_url, which accepts only https on this
+            # host) — this entry and PPT_IMAGE_HOSTS must stay in step.
             "img-src 'self' data: blob: https://cdn.discordapp.com https://images.pokemontcg.io "
+            "https://tcgplayer-cdn.tcgplayer.com "
             "https://api.scryfall.com https://db.ygoprodeck.com https://www.optcgapi.com "
             "https://maps.googleapis.com https://maps.gstatic.com https://assets.pokemon.com; "
             "connect-src 'self' https://maps.googleapis.com; "

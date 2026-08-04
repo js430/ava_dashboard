@@ -219,6 +219,11 @@ CATALOG_SCHEMA = [
     # which is the safe direction.
     "ALTER TABLE catalog_cards ADD COLUMN IF NOT EXISTS "
     "tcgplayer_verified BOOLEAN NOT NULL DEFAULT FALSE",
+    # Card image URL as PPT hands it to us (price_sources._ppt_image_url).
+    # Same ALTER-not-CREATE reason as above: rows cached before this have NULL
+    # and show a placeholder until their set is re-stocked or refreshed, which
+    # is the safe direction — a missing image is obvious, a wrong one isn't.
+    "ALTER TABLE catalog_cards ADD COLUMN IF NOT EXISTS image_url TEXT",
 ]
 
 
@@ -266,8 +271,8 @@ _UPSERT = """
     INSERT INTO catalog_cards
         (game, language, set_id, set_name, card_name, card_number, rarity,
          tcgplayer_id, tcgplayer_verified, number_sort, raw_price, price_source,
-         priced_at, refreshed_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::NUMERIC,$12,
+         image_url, priced_at, refreshed_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::NUMERIC,$12,$13,
             CASE WHEN $11::NUMERIC IS NULL THEN NULL ELSE NOW() END, NOW())
     ON CONFLICT (game, language, set_id, card_number, card_name, rarity)
     DO UPDATE SET
@@ -277,6 +282,10 @@ _UPSERT = """
         number_sort        = EXCLUDED.number_sort,
         raw_price          = EXCLUDED.raw_price,
         price_source       = EXCLUDED.price_source,
+        -- COALESCE, not a plain overwrite: a later response that omits the
+        -- image must not blank one we already have. Only a real URL replaces
+        -- a real URL.
+        image_url          = COALESCE(EXCLUDED.image_url, catalog_cards.image_url),
         priced_at          = EXCLUDED.priced_at,
         refreshed_at       = NOW()
 """
@@ -311,6 +320,8 @@ async def upsert_set_cards(pool, game: str, language: str, set_id: str,
             number_sort_key(number),
             price,
             price_source if price is not None else None,
+            (str(card.get("image_url")).strip()[:500]
+             if card.get("image_url") else None),
         ))
     if not rows:
         return {"cards": 0, "priced": 0}
@@ -566,7 +577,7 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
     page_params = params + [limit, offset]
     page_sql = (
         "SELECT id, set_id, language, set_name, card_name, card_number, rarity, "
-        "       tcgplayer_id, "
+        "       tcgplayer_id, image_url, "
         "       tcgplayer_verified, raw_price, price_source, priced_at, refreshed_at "
         f"FROM catalog_cards WHERE {where_sql} "
         f"ORDER BY {order_by} "
@@ -599,6 +610,9 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
             # lives in one tested place, not in template JavaScript.
             "tcgplayer_url": tcgplayer_url(r["tcgplayer_id"], r["tcgplayer_verified"]),
             "ebay_url": ebay_search_url(r["card_name"], r["set_name"], r["card_number"]),
+            # NULL for rows cached before image support — the grid shows a
+            # placeholder rather than a broken tile.
+            "image_url": r["image_url"],
             "raw_price": float(r["raw_price"]) if r["raw_price"] is not None else None,
             "price_source": r["price_source"],
             "priced_at": r["priced_at"].isoformat() if r["priced_at"] else None,

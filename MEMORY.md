@@ -3,6 +3,61 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-08-04 — Catalog: grid view with card images, from PPT's own image URLs
+
+**Decided:** `/catalog` gets a list/grid toggle. Grid tiles show the card
+image, pulled from `catalog_cards.image_url`, which is populated from the
+`imageCdnUrl*` fields PokemonPriceTracker already returns on every `/cards`
+row — the same "already in a payload we're billed for" trick as `raw_price`.
+
+**Those URLs point at `tcgplayer-cdn.tcgplayer.com`, and that was a real
+decision, not an oversight.** I checked TCGplayer's Terms of Service and API
+Terms first: the API Terms forbid "copy, reproduce, distribute, republish,
+download, **display**… any part of the Site" without API access, and
+separately forbid obtaining Site content "from a third-party." On a plain
+reading that covers hotlinking their CDN. **The maintainer's call was to
+proceed on the basis that the PPT API is a paid product and these URLs are a
+documented field of it** — a defensible position, and materially different
+from the alternative I had been considering (reverse-engineering TCGplayer's
+URL pattern from `tcgplayer_id`). If TCGplayer ever objects or changes the
+scheme, the fix is a re-stock, because we store PPT's field rather than
+constructing the URL. **Do not "optimise" this into building URLs from
+tcgplayer_id** — that would forfeit both that fallback and the rationale.
+
+**`_ppt_image_url()` validates before storing.** https only, hostname must be
+in `PPT_IMAGE_HOSTS`, credentials rejected outright. Parsed with `urlsplit`,
+not string-sliced: a hand-rolled `split("@")` reads
+`https://tcgplayer-cdn…@evil.com/x` backwards and accepts the wrong host.
+This value is written to the DB and later rendered as an `<img src>` for
+every visitor, so a surprise value in the vendor feed must not be able to put
+an arbitrary origin into the page. Ten forms are covered by tests.
+**`PPT_IMAGE_HOSTS` and the CSP `img-src` entry must change together.**
+
+**`image_url` is COALESCEd on conflict, not overwritten.** A later response
+that omits the image must not blank one already stored — only a real URL
+replaces a real URL. Rows cached before this ship NULL and show a "No image
+yet" placeholder until their set is re-stocked or refreshed; a missing image
+is obvious, a wrong one isn't.
+
+**Grid mode hides only the column-label row and `<tbody>`, keeping the table
+in the DOM.** The filter controls live in the table's `<thead>` — moving them
+would mean maintaining a second copy for this view, and hiding the whole
+table would silently strip every filter on switching views. Verified filters
+stay usable, and that filtering while in grid mode re-renders tiles.
+
+**Fixed 5:7 aspect box + `loading="lazy"`.** Without the reserved box a
+lazy-loaded grid reflows continuously while scrolling. Note for future
+browser testing: **lazy images never load in the preview pane** because it
+doesn't composite, so the intersection observer never fires — that is a
+harness artifact, not a bug. Confirmed by flipping 8 tiles to `eager` and
+watching all 8 load at 288x400.
+
+**Not verified:** never run against live Postgres, and no card in the DB has
+an image yet — existing rows need a re-stock/refresh to populate. Japanese
+image coverage is unknown until JP sets are stocked.
+
+---
+
 ## 2026-08-03 — Incident: the flagged constraint-rename risk actually hit
 
 The live-DB risk called out in the 2026-08-02 "language column" entry below
