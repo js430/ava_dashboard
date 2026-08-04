@@ -134,9 +134,10 @@ def ebay_search_url(card_name: str, set_name: str = "", card_number: str = ""):
         url += "&" + urlencode(pairs)
     return url
 
-# Cap on a single page of results. The UI asks for 50; this bounds a
-# hand-crafted `limit=100000` from turning one request into a table scan dump.
-MAX_PAGE_SIZE = 100
+# Cap on a single page of results. The UI's page-size picker tops out at
+# 500; this bounds a hand-crafted `limit=100000` from turning one request
+# into a table scan dump.
+MAX_PAGE_SIZE = 500
 
 # Cap on a CSV export. Deliberately much larger than MAX_PAGE_SIZE — the whole
 # point of export is "everything these filters match," not one page of it —

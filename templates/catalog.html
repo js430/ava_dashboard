@@ -348,6 +348,12 @@
             <option value="updated_desc" hidden></option>
             <option value="updated_asc" hidden></option>
           </select>
+          <select id="qPageSize" style="width:auto" title="Cards per page">
+            <option value="50">50 / page</option>
+            <option value="100">100 / page</option>
+            <option value="250">250 / page</option>
+            <option value="500">500 / page</option>
+          </select>
           <button class="btn btn-plain btn-sm" id="resetBtn" onclick="clearFilters()">Reset</button>
           <button class="btn btn-plain btn-sm" id="exportBtn" onclick="exportCsv()"
                   title="Download every card matching the current filters as a CSV">Export CSV</button>
@@ -544,7 +550,15 @@ const MAX_REFRESH_SELECTION = 10;
 // more recently than this can't be selected. Kept in one place (the env var)
 // and passed down, rather than hardcoded here too.
 const REFRESH_MIN_AGE_MS = {{ refresh_min_age_hours }} * 3600 * 1000;
-const PAGE_SIZE = 50;
+const PAGE_SIZE_OPTIONS = [50, 100, 250, 500];
+const DEFAULT_PAGE_SIZE = 50;
+// Persisted like the view mode below — a page-size choice re-picked on
+// every visit isn't a preference.
+let pageSize = DEFAULT_PAGE_SIZE;
+try {
+  const savedPageSize = parseInt(localStorage.getItem('catalogPageSize'), 10);
+  if (PAGE_SIZE_OPTIONS.includes(savedPageSize)) pageSize = savedPageSize;
+} catch(e){}
 // English/Japanese are different products at PPT (separate prices, separate
 // catalog rows — see price_sources.CardRef.key()), so these are independent
 // datasets shown together, not a display toggle. Persisted like the theme is,
@@ -830,7 +844,7 @@ function currentParams(){
   if (selected.rarity.size) p.set('rarities', [...selected.rarity].join(','));
   p.set('language', currentLanguages().join(','));
   p.set('sort', document.getElementById('qSort').value);
-  p.set('limit', PAGE_SIZE);
+  p.set('limit', pageSize);
   p.set('offset', offset);
   return p;
 }
@@ -1224,15 +1238,15 @@ async function loadCards(){
 
   countEl.textContent = total.toLocaleString() + (total === 1 ? ' card' : ' cards');
   const from = total ? offset + 1 : 0;
-  const to = Math.min(offset + PAGE_SIZE, total);
+  const to = Math.min(offset + pageSize, total);
   document.getElementById('pageInfo').textContent =
     total ? `Showing ${from.toLocaleString()}–${to.toLocaleString()} of ${total.toLocaleString()}` : '';
   document.getElementById('prevBtn').disabled = offset <= 0;
-  document.getElementById('nextBtn').disabled = offset + PAGE_SIZE >= total;
+  document.getElementById('nextBtn').disabled = offset + pageSize >= total;
 }
 
 function changePage(dir){
-  const next = offset + dir * PAGE_SIZE;
+  const next = offset + dir * pageSize;
   if (next < 0 || next >= total) return;
   offset = next;
   loadCards();
@@ -1511,6 +1525,13 @@ function updateSortIndicators(){
   document.getElementById(id).addEventListener('input', resetAndLoad));
 document.getElementById('qPriced').addEventListener('change', resetAndLoad);
 document.getElementById('qSort').addEventListener('change', () => { updateSortIndicators(); resetAndLoad(); });
+
+document.getElementById('qPageSize').value = String(pageSize);
+document.getElementById('qPageSize').addEventListener('change', function(){
+  pageSize = parseInt(this.value, 10);
+  try { localStorage.setItem('catalogPageSize', String(pageSize)); } catch(e){}
+  resetAndLoad();
+});
 
 // Language checkboxes. Unticking the last one is refused rather than allowed
 // to show an empty catalog with no obvious way back — the server would fall
