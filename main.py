@@ -3378,6 +3378,11 @@ CATALOG_BACKFILL_MAX_ERRORS = 3
 # click. Unlike the startup seed this walks the whole catalog rather than a
 # fixed window — safe precisely because a person triggers each batch.
 CATALOG_NEXT_BATCH_SETS = int(os.getenv("CATALOG_NEXT_BATCH_SETS", "10"))
+# How many already-stocked sets the admin "Refresh" button re-fetches per
+# click (mode='refresh') — bigger than CATALOG_NEXT_BATCH_SETS since the
+# preflight in _run_catalog_backfill skips most of these for free (already
+# complete, images present) and only pays for the ones that actually need it.
+CATALOG_REFRESH_BATCH_SETS = int(os.getenv("CATALOG_REFRESH_BATCH_SETS", "25"))
 # A 429 is temporary, so it is NOT counted as a failure — the set is retried
 # after a wait, doubling each time. If it's still throttled after that, the run
 # stops cleanly and can be resumed later with the button: sets already stocked
@@ -4113,7 +4118,9 @@ async def api_catalog_backfill(request: Request, user=Depends(require_admin)):
         raise HTTPException(status_code=400, detail="mode must be 'next', 'window', or 'refresh'")
 
     limit = body.get("sets")
-    default = CATALOG_BACKFILL_SETS if mode == "window" else CATALOG_NEXT_BATCH_SETS
+    default = (CATALOG_BACKFILL_SETS if mode == "window"
+               else CATALOG_REFRESH_BATCH_SETS if mode == "refresh"
+               else CATALOG_NEXT_BATCH_SETS)
     try:
         limit = default if limit is None else int(limit)
     except (TypeError, ValueError):
