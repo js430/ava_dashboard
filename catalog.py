@@ -474,7 +474,7 @@ def _norm_languages(language) -> list:
 def _build_filters(game: str, language, set_ids=None, rarities=None,
                    min_price=None, max_price=None, search: str = "",
                    priced_only: bool = False, restrict_set_ids=None,
-                   exclude=None) -> tuple:
+                   exclude=None, variant: str = "") -> tuple:
     """(where_sql, params). Every value is a bind parameter, never inlined.
 
     `language` may be one language or several — see _norm_languages. It is
@@ -482,9 +482,15 @@ def _build_filters(game: str, language, set_ids=None, rarities=None,
     take the identical code path.
 
     `exclude` flips a filter from "only these" to "all but these" — a dict
-    with any of the keys 'search', 'sets', 'rarities', 'price' set True.
-    Doesn't apply to `priced_only` (already a plain on/off switch, nothing to
-    invert) or `restrict_set_ids` (a permission ceiling, not a user choice).
+    with any of the keys 'search', 'sets', 'rarities', 'price', 'variant' set
+    True. Doesn't apply to `priced_only` (already a plain on/off switch,
+    nothing to invert) or `restrict_set_ids` (a permission ceiling, not a
+    user choice).
+
+    `variant` is a single printing name (e.g. 'Reverse Holofoil') — unlike
+    set_ids/rarities this is one value, not a list: it also decides which
+    printing's price query_cards displays and sorts by, and letting two
+    printings be selected at once would leave that ambiguous.
     """
     exclude = exclude or {}
     params = [game, _norm_languages(language)]
@@ -560,21 +566,32 @@ def _build_filters(game: str, language, set_ids=None, rarities=None,
         # other filter.
         combined = "(" + " OR ".join(clauses) + ")"
         where.append(f"NOT {combined}" if exclude.get("search") else combined)
+    if variant:
+        # `?` is JSONB's key-existence operator — printing_prices is a dict
+        # keyed by printing name, so this asks "does this card have a price
+        # on record for this specific printing" without caring what that
+        # price is. NULL (never captured) is excluded from a match the same
+        # way an unpriced card is excluded from a price-range match.
+        params.append(variant)
+        n = len(params)
+        clause = f"(printing_prices IS NOT NULL AND printing_prices ? ${n})"
+        where.append(f"NOT {clause}" if exclude.get("variant") else clause)
     return " AND ".join(where), params
 
 
 async def _facet_counts(conn, game, language, set_ids, rarities,
                         min_price, max_price, search, priced_only,
-                        restrict_set_ids=None, exclude=None) -> dict:
-    """Option counts for the set and rarity filters, so each narrows the other.
+                        restrict_set_ids=None, exclude=None, variant: str = "") -> dict:
+    """Option counts for the set, rarity, and variant filters, so each
+    narrows the others.
 
     THE RULE: a facet's counts are computed with every filter applied EXCEPT
     its own. Rarity options ignore the rarity selection; set options ignore
-    the set selection. Apply a facet to itself and picking one rarity would
-    leave only that rarity listed — you could never select a second, and the
-    filter would look broken. Same reasoning extends to exclude: rarity
-    options ignore an "exclude rarities" toggle too, not just the selection
-    it applies to.
+    the set selection; variant options ignore the variant selection. Apply a
+    facet to itself and picking one rarity would leave only that rarity
+    listed — you could never select a second, and the filter would look
+    broken. Same reasoning extends to exclude: rarity options ignore an
+    "exclude rarities" toggle too, not just the selection it applies to.
 
     `restrict_set_ids` is NOT a user choice like `set_ids` — it's a
     permission ceiling (the guest tier's "3 newest sets only"), so unlike
@@ -588,10 +605,16 @@ async def _facet_counts(conn, game, language, set_ids, rarities,
     exclude = exclude or {}
     rarity_where, rarity_params = _build_filters(
         game, language, set_ids, None, min_price, max_price, search, priced_only,
-        restrict_set_ids, exclude={**exclude, "rarities": False})
+        restrict_set_ids, exclude={**exclude, "rarities": False}, variant=variant)
     set_where, set_params = _build_filters(
         game, language, None, rarities, min_price, max_price, search, priced_only,
-        restrict_set_ids, exclude={**exclude, "sets": False})
+        restrict_set_ids, exclude={**exclude, "sets": False}, variant=variant)
+    # Ignoring the variant filter here means omitting it entirely (not just
+    # zeroing its exclude flag) — unlike set_ids/rarities, `variant` is a
+    # single value with no "selected but ignored" middle state to express.
+    variant_where, variant_params = _build_filters(
+        game, language, set_ids, rarities, min_price, max_price, search, priced_only,
+        restrict_set_ids, exclude=exclude, variant="")
 
     rarity_rows = await conn.fetch(
         f"SELECT rarity, COUNT(*) AS n FROM catalog_cards "
@@ -605,18 +628,28 @@ async def _facet_counts(conn, game, language, set_ids, rarities,
         f"SELECT set_id, language, MAX(set_name) AS set_name, COUNT(*) AS n "
         f"FROM catalog_cards WHERE {set_where} "
         f"GROUP BY set_id, language ORDER BY MAX(set_name) ASC", *set_params)
+    # jsonb_object_keys is a set-returning function — one row per printing
+    # name per card, implicitly LATERAL against the preceding table, which is
+    # why a card with two printings contributes two rows to this count.
+    variant_rows = await conn.fetch(
+        f"SELECT variant_name, COUNT(*) AS n FROM catalog_cards, "
+        f"     LATERAL jsonb_object_keys(printing_prices) AS variant_name "
+        f"WHERE {variant_where} AND printing_prices IS NOT NULL "
+        f"GROUP BY variant_name ORDER BY n DESC, variant_name ASC", *variant_params)
 
     return {
         "rarities": [{"rarity": r["rarity"], "count": int(r["n"])} for r in rarity_rows],
         "sets": [{"set_id": r["set_id"], "language": r["language"],
                   "set_name": r["set_name"] or r["set_id"],
                   "cards": int(r["n"])} for r in set_rows],
+        "variants": [{"variant": r["variant_name"], "count": int(r["n"])}
+                    for r in variant_rows],
     }
 
 
 async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
                       set_ids=None, rarities=None, min_price=None, max_price=None,
-                      search: str = "", priced_only: bool = False,
+                      search: str = "", priced_only: bool = False, variant: str = "",
                       sort: str = DEFAULT_SORT, limit: int = 50, offset: int = 0,
                       with_facets: bool = False, restrict_set_ids=None,
                       exclude=None) -> dict:
@@ -628,31 +661,49 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
     `total` is what drives the pager, so it's counted under the same filters
     rather than inferred from the page length.
 
-    `with_facets` adds per-filter option counts so the set and rarity
-    dropdowns can narrow each other — see _facet_counts for the one rule that
-    makes faceted filtering work.
+    `with_facets` adds per-filter option counts so the set, rarity, and
+    variant dropdowns can narrow each other — see _facet_counts for the one
+    rule that makes faceted filtering work.
 
     `restrict_set_ids`, when not None, is a hard ceiling ANDed on regardless
     of `set_ids` — the guest tier's "3 newest sets only" — see _build_filters.
 
     `exclude` flips individual filters to "all but these" — see _build_filters.
+
+    A `variant` selected in INCLUDE mode (not excluded) does double duty
+    beyond filtering: every matched row is guaranteed to actually carry that
+    printing (see _build_filters), so the card's "shown" price and a
+    price-sort both switch to that printing's number instead of the card's
+    default raw_price — that's the whole point of filtering by printing in
+    the first place. An excluded variant only narrows which rows show; there
+    is no "that printing's price" to display for a card that doesn't have it.
     """
-    order_by = SORT_COLUMNS.get(sort, SORT_COLUMNS[DEFAULT_SORT])
-    limit = max(1, min(int(limit or 50), MAX_PAGE_SIZE))
-    offset = max(0, int(offset or 0))
+    exclude = exclude or {}
+    variant = (variant or "").strip()
+    variant_shown = bool(variant) and not exclude.get("variant")
 
     where_sql, params = _build_filters(game, language, set_ids, rarities,
                                        min_price, max_price, search, priced_only,
-                                       restrict_set_ids, exclude)
+                                       restrict_set_ids, exclude, variant)
 
-    page_params = params + [limit, offset]
+    order_by = SORT_COLUMNS.get(sort, SORT_COLUMNS[DEFAULT_SORT])
+    page_params = list(params)
+    if variant_shown and sort in ("price_desc", "price_asc"):
+        page_params.append(variant)
+        n = len(page_params)
+        direction = "DESC" if sort == "price_desc" else "ASC"
+        order_by = f"(printing_prices->>${n})::NUMERIC {direction} NULLS LAST, card_name ASC"
+    limit = max(1, min(int(limit or 50), MAX_PAGE_SIZE))
+    offset = max(0, int(offset or 0))
+    page_params += [limit, offset]
+
     page_sql = (
         "SELECT id, set_id, language, set_name, card_name, card_number, rarity, "
         "       tcgplayer_id, image_url, printing_prices, "
         "       tcgplayer_verified, raw_price, price_source, priced_at, refreshed_at "
         f"FROM catalog_cards WHERE {where_sql} "
         f"ORDER BY {order_by} "
-        f"LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}"
+        f"LIMIT ${len(page_params) - 1} OFFSET ${len(page_params)}"
     )
     count_sql = f"SELECT COUNT(*) FROM catalog_cards WHERE {where_sql}"
 
@@ -661,11 +712,18 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
         total = await conn.fetchval(count_sql, *params)
         facets = await _facet_counts(
             conn, game, language, set_ids, rarities, min_price, max_price,
-            search, priced_only, restrict_set_ids, exclude) if with_facets else None
+            search, priced_only, restrict_set_ids, exclude, variant) if with_facets else None
 
-    return {
-        **({"facets": facets} if facets is not None else {}),
-        "cards": [{
+    def _shown_price(r):
+        if not variant_shown:
+            return float(r["raw_price"]) if r["raw_price"] is not None else None, None
+        prices = json.loads(r["printing_prices"]) if r["printing_prices"] else {}
+        price = prices.get(variant)
+        return (float(price) if price is not None else None), variant
+
+    def _card_dict(r):
+        shown_price, shown_variant = _shown_price(r)
+        return {
             "id": r["id"],
             "set_id": r["set_id"],
             # Sent so the row can be labelled when both languages are shown
@@ -690,11 +748,23 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
             # from asyncpg as raw text (no codec registered), hence the parse.
             "printing_prices": (json.loads(r["printing_prices"])
                                if r["printing_prices"] else None),
+            # The card's real default price — always this, regardless of any
+            # variant filter, so nothing that keys off "the actual price"
+            # (Track, refresh eligibility, CSV) is affected by it.
             "raw_price": float(r["raw_price"]) if r["raw_price"] is not None else None,
+            # shown_price/shown_variant: what the UI should actually display
+            # and sort by. Equals raw_price/None unless a variant is
+            # INCLUDE-filtered, in which case it's that printing's own price.
+            "shown_price": shown_price,
+            "shown_variant": shown_variant,
             "price_source": r["price_source"],
             "priced_at": r["priced_at"].isoformat() if r["priced_at"] else None,
             "refreshed_at": r["refreshed_at"].isoformat() if r["refreshed_at"] else None,
-        } for r in rows],
+        }
+
+    return {
+        **({"facets": facets} if facets is not None else {}),
+        "cards": [_card_dict(r) for r in rows],
         "total": int(total or 0),
         "limit": limit,
         "offset": offset,
@@ -703,43 +773,71 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
 
 async def export_rows(pool, *, game: str, language=DEFAULT_LANGUAGE,
                       set_ids=None, rarities=None, min_price=None, max_price=None,
-                      search: str = "", priced_only: bool = False,
+                      search: str = "", priced_only: bool = False, variant: str = "",
                       sort: str = DEFAULT_SORT, restrict_set_ids=None,
                       exclude=None) -> list:
     """Every row matching the given filters, up to EXPORT_MAX_ROWS — no
     pagination, since the point of an export is "everything these filters
     currently match," not one page of it. Shares _build_filters with
     query_cards, so an export can never disagree with what the table itself
-    would show for the same filter state.
+    would show for the same filter state — including an INCLUDE-mode variant
+    filter swapping the exported price for that printing's own (see
+    query_cards' shown_price/shown_variant).
     """
-    order_by = SORT_COLUMNS.get(sort, SORT_COLUMNS[DEFAULT_SORT])
+    exclude = exclude or {}
+    variant = (variant or "").strip()
+    variant_shown = bool(variant) and not exclude.get("variant")
+
     where_sql, params = _build_filters(game, language, set_ids, rarities,
                                        min_price, max_price, search, priced_only,
-                                       restrict_set_ids, exclude)
+                                       restrict_set_ids, exclude, variant)
+
+    order_by = SORT_COLUMNS.get(sort, SORT_COLUMNS[DEFAULT_SORT])
+    query_params = list(params)
+    if variant_shown and sort in ("price_desc", "price_asc"):
+        query_params.append(variant)
+        n = len(query_params)
+        direction = "DESC" if sort == "price_desc" else "ASC"
+        order_by = f"(printing_prices->>${n})::NUMERIC {direction} NULLS LAST, card_name ASC"
+    query_params.append(EXPORT_MAX_ROWS)
+
     sql = (
         "SELECT set_id, language, set_name, card_name, card_number, rarity, "
-        "       tcgplayer_id, tcgplayer_verified, raw_price, price_source, "
-        "       priced_at, refreshed_at "
+        "       tcgplayer_id, tcgplayer_verified, raw_price, printing_prices, "
+        "       price_source, priced_at, refreshed_at "
         f"FROM catalog_cards WHERE {where_sql} "
         f"ORDER BY {order_by} "
-        f"LIMIT ${len(params) + 1}"
+        f"LIMIT ${len(query_params)}"
     )
     async with pool.acquire() as conn:
-        rows = await conn.fetch(sql, *params, EXPORT_MAX_ROWS)
-    return [{
-        "set_id": r["set_id"],
-        "set_name": r["set_name"],
-        "language": r["language"],
-        "name": r["card_name"],
-        "card_number": r["card_number"],
-        "rarity": r["rarity"],
-        "tcgplayer_url": tcgplayer_url(r["tcgplayer_id"], r["tcgplayer_verified"]),
-        "ebay_url": ebay_search_url(r["card_name"], r["set_name"], r["card_number"]),
-        "raw_price": float(r["raw_price"]) if r["raw_price"] is not None else None,
-        "price_source": r["price_source"],
-        "priced_at": r["priced_at"].isoformat() if r["priced_at"] else None,
-        "refreshed_at": r["refreshed_at"].isoformat() if r["refreshed_at"] else None,
-    } for r in rows]
+        rows = await conn.fetch(sql, *query_params)
+
+    def _shown_price(r):
+        if not variant_shown:
+            return float(r["raw_price"]) if r["raw_price"] is not None else None, None
+        prices = json.loads(r["printing_prices"]) if r["printing_prices"] else {}
+        price = prices.get(variant)
+        return (float(price) if price is not None else None), variant
+
+    out = []
+    for r in rows:
+        shown_price, shown_variant = _shown_price(r)
+        out.append({
+            "set_id": r["set_id"],
+            "set_name": r["set_name"],
+            "language": r["language"],
+            "name": r["card_name"],
+            "card_number": r["card_number"],
+            "rarity": r["rarity"],
+            "tcgplayer_url": tcgplayer_url(r["tcgplayer_id"], r["tcgplayer_verified"]),
+            "ebay_url": ebay_search_url(r["card_name"], r["set_name"], r["card_number"]),
+            "raw_price": shown_price,
+            "variant": shown_variant,
+            "price_source": r["price_source"],
+            "priced_at": r["priced_at"].isoformat() if r["priced_at"] else None,
+            "refreshed_at": r["refreshed_at"].isoformat() if r["refreshed_at"] else None,
+        })
+    return out
 
 
 async def facets(pool, game: str, language=DEFAULT_LANGUAGE,

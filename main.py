@@ -3851,9 +3851,10 @@ async def catalog_page(request: Request):
 @limiter.limit("120/minute")
 async def api_catalog_cards(request: Request, sets: str = "", rarities: str = "",
                             min_price: str = "", max_price: str = "",
-                            search: str = "", priced_only: str = "",
+                            search: str = "", priced_only: str = "", variant: str = "",
                             exclude_search: str = "", exclude_sets: str = "",
                             exclude_rarities: str = "", exclude_price: str = "",
+                            exclude_variant: str = "",
                             sort: str = catalog.DEFAULT_SORT,
                             limit: int = 50, offset: int = 0,
                             language: str = "english",
@@ -3873,6 +3874,7 @@ async def api_catalog_cards(request: Request, sets: str = "", rarities: str = ""
         max_price=_opt_price(max_price),
         search=(search or "").strip()[:80],
         priced_only=_bool_flag(priced_only),
+        variant=(variant or "").strip()[:80],
         # Unknown sort keys fall back to the default inside query_cards; the
         # ORDER BY clause itself is never built from user input.
         sort=sort,
@@ -3891,6 +3893,7 @@ async def api_catalog_cards(request: Request, sets: str = "", rarities: str = ""
             "sets": _bool_flag(exclude_sets),
             "rarities": _bool_flag(exclude_rarities),
             "price": _bool_flag(exclude_price),
+            "variant": _bool_flag(exclude_variant),
         },
     )
     if result.get("facets"):
@@ -3902,9 +3905,10 @@ async def api_catalog_cards(request: Request, sets: str = "", rarities: str = ""
 @limiter.limit("10/minute")
 async def api_catalog_export(request: Request, sets: str = "", rarities: str = "",
                              min_price: str = "", max_price: str = "",
-                             search: str = "", priced_only: str = "",
+                             search: str = "", priced_only: str = "", variant: str = "",
                              exclude_search: str = "", exclude_sets: str = "",
                              exclude_rarities: str = "", exclude_price: str = "",
+                             exclude_variant: str = "",
                              sort: str = catalog.DEFAULT_SORT,
                              language: str = "english",
                              user=Depends(get_current_user_or_guest)):
@@ -3927,6 +3931,7 @@ async def api_catalog_export(request: Request, sets: str = "", rarities: str = "
         max_price=_opt_price(max_price),
         search=(search or "").strip()[:80],
         priced_only=_bool_flag(priced_only),
+        variant=(variant or "").strip()[:80],
         sort=sort,
         restrict_set_ids=restrict_set_ids,
         exclude={
@@ -3934,18 +3939,20 @@ async def api_catalog_export(request: Request, sets: str = "", rarities: str = "
             "sets": _bool_flag(exclude_sets),
             "rarities": _bool_flag(exclude_rarities),
             "price": _bool_flag(exclude_price),
+            "variant": _bool_flag(exclude_variant),
         },
     )
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["Set", "Card Name", "Card Number", "Rarity", "Language",
+    writer.writerow(["Set", "Card Name", "Card Number", "Rarity", "Language", "Variant",
                      "Raw Price", "Price Source", "Last Priced", "Last Refreshed",
                      "TCGplayer URL", "eBay URL"])
     for r in rows:
         writer.writerow([
             r["set_name"] or r["set_id"], r["name"], r["card_number"], r["rarity"],
-            r["language"], r["raw_price"] if r["raw_price"] is not None else "",
+            r["language"], r["variant"] or "",
+            r["raw_price"] if r["raw_price"] is not None else "",
             r["price_source"] or "", r["priced_at"] or "", r["refreshed_at"] or "",
             r["tcgplayer_url"] or "", r["ebay_url"] or "",
         ])
