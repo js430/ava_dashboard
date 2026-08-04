@@ -140,7 +140,11 @@
   /* Sets sit slightly inset so the era header reads as their parent. */
   .picker-list label:not(.picker-group) { padding-left: 12px; }
 
-  table.rows { border-collapse: collapse; width: 100%; font-size: 12px; }
+  /* min-width, not width: fills the wrapper when content is short (the
+     common case), but is free to grow past it — scrolling inside
+     .table-wrap — when a genuinely long set/variant name needs more room,
+     instead of every other column being squeezed to make space. */
+  table.rows { border-collapse: collapse; min-width: 100%; font-size: 12px; }
   table.rows th { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: .05em; padding: 7px 10px; text-align: left; border-bottom: 1px solid #e4e4e7; white-space: nowrap; }
   table.rows th.right, table.rows td.right { text-align: right; }
   table.rows th.sortable { cursor: pointer; user-select: none; }
@@ -166,7 +170,7 @@
   .col-track { width: 92px; text-align: center; }
   /* Variant is a JS-driven show/hide (tied to the Variant prices toggle),
      not a Jinja one, since flipping the toggle must not require a reload. */
-  .col-variant { display: none; width: 130px; }
+  .col-variant { display: none; min-width: 190px; }
   body.show-variant-col .col-variant { display: table-cell; }
   .shown-variant-label { display: block; font-size: 10px; color: #888; font-weight: 400; }
   html[data-theme="dark"] .shown-variant-label { color: #999; }
