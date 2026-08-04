@@ -793,6 +793,20 @@ async def fetch_ppt_set_cards_detailed(client: httpx.AsyncClient, set_name: str,
         _ppt_logged_card_shape = True
         logger.info("PokemonPriceTracker set-cards first row keys: %s",
                     sorted(rows[0].keys()) if isinstance(rows[0], dict) else "?")
+        # One-shot diagnostic for the printing-variant question (normal vs
+        # holofoil vs reverse holofoil): dump the actual values of the two
+        # fields that look relevant, plus a genuinely multi-printing example
+        # if this set has one, since the first card alone might only ever
+        # have a single printing and tell us nothing.
+        logger.info("PokemonPriceTracker set-cards first row printingsAvailable=%r variants=%r",
+                    rows[0].get("printingsAvailable"), rows[0].get("variants"))
+        multi = next((r for r in rows if isinstance(r, dict)
+                      and isinstance(r.get("printingsAvailable"), list)
+                      and len(r["printingsAvailable"]) > 1), None)
+        if multi is not None and multi is not rows[0]:
+            logger.info("PokemonPriceTracker set-cards multi-printing example %r: "
+                        "printingsAvailable=%r variants=%r",
+                        multi.get("name"), multi.get("printingsAvailable"), multi.get("variants"))
     if resp is not None:
         logger.info("PokemonPriceTracker set-cards %r: %d card(s) across %d page(s), "
                     "credits used=%s, daily remaining=%s", set_name, len(rows),
