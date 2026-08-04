@@ -341,8 +341,8 @@
           <label class="head-check" title="Hide cards with no price on record">
             <input type="checkbox" id="qPriced"> Priced only
           </label>
-          <label class="head-check" title="Show Normal/Holofoil/Reverse Holofoil prices side by side, for cards with more than one printing on record">
-            <input type="checkbox" id="qShowPrintings"> Printing prices
+          <label class="head-check" title="Show Normal/Holofoil/Reverse Holofoil prices side by side, for cards with more than one variant on record">
+            <input type="checkbox" id="qShowPrintings"> Variant prices
           </label>
           <select id="qSort" style="width:auto">
             <option value="price_desc">Price: high to low</option>
@@ -514,21 +514,24 @@
             </div>
             <div style="margin-top:10px">
               <button class="btn btn-plain btn-sm" id="backfillBtn" onclick="runBackfill()">
-                Stock 10 more sets
+                Stock {{ catalog_next_batch_sets }} more sets
               </button>
               <span class="hint" style="margin-left:6px">
-                Takes the next 10 sets that aren't stocked yet in the language
-                selected above, newest first. Press it again for the 10 after that.
+                Takes the next {{ catalog_next_batch_sets }} sets that aren't stocked yet in the
+                language selected above, newest first. Press it again for the
+                {{ catalog_next_batch_sets }} after that.
               </span>
             </div>
             <div style="margin-top:10px">
               <button class="btn btn-plain btn-sm" id="refreshBtn" onclick="runRefresh()">
-                Refresh 10 stocked sets
+                Refresh {{ catalog_refresh_batch_sets }} stocked sets
               </button>
               <span class="hint" style="margin-left:6px">
-                Re-fetches 10 already-stocked sets in the language selected
-                above, so any capped at the old 200-cards-per-set limit pick up
-                the rest. Press again to work through the next 10.
+                Re-fetches up to {{ catalog_refresh_batch_sets }} already-stocked sets in the
+                language selected above &mdash; skipping any already complete with images and
+                variant prices on record &mdash; so anything missing (old 200-cards-per-set cap,
+                missing images, missing variant breakdown) gets picked up. Press again to work
+                through the next batch.
               </span>
             </div>
             <div class="warn" id="stockMsg" style="display:none"></div>

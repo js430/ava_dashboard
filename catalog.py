@@ -921,3 +921,24 @@ async def cached_set_missing_image_counts(pool, game: str, language: str = "engl
             "GROUP BY set_id",
             game, language)
     return {r["set_id"]: int(r["n"]) for r in rows}
+
+
+async def cached_set_missing_variant_counts(pool, game: str, language: str = "english") -> dict:
+    """{set_id: cards with no printing_prices} for sets already in the catalog.
+
+    Same story as cached_set_missing_image_counts, one column over:
+    printing_prices only gets written by a path that captures PPT's
+    `variants` field (a full set re-stock, or — since the per-card refresh
+    fix — the nightly sweep and "Refresh selected"), so a set stocked before
+    that existed can be card-count-complete and image-complete while every
+    row here is still NULL. NULL means "never captured", not "only one
+    printing" — a card with just one printing on record still stores a
+    real (single-entry) dict, never NULL.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT set_id, COUNT(*) AS n FROM catalog_cards "
+            "WHERE game = $1 AND language = $2 AND printing_prices IS NULL "
+            "GROUP BY set_id",
+            game, language)
+    return {r["set_id"]: int(r["n"]) for r in rows}

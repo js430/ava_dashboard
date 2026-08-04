@@ -3524,14 +3524,20 @@ async def _run_catalog_backfill(app, limit: int | None = None,
         # so there's nothing to compare against.
         #
         # Card-count completeness alone isn't enough to skip, though: a set
-        # stocked before catalog_cards.image_url existed is "complete" here
-        # but every row's image_url is NULL (the price-only refresh never
-        # backfills it — see cached_set_missing_image_counts). Skipping those
-        # too would mean the grid view's "No image yet" placeholder never
-        # clears for anything stocked before that column shipped.
+        # stocked before catalog_cards.image_url (or printing_prices)
+        # existed is "complete" here but every row's image_url/
+        # printing_prices is NULL (the price-only refresh never backfilled
+        # either — see cached_set_missing_image_counts /
+        # cached_set_missing_variant_counts). Skipping those too would mean
+        # the grid view's "No image yet" placeholder, and the "Variant
+        # prices" toggle, would never have anything to show for a set
+        # stocked before those columns shipped.
         cached_counts = (await catalog.cached_set_counts(pool, CATALOG_GAME, language)
                          if mode == "refresh" else {})
         missing_image_counts = (await catalog.cached_set_missing_image_counts(
+                                    pool, CATALOG_GAME, language)
+                                 if mode == "refresh" else {})
+        missing_variant_counts = (await catalog.cached_set_missing_variant_counts(
                                     pool, CATALOG_GAME, language)
                                  if mode == "refresh" else {})
         preflight_client = httpx.AsyncClient(timeout=15.0) if mode == "refresh" else None
@@ -3546,9 +3552,12 @@ async def _run_catalog_backfill(app, limit: int | None = None,
                         preflight_client, entry["id"], language)
                     cached = cached_counts.get(entry["id"], 0)
                     missing_images = missing_image_counts.get(entry["id"], 0)
-                    if total is not None and cached >= total and missing_images == 0:
+                    missing_variants = missing_variant_counts.get(entry["id"], 0)
+                    if (total is not None and cached >= total
+                            and missing_images == 0 and missing_variants == 0):
                         logger.info("Catalog backfill [refresh]: %r already complete "
-                                   "(%d/%d card(s), images present) — skipping the full re-fetch",
+                                   "(%d/%d card(s), images + variant prices present) — "
+                                   "skipping the full re-fetch",
                                    entry["id"], cached, total)
                         st["done"] += 1
                         st["skipped"] += 1
@@ -3830,6 +3839,11 @@ async def catalog_page(request: Request):
         "ebay_affiliate": catalog.ebay_affiliate_enabled(),
         "refresh_min_age_hours": CATALOG_MANUAL_REFRESH_MIN_AGE_HOURS,
         "guest_catalog_visible_sets": GUEST_CATALOG_VISIBLE_SETS,
+        # Drives the admin Stock/Refresh button labels — read from the same
+        # constants the backend defaults to, so a batch-size change can never
+        # leave the button text stale again.
+        "catalog_next_batch_sets": CATALOG_NEXT_BATCH_SETS,
+        "catalog_refresh_batch_sets": CATALOG_REFRESH_BATCH_SETS,
     })
 
 
