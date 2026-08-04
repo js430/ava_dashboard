@@ -3313,6 +3313,11 @@ def _csv_list(raw: str, *, max_items: int = 40, max_len: int = 120) -> list:
     return out
 
 
+def _bool_flag(raw) -> bool:
+    """A checkbox-style query param ('1'/'true'/'yes') as a real bool."""
+    return str(raw).strip().lower() in ("1", "true", "yes")
+
+
 def _opt_price(raw) -> float | None:
     """A price bound, or None when absent/unparseable. Negatives clamp to 0."""
     if raw is None or str(raw).strip() == "":
@@ -3832,6 +3837,8 @@ async def catalog_page(request: Request):
 async def api_catalog_cards(request: Request, sets: str = "", rarities: str = "",
                             min_price: str = "", max_price: str = "",
                             search: str = "", priced_only: str = "",
+                            exclude_search: str = "", exclude_sets: str = "",
+                            exclude_rarities: str = "", exclude_price: str = "",
                             sort: str = catalog.DEFAULT_SORT,
                             limit: int = 50, offset: int = 0,
                             language: str = "english",
@@ -3850,7 +3857,7 @@ async def api_catalog_cards(request: Request, sets: str = "", rarities: str = ""
         min_price=_opt_price(min_price),
         max_price=_opt_price(max_price),
         search=(search or "").strip()[:80],
-        priced_only=str(priced_only).lower() in ("1", "true", "yes"),
+        priced_only=_bool_flag(priced_only),
         # Unknown sort keys fall back to the default inside query_cards; the
         # ORDER BY clause itself is never built from user input.
         sort=sort,
@@ -3863,6 +3870,13 @@ async def api_catalog_cards(request: Request, sets: str = "", rarities: str = ""
         # Guest tier's "newest N sets only" ceiling — None (no restriction)
         # for a real Discord session.
         restrict_set_ids=restrict_set_ids,
+        # Per-filter "all but these" toggle — see catalog._build_filters.
+        exclude={
+            "search": _bool_flag(exclude_search),
+            "sets": _bool_flag(exclude_sets),
+            "rarities": _bool_flag(exclude_rarities),
+            "price": _bool_flag(exclude_price),
+        },
     )
     if result.get("facets"):
         card_eras.annotate(result["facets"]["sets"], name_key="set_name")
@@ -3874,6 +3888,8 @@ async def api_catalog_cards(request: Request, sets: str = "", rarities: str = ""
 async def api_catalog_export(request: Request, sets: str = "", rarities: str = "",
                              min_price: str = "", max_price: str = "",
                              search: str = "", priced_only: str = "",
+                             exclude_search: str = "", exclude_sets: str = "",
+                             exclude_rarities: str = "", exclude_price: str = "",
                              sort: str = catalog.DEFAULT_SORT,
                              language: str = "english",
                              user=Depends(get_current_user_or_guest)):
@@ -3895,9 +3911,15 @@ async def api_catalog_export(request: Request, sets: str = "", rarities: str = "
         min_price=_opt_price(min_price),
         max_price=_opt_price(max_price),
         search=(search or "").strip()[:80],
-        priced_only=str(priced_only).lower() in ("1", "true", "yes"),
+        priced_only=_bool_flag(priced_only),
         sort=sort,
         restrict_set_ids=restrict_set_ids,
+        exclude={
+            "search": _bool_flag(exclude_search),
+            "sets": _bool_flag(exclude_sets),
+            "rarities": _bool_flag(exclude_rarities),
+            "price": _bool_flag(exclude_price),
+        },
     )
 
     buf = io.StringIO()

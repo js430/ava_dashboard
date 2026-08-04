@@ -451,13 +451,20 @@ def _norm_languages(language) -> list:
 
 def _build_filters(game: str, language, set_ids=None, rarities=None,
                    min_price=None, max_price=None, search: str = "",
-                   priced_only: bool = False, restrict_set_ids=None) -> tuple:
+                   priced_only: bool = False, restrict_set_ids=None,
+                   exclude=None) -> tuple:
     """(where_sql, params). Every value is a bind parameter, never inlined.
 
     `language` may be one language or several — see _norm_languages. It is
     always matched with = ANY(...) so the single- and multi-language cases
     take the identical code path.
+
+    `exclude` flips a filter from "only these" to "all but these" — a dict
+    with any of the keys 'search', 'sets', 'rarities', 'price' set True.
+    Doesn't apply to `priced_only` (already a plain on/off switch, nothing to
+    invert) or `restrict_set_ids` (a permission ceiling, not a user choice).
     """
+    exclude = exclude or {}
     params = [game, _norm_languages(language)]
     where = ["game = $1", "language = ANY($2::TEXT[])"]
 
@@ -473,18 +480,40 @@ def _build_filters(game: str, language, set_ids=None, rarities=None,
         # and must still produce a real (if unmatchable) clause.
         add("set_id = ANY(${n}::TEXT[])", list(restrict_set_ids))
     if set_ids:
-        add("set_id = ANY(${n}::TEXT[])", list(set_ids))
+        tmpl = ("NOT (set_id = ANY(${n}::TEXT[]))" if exclude.get("sets")
+                else "set_id = ANY(${n}::TEXT[])")
+        add(tmpl, list(set_ids))
     if rarities:
-        add("rarity = ANY(${n}::TEXT[])", list(rarities))
-    # A price bound is meaningless for an unpriced card, and NULL comparisons
-    # would drop them anyway — so a bound implicitly means "priced only".
+        tmpl = ("NOT (rarity = ANY(${n}::TEXT[]))" if exclude.get("rarities")
+                else "rarity = ANY(${n}::TEXT[])")
+        add(tmpl, list(rarities))
     # Cast to DOUBLE PRECISION, not NUMERIC: the bounds arrive as floats from
     # the query string, and asyncpg would demand a Decimal for a NUMERIC
     # parameter. Postgres compares numeric to double precision fine.
-    if min_price is not None:
-        add("raw_price >= ${n}::DOUBLE PRECISION", min_price)
-    if max_price is not None:
-        add("raw_price <= ${n}::DOUBLE PRECISION", max_price)
+    if min_price is not None or max_price is not None:
+        if exclude.get("price"):
+            # A card outside the range — or not priced at all — still
+            # belongs in an "exclude this price range" result. Combined into
+            # one clause rather than negating each bound separately: with
+            # both bounds set, negating them independently (NOT >= min AND
+            # NOT <= max) would demand a card be on both sides of the range
+            # at once, matching nothing.
+            conds = ["raw_price IS NULL"]
+            if min_price is not None:
+                params.append(min_price)
+                conds.append(f"raw_price < ${len(params)}::DOUBLE PRECISION")
+            if max_price is not None:
+                params.append(max_price)
+                conds.append(f"raw_price > ${len(params)}::DOUBLE PRECISION")
+            where.append("(" + " OR ".join(conds) + ")")
+        else:
+            # A price bound is meaningless for an unpriced card, and NULL
+            # comparisons would drop them anyway — so a bound implicitly
+            # means "priced only".
+            if min_price is not None:
+                add("raw_price >= ${n}::DOUBLE PRECISION", min_price)
+            if max_price is not None:
+                add("raw_price <= ${n}::DOUBLE PRECISION", max_price)
     if priced_only:
         where.append("raw_price IS NOT NULL")
     if search:
@@ -494,21 +523,24 @@ def _build_filters(game: str, language, set_ids=None, rarities=None,
         escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         params.append(f"%{escaped}%")
         n = len(params)
-        where.append(f"(card_name ILIKE ${n} ESCAPE '\\' "
-                     f"OR card_number ILIKE ${n} ESCAPE '\\')")
+        clause = (f"(card_name ILIKE ${n} ESCAPE '\\' "
+                  f"OR card_number ILIKE ${n} ESCAPE '\\')")
+        where.append(f"NOT {clause}" if exclude.get("search") else clause)
     return " AND ".join(where), params
 
 
 async def _facet_counts(conn, game, language, set_ids, rarities,
                         min_price, max_price, search, priced_only,
-                        restrict_set_ids=None) -> dict:
+                        restrict_set_ids=None, exclude=None) -> dict:
     """Option counts for the set and rarity filters, so each narrows the other.
 
     THE RULE: a facet's counts are computed with every filter applied EXCEPT
     its own. Rarity options ignore the rarity selection; set options ignore
     the set selection. Apply a facet to itself and picking one rarity would
     leave only that rarity listed — you could never select a second, and the
-    filter would look broken.
+    filter would look broken. Same reasoning extends to exclude: rarity
+    options ignore an "exclude rarities" toggle too, not just the selection
+    it applies to.
 
     `restrict_set_ids` is NOT a user choice like `set_ids` — it's a
     permission ceiling (the guest tier's "3 newest sets only"), so unlike
@@ -519,12 +551,13 @@ async def _facet_counts(conn, game, language, set_ids, rarities,
     Options that match nothing are simply absent; the caller re-adds anything
     currently selected so a choice can always be undone.
     """
+    exclude = exclude or {}
     rarity_where, rarity_params = _build_filters(
         game, language, set_ids, None, min_price, max_price, search, priced_only,
-        restrict_set_ids)
+        restrict_set_ids, exclude={**exclude, "rarities": False})
     set_where, set_params = _build_filters(
         game, language, None, rarities, min_price, max_price, search, priced_only,
-        restrict_set_ids)
+        restrict_set_ids, exclude={**exclude, "sets": False})
 
     rarity_rows = await conn.fetch(
         f"SELECT rarity, COUNT(*) AS n FROM catalog_cards "
@@ -551,7 +584,8 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
                       set_ids=None, rarities=None, min_price=None, max_price=None,
                       search: str = "", priced_only: bool = False,
                       sort: str = DEFAULT_SORT, limit: int = 50, offset: int = 0,
-                      with_facets: bool = False, restrict_set_ids=None) -> dict:
+                      with_facets: bool = False, restrict_set_ids=None,
+                      exclude=None) -> dict:
     """One page of catalog rows plus the unpaginated total.
 
     `language` may be one language or a list of them (English and/or
@@ -566,6 +600,8 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
 
     `restrict_set_ids`, when not None, is a hard ceiling ANDed on regardless
     of `set_ids` — the guest tier's "3 newest sets only" — see _build_filters.
+
+    `exclude` flips individual filters to "all but these" — see _build_filters.
     """
     order_by = SORT_COLUMNS.get(sort, SORT_COLUMNS[DEFAULT_SORT])
     limit = max(1, min(int(limit or 50), MAX_PAGE_SIZE))
@@ -573,7 +609,7 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
 
     where_sql, params = _build_filters(game, language, set_ids, rarities,
                                        min_price, max_price, search, priced_only,
-                                       restrict_set_ids)
+                                       restrict_set_ids, exclude)
 
     page_params = params + [limit, offset]
     page_sql = (
@@ -591,7 +627,7 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
         total = await conn.fetchval(count_sql, *params)
         facets = await _facet_counts(
             conn, game, language, set_ids, rarities, min_price, max_price,
-            search, priced_only, restrict_set_ids) if with_facets else None
+            search, priced_only, restrict_set_ids, exclude) if with_facets else None
 
     return {
         **({"facets": facets} if facets is not None else {}),
@@ -628,7 +664,8 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
 async def export_rows(pool, *, game: str, language=DEFAULT_LANGUAGE,
                       set_ids=None, rarities=None, min_price=None, max_price=None,
                       search: str = "", priced_only: bool = False,
-                      sort: str = DEFAULT_SORT, restrict_set_ids=None) -> list:
+                      sort: str = DEFAULT_SORT, restrict_set_ids=None,
+                      exclude=None) -> list:
     """Every row matching the given filters, up to EXPORT_MAX_ROWS — no
     pagination, since the point of an export is "everything these filters
     currently match," not one page of it. Shares _build_filters with
@@ -638,7 +675,7 @@ async def export_rows(pool, *, game: str, language=DEFAULT_LANGUAGE,
     order_by = SORT_COLUMNS.get(sort, SORT_COLUMNS[DEFAULT_SORT])
     where_sql, params = _build_filters(game, language, set_ids, rarities,
                                        min_price, max_price, search, priced_only,
-                                       restrict_set_ids)
+                                       restrict_set_ids, exclude)
     sql = (
         "SELECT set_id, language, set_name, card_name, card_number, rarity, "
         "       tcgplayer_id, tcgplayer_verified, raw_price, price_source, "

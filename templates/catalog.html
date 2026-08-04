@@ -103,6 +103,11 @@
   .th-price { display: flex; align-items: center; gap: 5px; }
   .th-price .th-input { width: 100%; min-width: 54px; text-align: right; }
   .th-price span { font-size: 11px; color: #bbb; }
+  .filter-exclude { display: flex; align-items: center; gap: 4px; margin-top: 4px;
+    font-size: 10px; font-weight: 400; text-transform: none; letter-spacing: 0;
+    color: #999; cursor: pointer; user-select: none; }
+  .filter-exclude input { margin: 0; width: 12px; height: 12px; cursor: pointer; }
+  .filter-exclude.active { color: #d64545; font-weight: 600; }
 
   /* ── Shared multi-select popover ── */
   .picker { position: fixed; z-index: 500; width: 250px; max-width: calc(100vw - 20px); background: #fff; border: 1px solid #ddd; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.14); padding: 8px; }
@@ -235,6 +240,8 @@
   html[data-theme="dark"] .th-picker { background: #252528; border-color: #383838; color: #f0f0f0; }
   html[data-theme="dark"] .th-picker:hover { background: #2e2e32; }
   html[data-theme="dark"] .th-picker.on { border-color: #5865F2; color: #a5b4fc; }
+  html[data-theme="dark"] .filter-exclude { color: #888; }
+  html[data-theme="dark"] .filter-exclude.active { color: #ff8080; }
   html[data-theme="dark"] .filter-row th { border-bottom-color: #303033; }
   html[data-theme="dark"] .head-check { color: #a1a1aa; }
   html[data-theme="dark"] .lang-group { border-color: #383838; }
@@ -410,6 +417,9 @@
                   <input type="text" id="qSearch" class="th-input"
                          placeholder="Search name or number&hellip;"
                          autocomplete="off" aria-label="Search card name or number">
+                  <label class="filter-exclude" title="Show every card that does NOT match this search">
+                    <input type="checkbox" id="excludeSearch" aria-label="Exclude cards matching this search">Exclude
+                  </label>
                 </th>
                 <th>
                   <button type="button" class="th-picker" id="setPickerBtn"
@@ -417,6 +427,9 @@
                           aria-expanded="false">
                     <span id="setPickerLabel">All sets</span><span class="th-caret">&#9662;</span>
                   </button>
+                  <label class="filter-exclude" title="Show every card that is NOT in the chosen set(s)">
+                    <input type="checkbox" id="excludeSets" aria-label="Exclude the chosen sets">Exclude
+                  </label>
                 </th>
                 <th>
                   <button type="button" class="th-picker" id="rarityPickerBtn"
@@ -424,6 +437,9 @@
                           aria-expanded="false">
                     <span id="rarityPickerLabel">All rarities</span><span class="th-caret">&#9662;</span>
                   </button>
+                  <label class="filter-exclude" title="Show every card that is NOT one of the chosen rarities">
+                    <input type="checkbox" id="excludeRarities" aria-label="Exclude the chosen rarities">Exclude
+                  </label>
                 </th>
                 <th>
                   <div class="th-price">
@@ -433,6 +449,9 @@
                     <input type="number" id="qMax" class="th-input" placeholder="Max"
                            min="0" step="1" aria-label="Maximum price">
                   </div>
+                  <label class="filter-exclude" title="Show every card outside this price range (unpriced cards always show)">
+                    <input type="checkbox" id="excludePrice" aria-label="Exclude this price range">Exclude
+                  </label>
                 </th>
                 <th class="col-updated"></th>
                 {% if not is_guest %}<th class="col-track"></th>{% endif %}
@@ -812,6 +831,11 @@ function updatePickerLabel(key){
 function clearFilters(){
   ['qSearch','qMin','qMax'].forEach(id => { document.getElementById(id).value = ''; });
   document.getElementById('qPriced').checked = false;
+  ['excludeSearch','excludeSets','excludeRarities','excludePrice'].forEach(id => {
+    const cb = document.getElementById(id);
+    cb.checked = false;
+    cb.closest('.filter-exclude').classList.remove('active');
+  });
   selected.set.clear();
   selected.rarity.clear();
   updatePickerLabel('set');
@@ -842,6 +866,12 @@ function currentParams(){
   if (document.getElementById('qPriced').checked) p.set('priced_only', '1');
   if (selected.set.size) p.set('sets', [...selected.set].join(','));
   if (selected.rarity.size) p.set('rarities', [...selected.rarity].join(','));
+  // "Exclude" flips a filter to "all but these" — only meaningful (and only
+  // sent) when that filter actually has something selected.
+  if (search && document.getElementById('excludeSearch').checked) p.set('exclude_search', '1');
+  if (selected.set.size && document.getElementById('excludeSets').checked) p.set('exclude_sets', '1');
+  if (selected.rarity.size && document.getElementById('excludeRarities').checked) p.set('exclude_rarities', '1');
+  if ((min !== '' || max !== '') && document.getElementById('excludePrice').checked) p.set('exclude_price', '1');
   p.set('language', currentLanguages().join(','));
   p.set('sort', document.getElementById('qSort').value);
   p.set('limit', pageSize);
@@ -1525,6 +1555,12 @@ function updateSortIndicators(){
   document.getElementById(id).addEventListener('input', resetAndLoad));
 document.getElementById('qPriced').addEventListener('change', resetAndLoad);
 document.getElementById('qSort').addEventListener('change', () => { updateSortIndicators(); resetAndLoad(); });
+
+['excludeSearch','excludeSets','excludeRarities','excludePrice'].forEach(id =>
+  document.getElementById(id).addEventListener('change', function(){
+    this.closest('.filter-exclude').classList.toggle('active', this.checked);
+    resetAndLoad();
+  }));
 
 document.getElementById('qPageSize').value = String(pageSize);
 document.getElementById('qPageSize').addEventListener('change', function(){
