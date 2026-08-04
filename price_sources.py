@@ -285,6 +285,42 @@ def _ppt_raw_price(row: dict):
     return None
 
 
+def _ppt_printing_prices(row: dict):
+    """{printing label: raw price} for every printing PPT reports on this
+    card — e.g. {'Normal': 0.20, 'Reverse Holofoil': 0.61} — or None if the
+    row carries no `variants` block.
+
+    Confirmed against a live response (2026-08-04): PPT's bulk set-cards rows
+    carry `variants`, a dict keyed by printing name, each with its own
+    `marketPrice`/`lowPrice` — e.g. a Common with both Normal and Reverse
+    Holofoil printings reports them as two separate entries with genuinely
+    different prices. `row["prices"]` (see _ppt_raw_price) is just ONE of
+    these, not a card-level aggregate, which is why a plain catalog browse
+    only ever showed one price even for cards with multiple printings.
+
+    Same market-then-low fallback as _ppt_raw_price, applied per printing.
+    """
+    variants = (row or {}).get("variants")
+    if not isinstance(variants, dict) or not variants:
+        return None
+    out = {}
+    for key, variant in variants.items():
+        if not isinstance(variant, dict):
+            continue
+        label = str(variant.get("printing") or key).strip()
+        if not label:
+            continue
+        for price_key in ("marketPrice", "lowPrice"):
+            try:
+                value = float(variant.get(price_key))
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                out[label] = round(value, 2)
+                break
+    return out or None
+
+
 # Card image, preferred size first. 400x400 is the grid target: crisp on a
 # retina tile without paying 800x800's weight on every card. The others are
 # fallbacks — PPT documents all four, but a given row may not carry every one.
@@ -793,20 +829,6 @@ async def fetch_ppt_set_cards_detailed(client: httpx.AsyncClient, set_name: str,
         _ppt_logged_card_shape = True
         logger.info("PokemonPriceTracker set-cards first row keys: %s",
                     sorted(rows[0].keys()) if isinstance(rows[0], dict) else "?")
-        # One-shot diagnostic for the printing-variant question (normal vs
-        # holofoil vs reverse holofoil): dump the actual values of the two
-        # fields that look relevant, plus a genuinely multi-printing example
-        # if this set has one, since the first card alone might only ever
-        # have a single printing and tell us nothing.
-        logger.info("PokemonPriceTracker set-cards first row printingsAvailable=%r variants=%r",
-                    rows[0].get("printingsAvailable"), rows[0].get("variants"))
-        multi = next((r for r in rows if isinstance(r, dict)
-                      and isinstance(r.get("printingsAvailable"), list)
-                      and len(r["printingsAvailable"]) > 1), None)
-        if multi is not None and multi is not rows[0]:
-            logger.info("PokemonPriceTracker set-cards multi-printing example %r: "
-                        "printingsAvailable=%r variants=%r",
-                        multi.get("name"), multi.get("printingsAvailable"), multi.get("variants"))
     if resp is not None:
         logger.info("PokemonPriceTracker set-cards %r: %d card(s) across %d page(s), "
                     "credits used=%s, daily remaining=%s", set_name, len(rows),
@@ -848,6 +870,10 @@ async def fetch_ppt_set_cards_detailed(client: httpx.AsyncClient, set_name: str,
             # changes with it and a re-stock heals every card, instead of every
             # image breaking at once.
             "image_url": _ppt_image_url(row),
+            # Per-printing breakdown (Normal/Holofoil/Reverse Holofoil/...) —
+            # same free-with-this-response deal as raw_price and image_url.
+            # None when PPT reports only one printing worth showing.
+            "printing_prices": _ppt_printing_prices(row),
         })
 
     def _sort_key(card):
@@ -888,7 +914,7 @@ async def fetch_ppt_set_total(client: httpx.AsyncClient, set_name: str,
 async def fetch_ppt_set_cards(client: httpx.AsyncClient, set_name: str,
                               language: str = PPT_DEFAULT_LANGUAGE) -> list:
     """Every card in a PPT set: [{name, card_number, variant, tcgplayer_id,
-    set_name, raw_price}].
+    set_name, raw_price, image_url, printing_prices}].
 
     BILLED PER CARD RETURNED, so this is cached for a day (per language) and
     the credit spend is logged. Carrying tcgPlayerId is what lets later price

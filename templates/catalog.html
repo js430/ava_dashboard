@@ -84,6 +84,7 @@
   .gcard-foot .track-btn { height: 26px; padding: 0 9px; font-size: 11px; flex-shrink: 0; }
   .gcard-price { font-size: 13px; font-weight: 700; color: #16a34a; }
   .gcard-price.none { color: #bbb; font-weight: 400; font-size: 11px; }
+  .gcard-body .printing-prices { margin-top: 4px; }
   .gcard-check { position: absolute; top: 6px; left: 6px; z-index: 1; width: 18px; height: 18px; accent-color: #5865F2; cursor: pointer; }
   @media (max-width: 560px) {
     .card-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 9px; padding: 10px; }
@@ -156,6 +157,9 @@
   .cset { color: #888; }
   .price { font-weight: 700; color: #16a34a; white-space: nowrap; }
   .price-none { color: #bbb; font-weight: 400; }
+  .printing-prices { font-size: 10.5px; font-weight: 400; color: #888; white-space: normal;
+    margin-top: 2px; }
+  html[data-theme="dark"] .printing-prices { color: #999; }
   .rarity-chip { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 8px; background: #f3f4f6; color: #6b7280; white-space: nowrap; }
   .col-updated { color: #999; white-space: nowrap; }
   .check-col { width: 28px; text-align: center; }
@@ -337,6 +341,9 @@
           <label class="head-check" title="Hide cards with no price on record">
             <input type="checkbox" id="qPriced"> Priced only
           </label>
+          <label class="head-check" title="Show Normal/Holofoil/Reverse Holofoil prices side by side, for cards with more than one printing on record">
+            <input type="checkbox" id="qShowPrintings"> Printing prices
+          </label>
           <select id="qSort" style="width:auto">
             <option value="price_desc">Price: high to low</option>
             <option value="price_asc">Price: low to high</option>
@@ -417,7 +424,7 @@
                   <input type="text" id="qSearch" class="th-input"
                          placeholder="Search name or number&hellip;"
                          autocomplete="off" aria-label="Search card name or number">
-                  <label class="filter-exclude" title="Show every card that does NOT match this search">
+                  <label class="filter-exclude" title="Show every card that does NOT match this search. Separate multiple terms with commas, e.g. &quot;master ball, poke ball, pattern&quot; excludes any of the three.">
                     <input type="checkbox" id="excludeSearch" aria-label="Exclude cards matching this search">Exclude
                   </label>
                 </th>
@@ -578,6 +585,25 @@ try {
   const savedPageSize = parseInt(localStorage.getItem('catalogPageSize'), 10);
   if (PAGE_SIZE_OPTIONS.includes(savedPageSize)) pageSize = savedPageSize;
 } catch(e){}
+// Purely a display toggle over data already in hand — see lastCards below —
+// so switching it never re-fetches. Persisted like the other view choices.
+let showPrintings = false;
+try { showPrintings = localStorage.getItem('catalogShowPrintings') === '1'; } catch(e){}
+// The last page of cards loadCards() rendered, kept around so the printing-
+// prices toggle (and anything else display-only) can re-render without a
+// network round-trip for data that hasn't actually changed.
+let lastCards = [];
+// A card's printing_prices is only worth showing when it actually
+// differentiates something — a single-printing card would just repeat the
+// same number already sitting in the price column.
+function printingPricesHtml(c){
+  if (!c.printing_prices) return '';
+  const entries = Object.entries(c.printing_prices);
+  if (entries.length < 2) return '';
+  return `<div class="printing-prices">${entries
+    .map(([label, price]) => `${esc(label)} ${money(price)}`)
+    .join(' &middot; ')}</div>`;
+}
 // English/Japanese are different products at PPT (separate prices, separate
 // catalog rows — see price_sources.CardRef.key()), so these are independent
 // datasets shown together, not a display toggle. Persisted like the theme is,
@@ -1183,31 +1209,18 @@ function renderGrid(cards){
             c.raw_price == null ? 'no price' : money(c.raw_price)}</span>
           ${IS_GUEST ? '' : trackButtonHtml(c)}
         </div>
+        ${showPrintings ? printingPricesHtml(c) : ''}
       </div>
     </div>`;
   }).join('');
 }
 
-async function loadCards(){
-  const countEl = document.getElementById('resultCount');
-  countEl.textContent = 'Loading…';
-  let d;
-  try {
-    const resp = await fetch('/api/catalog/cards?' + currentParams());
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    d = await resp.json();
-  } catch(e){
-    countEl.textContent = 'Couldn’t load cards.';
-    return;
-  }
-  total = d.total;
-  if (d.facets) applyFacets(d.facets);
+// The table's rows. Split out from loadCards() so the printing-prices
+// toggle can re-render from lastCards without a network round-trip.
+function renderList(cards){
   const tbody = document.getElementById('cardRows');
-  const empty = document.getElementById('emptyState');
-  cardsById = new Map(d.cards.map(c => [c.id, c]));
-  renderGrid(d.cards);
-
-  tbody.innerHTML = d.cards.map(c => {
+  if (!tbody) return;
+  tbody.innerHTML = (cards || []).map(c => {
     // TCGplayer when the id is trustworthy, otherwise an eBay search — so a
     // row is always clickable and never points at the wrong product. The
     // server decides which; this only renders it.
@@ -1236,11 +1249,32 @@ async function loadCards(){
     <td class="col-rarity">${c.rarity ? `<span class="rarity-chip">${esc(c.rarity)}</span>` : ''}</td>
     <td class="right col-price">${c.raw_price == null
         ? '<span class="price-none">no price</span>'
-        : `<span class="price">${money(c.raw_price)}</span>`}</td>
+        : `<span class="price">${money(c.raw_price)}</span>`}${showPrintings ? printingPricesHtml(c) : ''}</td>
     <td class="col-updated" title="${c.priced_at ? esc(new Date(c.priced_at).toLocaleString()) : ''}">${timeAgo(c.priced_at)}</td>
     ${trackCell}
   </tr>`;
   }).join('');
+}
+
+async function loadCards(){
+  const countEl = document.getElementById('resultCount');
+  countEl.textContent = 'Loading…';
+  let d;
+  try {
+    const resp = await fetch('/api/catalog/cards?' + currentParams());
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    d = await resp.json();
+  } catch(e){
+    countEl.textContent = 'Couldn’t load cards.';
+    return;
+  }
+  total = d.total;
+  if (d.facets) applyFacets(d.facets);
+  const empty = document.getElementById('emptyState');
+  cardsById = new Map(d.cards.map(c => [c.id, c]));
+  lastCards = d.cards;
+  renderGrid(d.cards);
+  renderList(d.cards);
 
   if (!d.cards.length){
     empty.style.display = 'block';
@@ -1561,6 +1595,16 @@ document.getElementById('qSort').addEventListener('change', () => { updateSortIn
     this.closest('.filter-exclude').classList.toggle('active', this.checked);
     resetAndLoad();
   }));
+
+document.getElementById('qShowPrintings').checked = showPrintings;
+document.getElementById('qShowPrintings').addEventListener('change', function(){
+  showPrintings = this.checked;
+  try { localStorage.setItem('catalogShowPrintings', showPrintings ? '1' : '0'); } catch(e){}
+  // Purely a display choice over data already fetched — re-render both
+  // views from lastCards rather than re-querying the server.
+  renderList(lastCards);
+  renderGrid(lastCards);
+});
 
 document.getElementById('qPageSize').value = String(pageSize);
 document.getElementById('qPageSize').addEventListener('change', function(){

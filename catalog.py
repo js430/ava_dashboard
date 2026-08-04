@@ -22,6 +22,7 @@ schema, the upsert, and the read queries.
 
 import os
 import re
+import json
 import logging
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote_plus, parse_qsl, urlencode
@@ -225,6 +226,14 @@ CATALOG_SCHEMA = [
     # and show a placeholder until their set is re-stocked or refreshed, which
     # is the safe direction — a missing image is obvious, a wrong one isn't.
     "ALTER TABLE catalog_cards ADD COLUMN IF NOT EXISTS image_url TEXT",
+    # Per-printing prices (Normal/Holofoil/Reverse Holofoil/...) off PPT's
+    # `variants` field (price_sources._ppt_printing_prices) — the one `rarity`
+    # + `raw_price` pair a row already carries can't tell "Common" from
+    # "Common, Reverse Holofoil", so this is additive context on the same
+    # row rather than a new identity dimension. NULL until a row is
+    # (re-)stocked with this field read; a card with only one printing on
+    # record also stores NULL — nothing extra worth showing.
+    "ALTER TABLE catalog_cards ADD COLUMN IF NOT EXISTS printing_prices JSONB",
 ]
 
 
@@ -272,8 +281,8 @@ _UPSERT = """
     INSERT INTO catalog_cards
         (game, language, set_id, set_name, card_name, card_number, rarity,
          tcgplayer_id, tcgplayer_verified, number_sort, raw_price, price_source,
-         image_url, priced_at, refreshed_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::NUMERIC,$12,$13,
+         image_url, printing_prices, priced_at, refreshed_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::NUMERIC,$12,$13,$14::JSONB,
             CASE WHEN $11::NUMERIC IS NULL THEN NULL ELSE NOW() END, NOW())
     ON CONFLICT (game, language, set_id, card_number, card_name, rarity)
     DO UPDATE SET
@@ -284,9 +293,10 @@ _UPSERT = """
         raw_price          = EXCLUDED.raw_price,
         price_source       = EXCLUDED.price_source,
         -- COALESCE, not a plain overwrite: a later response that omits the
-        -- image must not blank one we already have. Only a real URL replaces
-        -- a real URL.
+        -- image (or the printing breakdown) must not blank one we already
+        -- have. Only a real value replaces a real value.
         image_url          = COALESCE(EXCLUDED.image_url, catalog_cards.image_url),
+        printing_prices    = COALESCE(EXCLUDED.printing_prices, catalog_cards.printing_prices),
         priced_at          = EXCLUDED.priced_at,
         refreshed_at       = NOW()
 """
@@ -297,7 +307,8 @@ async def upsert_set_cards(pool, game: str, language: str, set_id: str,
     """Write one set's cards into the cache. Returns {cards, priced}.
 
     `cards` is the shape `price_sources.fetch_ppt_set_cards` returns:
-    {name, card_number, variant, tcgplayer_id, set_name, raw_price}.
+    {name, card_number, variant, tcgplayer_id, set_name, raw_price, image_url,
+    printing_prices}.
 
     A refresh takes the new response as truth: if a card no longer carries a
     price, its cached price is cleared rather than left to look current.
@@ -311,6 +322,7 @@ async def upsert_set_cards(pool, game: str, language: str, set_id: str,
             continue
         price = _as_numeric(card.get("raw_price"))
         number = str(card.get("card_number") or "").strip()
+        printing_prices = card.get("printing_prices")
         rows.append((
             game, language, set_id,
             str(card.get("set_name") or "").strip(),
@@ -323,6 +335,7 @@ async def upsert_set_cards(pool, game: str, language: str, set_id: str,
             price_source if price is not None else None,
             (str(card.get("image_url")).strip()[:500]
              if card.get("image_url") else None),
+            json.dumps(printing_prices) if printing_prices else None,
         ))
     if not rows:
         return {"cards": 0, "priced": 0}
@@ -517,15 +530,27 @@ def _build_filters(game: str, language, set_ids=None, rarities=None,
     if priced_only:
         where.append("raw_price IS NOT NULL")
     if search:
-        # ILIKE with a bound pattern: the % wrappers are part of the VALUE, so
-        # the user's text is never concatenated into SQL. _ and % they type are
-        # escaped so they can't turn into wildcards.
-        escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        params.append(f"%{escaped}%")
-        n = len(params)
-        clause = (f"(card_name ILIKE ${n} ESCAPE '\\' "
-                  f"OR card_number ILIKE ${n} ESCAPE '\\')")
-        where.append(f"NOT {clause}" if exclude.get("search") else clause)
+        # Comma-separated terms are OR'd together, but only when excluding —
+        # "master ball, poke ball, pattern" means "not any of these three".
+        # Plain (non-excluded) search keeps treating the whole string as one
+        # literal phrase, unchanged: that's the existing, expected behavior
+        # and nobody asked for OR-matching there.
+        if exclude.get("search"):
+            terms = [t.strip() for t in search.split(",") if t.strip()] or [search]
+        else:
+            terms = [search]
+        clauses = []
+        for term in terms:
+            # ILIKE with a bound pattern: the % wrappers are part of the
+            # VALUE, so the user's text is never concatenated into SQL. _ and
+            # % they type are escaped so they can't turn into wildcards.
+            escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            params.append(f"%{escaped}%")
+            n = len(params)
+            clauses.append(f"(card_name ILIKE ${n} ESCAPE '\\' "
+                           f"OR card_number ILIKE ${n} ESCAPE '\\')")
+        combined = " OR ".join(clauses)
+        where.append(f"NOT ({combined})" if exclude.get("search") else combined)
     return " AND ".join(where), params
 
 
@@ -614,7 +639,7 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
     page_params = params + [limit, offset]
     page_sql = (
         "SELECT id, set_id, language, set_name, card_name, card_number, rarity, "
-        "       tcgplayer_id, image_url, "
+        "       tcgplayer_id, image_url, printing_prices, "
         "       tcgplayer_verified, raw_price, price_source, priced_at, refreshed_at "
         f"FROM catalog_cards WHERE {where_sql} "
         f"ORDER BY {order_by} "
@@ -650,6 +675,12 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
             # NULL for rows cached before image support — the grid shows a
             # placeholder rather than a broken tile.
             "image_url": r["image_url"],
+            # NULL for rows never (re-)stocked since printing_prices shipped,
+            # or for a card PPT reports only one printing for — either way,
+            # nothing extra worth showing beyond raw_price. JSONB comes back
+            # from asyncpg as raw text (no codec registered), hence the parse.
+            "printing_prices": (json.loads(r["printing_prices"])
+                               if r["printing_prices"] else None),
             "raw_price": float(r["raw_price"]) if r["raw_price"] is not None else None,
             "price_source": r["price_source"],
             "priced_at": r["priced_at"].isoformat() if r["priced_at"] else None,
