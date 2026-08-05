@@ -341,7 +341,36 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         )
         return response
 
+# ---- CSRF (double-submit cookie) ----
+# Defense-in-depth: a security review found no working CSRF exploit today —
+# every state-changing route reads a JSON body, which forces a CORS
+# preflight on any cross-origin fetch, and there's no CORS allowlist
+# configured at all, so the browser already blocks the real request before
+# it's sent. This is the second layer in case either of those ever changes
+# (a future CORS addition, a legacy browser, a same-site subdomain
+# compromise). No server-side token storage needed: cross-origin JS can't
+# read OR set this app's cookies (same-origin policy), so a forged request
+# simply has no way to produce a header that matches the cookie. The cookie
+# is minted client-side by static/csrf.js, which also attaches it as a
+# header to every same-origin fetch automatically — no template needed to
+# know this exists.
+CSRF_COOKIE_NAME = "csrf_token"
+CSRF_HEADER_NAME = "X-CSRF-Token"
+CSRF_SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
+
+class CSRFMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.method not in CSRF_SAFE_METHODS:
+            cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
+            header_token = request.headers.get(CSRF_HEADER_NAME)
+            if not cookie_token or not header_token or not secrets.compare_digest(cookie_token, header_token):
+                return JSONResponse(
+                    {"detail": "Missing or invalid CSRF token. Reload the page and try again."},
+                    status_code=403)
+        return await call_next(request)
+
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(CSRFMiddleware)
 app.add_middleware(
     SessionMiddleware,
     secret_key=os.getenv("SESSION_SECRET"),
@@ -605,20 +634,31 @@ def _guest_scan_take(ip: str) -> tuple[bool, str]:
 def _oauth_secret() -> bytes:
     return os.getenv("SESSION_SECRET", "").encode()
 
+# 10 minutes comfortably covers a real login (Discord's consent screen plus
+# slow typing), while keeping a validly-signed state from staying usable
+# indefinitely — same reasoning as SCAN_TOKEN_MAX_AGE_S below, which this was
+# missing until a security review flagged the gap.
+OAUTH_STATE_MAX_AGE_S = int(os.getenv("OAUTH_STATE_MAX_AGE_S", str(10 * 60)))
+
 def make_oauth_state() -> str:
-    """Return a signed state token: '<nonce>.<hmac-sha256-hex>'."""
+    """Return a signed state token: '<timestamp>.<nonce>.<hmac-sha256-hex>'."""
+    ts = str(int(time.time()))
     nonce = secrets.token_hex(24)
-    sig = hmac.new(_oauth_secret(), nonce.encode(), hashlib.sha256).hexdigest()
-    return f"{nonce}.{sig}"
+    msg = f"{ts}.{nonce}"
+    sig = hmac.new(_oauth_secret(), msg.encode(), hashlib.sha256).hexdigest()
+    return f"{msg}.{sig}"
 
 def verify_oauth_state(state: str | None) -> bool:
-    """Return True iff *state* carries a valid HMAC signature."""
-    if not state or "." not in state:
+    """Return True iff *state* carries a valid, non-expired HMAC signature."""
+    if not state or state.count(".") != 2:
         return False
     try:
-        nonce, sig = state.rsplit(".", 1)
-        expected = hmac.new(_oauth_secret(), nonce.encode(), hashlib.sha256).hexdigest()
-        return secrets.compare_digest(sig, expected)
+        ts, nonce, sig = state.split(".", 2)
+        msg = f"{ts}.{nonce}"
+        expected = hmac.new(_oauth_secret(), msg.encode(), hashlib.sha256).hexdigest()
+        if not secrets.compare_digest(sig, expected):
+            return False
+        return (time.time() - int(ts)) <= OAUTH_STATE_MAX_AGE_S
     except Exception:
         return False
 
@@ -2845,7 +2885,24 @@ async def api_tips_photo_image(request: Request, photo_id: int,
 # allowed to look up at all. Enforced at /sets, /set-cards, and /quotes so a
 # manual card-name entry or the photo scanner can't reach a card outside the
 # window just because the Set dropdown wasn't used to get there.
+#
+# One Piece's set list (grading_sets.GRADING_SETS["one_piece"]) is a small
+# hand-maintained, already-newest-first list — unlike Pokemon there's no live
+# PPT set feed to walk, so the guest window is just its first N entries, no
+# network round trip needed. Checked against both the picker's short set id
+# ("OP-16") and its display name ("The Time of Battle"): /set-cards passes
+# the id, /quotes passes whichever the caller supplied (the picker sends the
+# resolved display name; the manual "enter a card" box lets a guest type
+# either), so matching only one field would silently let the other through.
+def _guest_visible_one_piece_sets() -> list:
+    return grading_sets.GRADING_SETS.get("one_piece", [])[:GUEST_GRADING_VISIBLE_SETS]
+
+
 async def _guest_grading_allowed(pool, game: str, language: str, set_name: str) -> bool:
+    if game == "one_piece":
+        needle = _norm_set_name(set_name)
+        return any(needle in (_norm_set_name(s.get("id")), _norm_set_name(s.get("name")))
+                   for s in _guest_visible_one_piece_sets())
     if game != "pokemon":
         return True
     visible = await _guest_visible_set_ids(pool, language, limit=GUEST_GRADING_VISIBLE_SETS)
@@ -2952,8 +3009,11 @@ async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
     language = price_sources.ppt_language(language)
     set_name_clean = (set_name or "").strip()[:120]
 
-    if user.get("guest") and game == "pokemon":
-        if tcg_id:
+    if user.get("guest"):
+        # tcg_id pinning only ever happens for Pokemon — One Piece's picker
+        # never populates a tcgplayer_id (see _grading_set_cache), so tcg_id
+        # is always empty for a one_piece call and this branch is skipped.
+        if game == "pokemon" and tcg_id:
             # A pinned tcgPlayerId skips name/set matching entirely inside
             # PPT's own lookup (see fetch_pokemonpricetracker) — trusting the
             # client's set_name here would let a guest claim an allowed set
@@ -3121,9 +3181,15 @@ async def api_grading_sets(request: Request, game: str = "pokemon",
         logger.info("Japanese sets unavailable (PPT off or empty) — serving the "
                     "English catalog list")
 
+    baked = grading_sets.GRADING_SETS.get(game, [])
+    if user.get("guest"):
+        # This is also One Piece's ONLY path (no live PPT-equivalent feed for
+        # it), so unlike Pokemon's PPT branch above, skipping this filter
+        # would leave One Piece guests with no set restriction at all.
+        baked = (_guest_visible_one_piece_sets() if game == "one_piece"
+                 else baked[:GUEST_GRADING_VISIBLE_SETS])
     return JSONResponse(
-        {"source": "catalog", "language": "english",
-         "sets": grading_sets.GRADING_SETS.get(game, [])},
+        {"source": "catalog", "language": "english", "sets": baked},
         headers={"Cache-Control": "no-store"})
 
 

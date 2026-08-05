@@ -1235,6 +1235,12 @@ EBAY_MARKETPLACE = os.getenv("EBAY_MARKETPLACE_ID", "EBAY_US")
 EBAY_SEARCH_LIMIT = 50
 # How many of the cheapest listings per grade get averaged into the quote.
 EBAY_PRICE_SAMPLE = 5
+# Ask-side listings shift faster than PPT's graded-sales data, so this is
+# much shorter than PPT_CACHE_TTL_SECONDS — long enough to blunt repeated
+# hits for the same card without going stale on a feature sold as "live"
+# pricing. {card_key: (fetched_at, [quotes])}
+EBAY_CACHE_TTL_SECONDS = 15 * 60
+_ebay_cache: dict[str, tuple[float, list]] = {}
 
 # Title patterns per grade. Order matters for `raw` (checked last, by
 # exclusion). \b on the trailing digit stops "PSA 9" matching "PSA 9.5".
@@ -1322,7 +1328,20 @@ async def fetch_ebay(client: httpx.AsyncClient, card: CardRef) -> list[GradedQuo
     One search per card (not per grade) — the response is bucketed by parsing
     grades out of listing titles, which keeps this to a single call against
     the 5,000/day default quota.
+
+    Cached like PPT (see PPT_CACHE_TTL_SECONDS/_ppt_cache) so repeated lookups
+    for the same card — a guest refreshing, or several visitors landing on
+    the same popular card — don't each re-spend quota. This was the gap a
+    security review flagged: unlike PPT's graded data, eBay had no cache at
+    all, so every /quotes call re-hit eBay's live API regardless of how
+    recently the same card had just been looked up.
     """
+    cache_key = card.key()
+    hit = _ebay_cache.get(cache_key)
+    if hit and (time.time() - hit[0]) < EBAY_CACHE_TTL_SECONDS:
+        logger.info("eBay cache hit for %r (no quota spent)", cache_key)
+        return list(hit[1])
+
     token = await _ebay_token_value(client)
     if not token:
         return []
@@ -1383,6 +1402,11 @@ async def fetch_ebay(client: httpx.AsyncClient, card: CardRef) -> list[GradedQuo
     if not quotes:
         logger.info("eBay returned %d item(s) for %r, none classifiable",
                     len(items), card.query())
+    # Only a real, successful response gets cached — same rule as PPT: the
+    # early returns above (no token, 401, non-200, exception) all skip this,
+    # so a transient failure gets retried live next time rather than being
+    # remembered as "no data" for the full TTL.
+    _ebay_cache[cache_key] = (time.time(), list(quotes))
     return quotes
 
 
