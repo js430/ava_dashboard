@@ -95,8 +95,13 @@
   .loc-name { color: #111; font-weight: 500; }
   .loc-name-link { color: #5865F2; font-weight: 500; text-decoration: none; }
   .loc-name-link:hover { text-decoration: underline; }
-  .col-head { font-size: 12px; color: #888; text-align: center; padding: 2px 1px; min-width: 40px; }
-  .sub-head { font-size: 12px; color: #aaa; text-align: center; padding: 1px; }
+  /* min-width matches .cell's 40px on purpose. Column widths otherwise come
+     from the data cells, so with every store group collapsed there are no
+     cells in the tbody and the headers shrink to bare text width — "AM PM
+     Eve" ends up jammed together. Sizing the headers themselves keeps the
+     layout identical whether groups are expanded or not. */
+  .col-head { font-size: 12px; color: #6b7280; font-weight: 600; text-align: center; padding: 3px 2px; min-width: 40px; }
+  .sub-head { font-size: 11px; color: #8b8b93; font-weight: 500; text-align: center; padding: 2px 4px 4px; min-width: 40px; letter-spacing: .01em; }
   .cell { width: 40px; height: 22px; text-align: center; vertical-align: middle; cursor: default; font-size: 12px; font-weight: 500; border-radius: 3px; border: 1px solid transparent; }
   .cell:hover { border-color: #999; }
   .day-divider { border-left: 2px solid #d1d5db !important; }
@@ -194,6 +199,10 @@
   html[data-theme="dark"] .store-chevron { color: #777; }
   html[data-theme="dark"] .store-header-name { color: #f0f0f0; }
   html[data-theme="dark"] .loc-name { color: #f0f0f0; }
+  /* The light-mode greys sit too close to the dark background to read. */
+  html[data-theme="dark"] .col-head { color: #b4b4c0; }
+  html[data-theme="dark"] .sub-head { color: #9a9aa6; }
+  html[data-theme="dark"] .total-head { color: #b4b4c0; }
   html[data-theme="dark"] .day-divider { border-left-color: #555 !important; }
   html[data-theme="dark"] .tip { background: #1c1c1f; border-color: #303033; color: #f0f0f0; }
   html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
