@@ -1623,9 +1623,9 @@ async def card_tracker_page(request: Request):
     if not user:
         return login_redirect_or_preview(
             request, title="Card Tracker — Nexus Card Co",
-            description="Track up to 100 Pokémon or One Piece cards — daily price history, "
-                        "momentum, and a profit-potential score. Sign in with Discord to build "
-                        "your portfolio.")
+            description=f"Track up to {MAX_USER_PORTFOLIO_CARDS} Pokémon or One Piece cards — "
+                        "daily price history, momentum, and a profit-potential score. Sign in "
+                        "with Discord to build your portfolio.")
     if is_demo(request):
         return RedirectResponse("/sample-card-tracker")
     return templates.TemplateResponse("card_tracker.html", {
@@ -1667,6 +1667,9 @@ async def sample_card_tracker_page(request: Request):
     return templates.TemplateResponse("sample_card_tracker.html", {
         "request": request,
         **_viewer_context(request, user),
+        # The upsell copy quotes the portfolio size; passing it keeps that
+        # promise in step with the real cap instead of drifting.
+        "max_portfolio_cards": MAX_USER_PORTFOLIO_CARDS,
     })
 
 def _f_num(x):

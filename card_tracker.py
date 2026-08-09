@@ -100,7 +100,14 @@ MAX_TRACKED_CARDS = 3000
 # routes). Independent of MAX_TRACKED_CARDS — that one bounds the shared
 # catalog's total credit exposure, this one bounds how much of it any single
 # member can claim.
-MAX_USER_PORTFOLIO_CARDS = 100
+#
+# Raising this does NOT raise the daily credit bill: MAX_TRACKED_CARDS is the
+# ceiling that actually costs money, and it's unchanged. What this does change
+# is how few members it takes to fill that shared pool — at 250 apiece, ~12
+# maxed-out portfolios exhaust the 3,000-card catalog, versus ~30 at 100. If
+# the shared cap starts being hit, raise MAX_TRACKED_CARDS (and re-check it
+# against the PPT plan) rather than lowering this one back.
+MAX_USER_PORTFOLIO_CARDS = 250
 
 VALID_GAMES = ("pokemon", "one_piece")
 
