@@ -367,8 +367,54 @@ async def link_customer(pool, account_id: int, customer_id: str) -> None:
             customer_id, account_id)
 
 
+# ── Plans ────────────────────────────────────────────────────────────────
+# The browser picks a plan by SLUG, never by price id. A price id arriving
+# from a form is an instruction to charge a specific amount, and Stripe will
+# happily honour any live price on the account — including a $0 one, or one
+# from a different product. Resolving slug -> price id server-side from env
+# means the set of chargeable prices is fixed at deploy time.
+#
+# `order` drives display order only. Slugs are part of the URL/JS contract,
+# so renaming one is a breaking change; the label is free to change.
+PLANS = {
+    "monthly":    {"env": "STRIPE_PRICE_MONTHLY",    "label": "Monthly",         "order": 1},
+    "semiannual": {"env": "STRIPE_PRICE_SEMIANNUAL", "label": "Every 6 months",  "order": 2},
+    "yearly":     {"env": "STRIPE_PRICE_YEARLY",     "label": "Yearly",          "order": 3},
+}
+DEFAULT_PLAN = "monthly"
+
+
+def price_id_for_plan(slug: str) -> str:
+    """Resolve a plan slug to its configured Stripe price id.
+
+    Returns "" for an unknown slug or an unconfigured plan — callers must
+    treat that as a refusal, not as "fall back to something". Silently
+    substituting another plan would charge someone a price they didn't pick.
+    """
+    # JSON gives us whatever the caller sent — a dict, a list, a number. Coerce
+    # to str rather than trusting it has .strip(), so a hostile body is a clean
+    # refusal instead of a 500.
+    if not isinstance(slug, str):
+        return ""
+    plan = PLANS.get(slug.strip().lower())
+    if not plan:
+        return ""
+    return os.getenv(plan["env"], "").strip()
+
+
+def available_plans() -> list:
+    """Configured plans, in display order. A plan with no price id set is
+    omitted entirely rather than shown as a dead button."""
+    out = []
+    for slug, plan in PLANS.items():
+        price_id = os.getenv(plan["env"], "").strip()
+        if price_id:
+            out.append({"slug": slug, "label": plan["label"], "price_id": price_id})
+    return sorted(out, key=lambda p: PLANS[p["slug"]]["order"])
+
+
 def stripe_configured() -> bool:
-    return bool(os.getenv("STRIPE_SECRET_KEY") and os.getenv("STRIPE_PRICE_ID"))
+    return bool(os.getenv("STRIPE_SECRET_KEY") and available_plans())
 
 
 def webhook_configured() -> bool:

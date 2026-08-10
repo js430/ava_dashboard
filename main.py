@@ -1185,12 +1185,16 @@ async def account_page(request: Request):
     if not account_id:
         return RedirectResponse("/signin")
     entitled = await account_has_access(request)
+    # Only pay the Stripe round-trip for someone who might actually buy.
+    plans = [] if entitled else await _plans_with_prices()
     return templates.TemplateResponse("account.html", {
         "request": request,
         "account_email": request.session.get("account_email", ""),
         "entitled": entitled,
         "stripe_ready": billing.stripe_configured(),
         "trial_days": STRIPE_TRIAL_DAYS,
+        "plans": plans,
+        "default_plan": billing.DEFAULT_PLAN,
     })
 
 
@@ -1216,12 +1220,23 @@ async def api_billing_checkout(request: Request):
     if not billing.stripe_configured():
         raise HTTPException(status_code=503, detail="Billing isn't configured yet.")
 
+    # The plan arrives as a slug and is resolved server-side. A price id from
+    # the browser would let anyone check out at any price on the account.
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    plan = (body or {}).get("plan") or billing.DEFAULT_PLAN
+    price_id = billing.price_id_for_plan(plan)
+    if not price_id:
+        raise HTTPException(status_code=400, detail="Pick a plan to continue.")
+
     email = request.session.get("account_email", "")
     form = {
         "mode": "subscription",
         "success_url": f"{PUBLIC_BASE}/account?checkout=success",
         "cancel_url": f"{PUBLIC_BASE}/account?checkout=cancelled",
-        "line_items[0][price]": os.getenv("STRIPE_PRICE_ID", ""),
+        "line_items[0][price]": price_id,
         "line_items[0][quantity]": "1",
         # client_reference_id is what ties the completed checkout back to our
         # account in the webhook. Without it we'd be matching on email, which
@@ -1249,6 +1264,90 @@ async def api_billing_checkout(request: Request):
     if not url:
         raise HTTPException(status_code=502, detail="Couldn't start checkout.")
     return JSONResponse({"url": url}, headers={"Cache-Control": "no-store"})
+
+
+# Plan prices are read from Stripe rather than kept in config, so the amount
+# advertised here can't drift from the amount actually charged. Cached because
+# this renders on every /account view and prices change maybe twice a year.
+_PLAN_CACHE = {"at": 0.0, "plans": None}
+_PLAN_CACHE_TTL = 600  # seconds
+
+
+def _format_money(unit_amount, currency: str) -> str:
+    """Minor units -> display string. Stripe quotes cents for USD."""
+    if unit_amount is None:
+        return ""
+    amount = unit_amount / 100.0
+    symbol = {"usd": "$", "eur": "€", "gbp": "£"}.get((currency or "").lower(), "")
+    # Drop the ".00" on whole amounts — "$45" reads better than "$45.00".
+    text = f"{amount:,.2f}".rstrip("0").rstrip(".") if amount == int(amount) else f"{amount:,.2f}"
+    return f"{symbol}{text}" if symbol else f"{text} {(currency or '').upper()}"
+
+
+def _interval_label(recurring: dict) -> str:
+    """'month'/1 -> 'month'; 'month'/6 -> '6 months'; 'year'/1 -> 'year'."""
+    unit = (recurring or {}).get("interval") or ""
+    count = (recurring or {}).get("interval_count") or 1
+    if not unit:
+        return ""
+    return unit if count == 1 else f"{count} {unit}s"
+
+
+async def _plans_with_prices(force: bool = False) -> list:
+    """Configured plans decorated with their live Stripe price.
+
+    Falls back to plan names with no amounts if Stripe can't be reached — a
+    picker missing its prices is a lot better than a 500 on the account page.
+    """
+    now = time.time()
+    if not force and _PLAN_CACHE["plans"] is not None \
+            and now - _PLAN_CACHE["at"] < _PLAN_CACHE_TTL:
+        return _PLAN_CACHE["plans"]
+
+    plans = billing.available_plans()
+    if not plans or not os.getenv("STRIPE_SECRET_KEY"):
+        return plans
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for plan in plans:
+                resp = await client.get(
+                    f"https://api.stripe.com/v1/prices/{plan['price_id']}",
+                    auth=(os.getenv("STRIPE_SECRET_KEY", ""), ""))
+                if resp.status_code >= 300:
+                    logger.warning("Stripe price fetch %s -> %s",
+                                   plan["price_id"], resp.status_code)
+                    continue
+                data = resp.json() or {}
+                recurring = data.get("recurring") or {}
+                plan["amount"] = data.get("unit_amount")
+                plan["price_text"] = _format_money(data.get("unit_amount"),
+                                                   data.get("currency"))
+                plan["interval_text"] = _interval_label(recurring)
+                # Normalise to a monthly figure so the plans are comparable.
+                months = {"month": 1, "year": 12, "week": 0.25, "day": 1 / 30}.get(
+                    recurring.get("interval"), 0) * (recurring.get("interval_count") or 1)
+                plan["months"] = months or 0
+    except Exception:
+        logger.exception("Stripe price fetch failed — showing plans without amounts")
+        return plans
+
+    # "Save 25%" against the monthly plan's per-month rate. Only shown when we
+    # actually have both numbers; a made-up discount is worse than none.
+    baseline = next((p["amount"] / p["months"] for p in plans
+                     if p["slug"] == "monthly" and p.get("amount") and p.get("months")), None)
+    for plan in plans:
+        if baseline and plan.get("amount") and plan.get("months") and plan["months"] > 1:
+            per_month = plan["amount"] / plan["months"]
+            pct = round((1 - per_month / baseline) * 100)
+            if pct >= 1:
+                plan["savings"] = f"save {pct}%"
+            plan["per_month_text"] = _format_money(round(per_month), "usd") \
+                if plan.get("price_text", "").startswith("$") else ""
+
+    _PLAN_CACHE["plans"] = plans
+    _PLAN_CACHE["at"] = now
+    return plans
 
 
 async def _fetch_stripe_subscription(sub_id: str):

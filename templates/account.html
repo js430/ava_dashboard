@@ -34,6 +34,22 @@
   ul { list-style: none; margin: 0 0 16px; }
   li { font-size: 13.5px; line-height: 1.9; color: #cfc9ea; }
   li::before { content: "✓"; color: #7fd6a6; margin-right: 9px; }
+  .plans { display: flex; flex-direction: column; gap: 9px; margin-bottom: 16px; }
+  .plan {
+    display: flex; align-items: center; gap: 10px;
+    padding: 13px 15px; border: 1px solid #3a3560; border-radius: 10px;
+    cursor: pointer; transition: border-color .15s ease, background .15s ease;
+  }
+  .plan:hover { border-color: #5f56a0; }
+  .plan.sel { border-color: #7c6de1; background: rgba(124,109,225,.10); }
+  .plan input { accent-color: #7c6de1; margin: 0; }
+  .plan-name { font-size: 14.5px; font-weight: 600; }
+  .plan-price { margin-left: auto; font-size: 14px; color: #cfc9ea; }
+  .plan-save {
+    font-size: 11.5px; font-weight: 700; color: #7fd6a6;
+    background: rgba(127,214,166,.12); border-radius: 999px; padding: 3px 9px;
+    text-transform: uppercase; letter-spacing: .04em;
+  }
   button.primary {
     width: 100%; padding: 13px; border: none; border-radius: 10px;
     background: #7c6de1; color: #fff; font-size: 15px; font-weight: 600;
@@ -74,7 +90,20 @@
           <li>Card Catalog with every set, not just a sample</li>
           <li>Live market prices and direct listing links</li>
         </ul>
-        {% if stripe_ready %}
+        {% if stripe_ready and plans %}
+          <div class="plans" role="radiogroup" aria-label="Choose a plan">
+            {% for plan in plans %}
+              <label class="plan{% if plan.slug == default_plan %} sel{% endif %}">
+                <input type="radio" name="plan" value="{{ plan.slug }}"
+                       {% if plan.slug == default_plan %}checked{% endif %}>
+                <span class="plan-name">{{ plan.label }}</span>
+                {% if plan.price_text %}
+                  <span class="plan-price">{{ plan.price_text }}{% if plan.interval_text %} / {{ plan.interval_text }}{% endif %}</span>
+                {% endif %}
+                {% if plan.savings %}<span class="plan-save">{{ plan.savings }}</span>{% endif %}
+              </label>
+            {% endfor %}
+          </div>
           <button class="primary" id="subscribe">Start my {{ trial_days }}-day free trial</button>
           <p class="fine">
             We take your card details now so your membership carries on automatically
@@ -96,6 +125,19 @@
 
   <script src="/static/csrf.js"></script>
   <script>
+    // Highlight the selected plan card.
+    document.querySelectorAll('.plan input[name="plan"]').forEach((input) => {
+      input.addEventListener("change", () => {
+        document.querySelectorAll(".plan").forEach((el) => el.classList.remove("sel"));
+        if (input.checked) input.closest(".plan").classList.add("sel");
+      });
+    });
+
+    function selectedPlan() {
+      const checked = document.querySelector('.plan input[name="plan"]:checked');
+      return checked ? checked.value : null;
+    }
+
     const btn = document.getElementById("subscribe");
     if (btn) {
       btn.addEventListener("click", async () => {
@@ -104,7 +146,11 @@
         btn.textContent = "Opening checkout…";
         msg.innerHTML = "";
         try {
-          const resp = await fetch("/api/billing/checkout", { method: "POST" });
+          const resp = await fetch("/api/billing/checkout", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ plan: selectedPlan() })
+          });
           const data = await resp.json().catch(() => ({}));
           if (resp.ok && data.url) {
             window.location = data.url;
