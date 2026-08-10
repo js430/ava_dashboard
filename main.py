@@ -775,15 +775,53 @@ async def get_current_user_or_guest(request: Request):
         if is_demo(request):
             return {**user, "guest": True}
         return user
-    # A paying (or trialing) local account gets FULL playground access, but
-    # carries no Discord identity — id stays None, exactly like a guest, so
-    # nothing downstream can mistake it for a member. It is `guest: False`,
-    # which is the whole point: no scan cap, no truncated set list.
+    # A paying (or trialing) local account gets FULL access to the subscriber
+    # tools, but carries no Discord identity. `guest: False` is the whole
+    # point: no scan cap, no truncated set list.
+    #
+    # `id` is the LOCAL account id, not a Discord one. That's safe — and
+    # deliberate — because acct_accounts.id is capped by a CHECK constraint at
+    # below 1e15 while the smallest real Discord snowflakes are ~1.1e16, so the
+    # two ranges cannot overlap. It lets a subscriber own rows in
+    # user_tracked_cards (a BIGINT keyed by Discord id today) with every
+    # existing query untouched. See billing.MAX_LOCAL_ACCOUNT_ID.
+    #
+    # This id is NOT a membership: session["user"] is still never set, so every
+    # Discord-gated route stays closed. Never add this id to ADMIN_USER_IDS
+    # comparisons as though it were a Discord id.
     if await account_has_access(request):
-        return {"id": None, "username": request.session.get("account_email", "Member"),
+        return {"id": current_account_id(request),
+                "username": request.session.get("account_email", "Member"),
                 "avatar": None, "guest": False, "account": True}
     if is_guest(request):
         return GUEST_USER
+    raise HTTPException(status_code=401, detail="Not authenticated")
+
+
+async def get_member_or_subscriber(request: Request):
+    """A full Discord member OR a paying local account — but NOT a guest and
+    NOT a demo/role-less Discord account.
+
+    Backs the Card Tracker's own-portfolio endpoints, which a subscription
+    includes. Strictly narrower than get_current_user_or_guest: there is no
+    guest tier here, because a portfolio needs an owner.
+
+    The subscriber's `id` is their local account id, which is safe to store
+    alongside Discord ids in user_tracked_cards — see
+    get_current_user_or_guest for why the two ranges can't collide.
+    """
+    user = request.session.get("user")
+    if user:
+        # Demo accounts are Discord-authenticated but role-less; they get the
+        # read-only trial portfolio, not a real one.
+        if is_demo(request):
+            raise HTTPException(status_code=403,
+                                detail="Live data requires the member role.")
+        return user
+    if await account_has_access(request):
+        return {"id": current_account_id(request),
+                "username": request.session.get("account_email", "Member"),
+                "avatar": None, "guest": False, "account": True}
     raise HTTPException(status_code=401, detail="Not authenticated")
 
 
@@ -1043,9 +1081,10 @@ async def guest_entry(request: Request):
     })
 
 # ---- Non-Discord accounts + Stripe subscriptions ----
-# A paid account unlocks the Nexus Playground tools (Grading Calculator, Card
-# Catalog) at full access — NOT the restock dashboard, map, analytics, card
-# tracker or inventory, which stay Discord-members-only.
+# A paid account unlocks the subscriber tools — Grading Calculator, Card
+# Catalog, and the Card Tracker's own-portfolio features — at full access.
+# NOT the restock dashboard, map, analytics or inventory, and none of the
+# tracker's admin tools; those stay Discord-members-only.
 #
 # THE INVARIANT: a paid account never gets session["user"]. It gets
 # session["account_id"]. Every Discord-gated route reads session["user"], so
@@ -1195,6 +1234,9 @@ async def account_page(request: Request):
         "trial_days": STRIPE_TRIAL_DAYS,
         "plans": plans,
         "default_plan": billing.DEFAULT_PLAN,
+        # Quoted in the sales copy — passing the real cap keeps the promise
+        # in step with the code instead of drifting.
+        "max_portfolio_cards": MAX_USER_PORTFOLIO_CARDS,
     })
 
 
@@ -2048,21 +2090,31 @@ async def card_tracker_page(request: Request):
     # gets their own portfolio; admins additionally see the Full Catalog
     # admin tools. No longer admin-only.
     user = request.session.get("user")
+    # A paying local account gets its own portfolio here too — the tracker is
+    # part of what a subscription buys. Admin tools below stay Discord-only.
+    subscriber = None
     if not user:
-        return login_redirect_or_preview(
-            request, title="Card Tracker — Nexus Card Co",
-            description=f"Track up to {MAX_USER_PORTFOLIO_CARDS} Pokémon or One Piece cards — "
-                        "daily price history, momentum, and a profit-potential score. Sign in "
-                        "with Discord to build your portfolio.")
-    if is_demo(request):
+        if await account_has_access(request):
+            subscriber = {"id": current_account_id(request),
+                          "username": request.session.get("account_email", "Member")}
+        else:
+            return login_redirect_or_preview(
+                request, title="Card Tracker — Nexus Card Co",
+                description=f"Track up to {MAX_USER_PORTFOLIO_CARDS} Pokémon or One Piece cards — "
+                            "daily price history, momentum, and a profit-potential score. Sign in "
+                            "with Discord to build your portfolio.")
+    if user and is_demo(request):
         return RedirectResponse("/sample-card-tracker")
     return templates.TemplateResponse("card_tracker.html", {
         "request": request,
-        "username": user["username"],
-        "avatar": user.get("avatar"),
-        "user_id": user["id"],
-        "is_admin": int(user["id"]) in ADMIN_USER_IDS,
-        "is_mod": request.session.get("mod", False),
+        "username": (user or subscriber)["username"],
+        "avatar": user.get("avatar") if user else None,
+        "user_id": (user or subscriber)["id"],
+        # A subscriber is never an admin or a mod: their id is a local account
+        # id, and comparing it against Discord ADMIN_USER_IDS would be a
+        # category error even though the ranges can't collide.
+        "is_admin": bool(user) and int(user["id"]) in ADMIN_USER_IDS,
+        "is_mod": bool(user) and request.session.get("mod", False),
         "max_portfolio_cards": MAX_USER_PORTFOLIO_CARDS,
         "default_visible_columns": DEFAULT_VISIBLE_COLUMNS,
     })
@@ -2172,7 +2224,7 @@ async def api_card_tracker_list(request: Request, user=Depends(require_admin)):
                         headers={"Cache-Control": "no-store"})
 
 @app.get("/api/card-tracker/portfolio")
-async def api_portfolio_list(request: Request, user=Depends(get_current_user)):
+async def api_portfolio_list(request: Request, user=Depends(get_member_or_subscriber)):
     """The caller's own tracked cards — any paid member, not just admins."""
     async with request.app.state.db.acquire() as conn:
         rows = await conn.fetch(
@@ -2210,7 +2262,7 @@ async def api_trial_list(request: Request, user=Depends(require_trial_viewer)):
 
 @app.post("/api/card-tracker/portfolio/search")
 @limiter.limit("60/hour")
-async def api_portfolio_search(request: Request, user=Depends(get_current_user)):
+async def api_portfolio_search(request: Request, user=Depends(get_member_or_subscriber)):
     """Free (no PPT/JustTCG credits) — searches the already-populated
     catalog_cards table so a member can find a card to add without spending
     anything. If a card genuinely isn't in the catalog yet, it isn't
@@ -2256,7 +2308,7 @@ async def api_portfolio_search(request: Request, user=Depends(get_current_user))
 
 @app.post("/api/card-tracker/portfolio/add")
 @limiter.limit("60/hour")
-async def api_portfolio_add(request: Request, user=Depends(get_current_user)):
+async def api_portfolio_add(request: Request, user=Depends(get_member_or_subscriber)):
     """Add one card (from a /portfolio/search result) to the caller's
     portfolio. Ensures the card exists in the shared catalog first (free
     insert if it's genuinely new — Pokemon adds already carry a
@@ -2334,7 +2386,7 @@ async def api_portfolio_add(request: Request, user=Depends(get_current_user)):
 
 @app.post("/api/card-tracker/portfolio/remove")
 @limiter.limit("60/hour")
-async def api_portfolio_remove(request: Request, user=Depends(get_current_user)):
+async def api_portfolio_remove(request: Request, user=Depends(get_member_or_subscriber)):
     """Unlink cards from the caller's OWN portfolio only — never touches
     tracked_cards/price_snapshots, so the card and its history survive for
     anyone else still tracking it. No cap; unlinking is cheap."""
@@ -2351,7 +2403,7 @@ async def api_portfolio_remove(request: Request, user=Depends(get_current_user))
     return JSONResponse({"ok": True, "removed": removed}, headers={"Cache-Control": "no-store"})
 
 @app.get("/api/card-tracker/prefs")
-async def api_tracker_prefs_get(request: Request, user=Depends(get_current_user)):
+async def api_tracker_prefs_get(request: Request, user=Depends(get_member_or_subscriber)):
     """Saved column-visibility choice for the card-tracker table. null
     visible_columns means no preference saved yet — the page falls back to
     DEFAULT_VISIBLE_COLUMNS client-side."""
@@ -2373,7 +2425,7 @@ async def api_tracker_prefs_get(request: Request, user=Depends(get_current_user)
 
 @app.post("/api/card-tracker/prefs")
 @limiter.limit("30/hour")
-async def api_tracker_prefs_save(request: Request, user=Depends(get_current_user)):
+async def api_tracker_prefs_save(request: Request, user=Depends(get_member_or_subscriber)):
     body = await request.json()
     columns = body.get("visible_columns")
     if (not isinstance(columns, list)
@@ -2432,7 +2484,7 @@ async def _card_history_payload(conn, card_id: int):
     }
 
 @app.get("/api/card-tracker/history")
-async def api_card_tracker_history(request: Request, card_id: int, user=Depends(get_current_user)):
+async def api_card_tracker_history(request: Request, card_id: int, user=Depends(get_member_or_subscriber)):
     async with request.app.state.db.acquire() as conn:
         payload = await _card_history_payload(conn, card_id)
     if payload is None:

@@ -912,3 +912,41 @@ the entire restock dashboard for the price of a Playground membership).
 table touched.
 
 ---
+
+## 2026-08-10 — Card Tracker included in the paid subscription
+
+**Decided:** A subscription now also opens `/card-tracker` and its seven
+own-portfolio endpoints (`portfolio`, `portfolio/search`, `portfolio/add`,
+`portfolio/remove`, `prefs` GET+POST, `history`) via a new
+`get_member_or_subscriber` dependency. Every `require_admin` tracker tool
+(`list`, `refresh`, `rematch`, `reset-history`, `remove`, `backdate`,
+`import/*`) is unchanged. The 250-card cap applies to subscribers too.
+
+**Why:** the Stripe product description sells the tracker; shipping it
+behind a Discord gate would misdescribe what people are paying for.
+
+**How a subscriber owns a portfolio:** `user_tracked_cards.user_id` is a
+BIGINT holding Discord ids. A subscriber's row is keyed by their
+`acct_accounts.id` in the same column. This is safe because that table's
+`CHECK (id < 1000000000000000)` sits ~11x below the smallest real Discord
+snowflake (~1.1e16), so the ranges cannot overlap and every existing query
+works untouched. That constraint is now load-bearing for portfolio
+ownership, not just tidiness — do not raise it.
+
+**Revises the earlier entry:** the subscriber user dict was
+`{"id": None, ...}`; it is now `{"id": <account id>, ...}`. The
+session["user"] invariant is unchanged and still the real gate — the
+dashboard, map, analytics and inventory stay closed by construction.
+`is_admin`/`is_mod` on the tracker page are now explicitly gated on a
+Discord session existing first, so a local id is never compared against
+ADMIN_USER_IDS.
+
+**Rejected:** read-only tracker access for subscribers (much weaker than
+what's being sold); a synthetic Discord-shaped id (invents collision risk
+the CHECK constraint already rules out); a separate subscriber portfolio
+table (duplicates every tracker query for no benefit).
+
+**Cross-repo note:** none — `user_tracked_cards` is owned by this repo
+(`card_tracker.py`), not the bot.
+
+---

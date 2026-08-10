@@ -73,22 +73,24 @@
     <div class="card">
       {% if entitled %}
         <div class="status on">Active</div>
-        <p>You have full access to the Nexus Playground tools. Head over and use them:</p>
+        <p>You have full access to the tools. Head over and use them:</p>
         <ul>
-          <li><a href="/grading-calculator" style="color:#cfc9ea">Grading Calculator</a></li>
           <li><a href="/catalog" style="color:#cfc9ea">Card Catalog</a></li>
+          <li><a href="/grading-calculator" style="color:#cfc9ea">Scanner &amp; Grading Calculator</a></li>
+          <li><a href="/card-tracker" style="color:#cfc9ea">Card Tracker</a></li>
         </ul>
         <p class="fine">
-          The restock dashboard, store map and card tracker are separate &mdash; those
+          The restock dashboard, store map and analytics are separate &mdash; those
           are for Discord members of the community.
         </p>
       {% else %}
         <div class="status off">No active membership</div>
         <p>Start a {{ trial_days }}-day free trial and get:</p>
         <ul>
-          <li>Grading Calculator with no daily scan limit</li>
-          <li>Card Catalog with every set, not just a sample</li>
-          <li>Live market prices and direct listing links</li>
+          <li>Card Catalog with every set, English and Japanese</li>
+          <li>Scanner and grading calculator, no daily limit</li>
+          <li>Card Tracker for up to {{ max_portfolio_cards }} of your own cards</li>
+          <li>Daily price history and an investment score per card</li>
         </ul>
         {% if stripe_ready and plans %}
           <div class="plans" role="radiogroup" aria-label="Choose a plan">
