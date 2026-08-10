@@ -745,9 +745,11 @@ def get_current_discord_user(request: Request):
 # ---- Guest access (Nexus Playground only) ----
 # A guest is a visitor with NO Discord identity at all — distinct from
 # `is_demo`, which is a Discord-authenticated member without the community
-# role. Guests exist only to reach Grading Calculator + Card Catalog
-# (Nexus Playground minus Tracker, which stays admin-only); every other route
-# still requires real Discord auth. Session-only, no DB row — clearing
+# role. Guests exist only to reach Grading Calculator + Card Catalog, plus the
+# read-only Card Tracker sample (require_trial_viewer). They never get a
+# tracker portfolio of their own — that needs an owner, so it takes either a
+# Discord member or a paid account (get_member_or_subscriber). Every other
+# route still requires real Discord auth. Session-only, no DB row — clearing
 # cookies or hitting /logout ends it, same as any other session flag.
 GUEST_USER = {"id": None, "username": "Guest", "avatar": None, "guest": True}
 
