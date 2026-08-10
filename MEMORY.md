@@ -862,3 +862,53 @@ tables. Logged in data-system.md ownership table.
 **Rule going forward:** Additive changes (nullable column, new table) are safe. Destructive changes to a shared table require grepping `ava_dashboard/main.py` for the table/column first, and updating both repos in the same change.
 
 ---
+
+## 2026-08-10 — Paid subscriptions via a non-Discord account entry point
+
+**Decided:** Added a standalone email-based account system (`billing.py` +
+`/signin`, `/account`, `/api/billing/*`) with Stripe subscriptions and a
+7-day card-required trial. Entitlement unlocks the two Nexus Playground
+tools (Grading Calculator, Card Catalog) at full tier — nothing else.
+
+**The load-bearing invariant:** a paid account NEVER gets `session["user"]`.
+It gets `session["account_id"]`. Every Discord-gated route reads
+`session["user"]`, so all of them stay closed *by construction* rather than
+by remembering to add a check. A subscriber's user dict is
+`{"id": None, "guest": False, "account": True}` — no Discord id to be
+mistaken for a member, and `guest: False` because full access is the thing
+they bought. Access is opt-in per page via `_viewer_context(allow_account=)`,
+which only the two Playground pages pass.
+
+**Why Stripe hosted Checkout:** card details never reach this server, which
+keeps us out of PCI scope. Do not replace it with an embedded card form.
+
+**Why the webhook is CSRF-exempt:** it's server-to-server, so no cookie
+exists to double-submit. Its HMAC signature *is* its authentication, and it
+is mandatory — an unset `STRIPE_WEBHOOK_SECRET` returns 503 rather than
+degrading to "trust anything". Stripe is the source of truth;
+`acct_subscriptions` is a mirror written only by the verified webhook.
+
+**Entitlement requires status AND an unexpired `current_period_end`**, so a
+missed cancellation webhook can't grant access forever. `past_due` (a failed
+payment) does not entitle.
+
+**Event ordering:** `customer.subscription.created` can arrive before
+`checkout.session.completed`, when no customer link exists yet and the
+subscription would be dropped as "unknown customer". `checkout.session.completed`
+therefore re-fetches the subscription from Stripe after linking.
+
+**Rejected:** Discord-linked paid roles (defeats the purpose — the ask was a
+non-Discord entry point); passwords (a credential to store, leak and reset,
+for no gain over a single-use emailed link); trial without a card (converts
+far worse and invites throwaway-email abuse); granting subscribers
+`session["user"]` with a synthetic id (one missed check anywhere would sell
+the entire restock dashboard for the price of a Playground membership).
+
+**New env vars — the feature is inert until these are set:**
+`STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`,
+`STRIPE_TRIAL_DAYS` (default 7), `RESEND_API_KEY`, `LOGIN_EMAIL_FROM`.
+
+**Cross-repo note:** additive only — three new `acct_*` tables, no bot-owned
+table touched.
+
+---

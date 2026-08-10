@@ -46,6 +46,7 @@ import catalog
 import card_eras
 import population
 import inventory
+import billing
 import tips
 
 load_dotenv()
@@ -211,6 +212,10 @@ async def lifespan(app: FastAPI):
         await tips.ensure_tips_schema(app.state.db)
     except Exception:
         logger.exception("Tips schema ensure failed — /tips may be unavailable")
+    try:
+        await billing.ensure_billing_schema(app.state.db)
+    except Exception:
+        logger.exception("Billing schema ensure failed — paid accounts may be unavailable")
     scheduler_task = asyncio.create_task(_card_tracker_daily_scheduler(app))
     # Background, never awaited: seeding the catalog must not delay startup or
     # take the app down if PPT is unreachable.
@@ -246,6 +251,10 @@ app = FastAPI(lifespan=lifespan)
 # http://. Env-overridable so a custom domain is config, not a code change.
 PUBLIC_BASE_URL = os.getenv(
     "PUBLIC_BASE_URL", "https://www.nexuscardco.com").rstrip("/")
+# Length of the free trial Stripe applies to a new subscription. A card is
+# still collected up front, so the trial converts on its own when it ends.
+STRIPE_TRIAL_DAYS = int(os.getenv("STRIPE_TRIAL_DAYS", "7"))
+
 OG_TITLE = "Nexus Card Co — Restock Dashboard"
 OG_DESCRIPTION = ("Historical restock data, store maps, card prices and analytics "
                   "for the TCG community, built around our Discord server.")
@@ -302,6 +311,12 @@ def rate_limit_key(request: Request) -> str:
     user = request.session.get("user")
     if user and user.get("id"):
         return f"user:{user['id']}"
+    # A paid account is an identity too — one that costs money to rotate, so
+    # it's a better key than a spoofable IP header. It also stops a
+    # subscriber's usage counting against everyone else on the same NAT.
+    account_id = request.session.get("account_id")
+    if account_id:
+        return f"acct:{account_id}"
     return f"ip:{get_real_ip(request)}"
 
 limiter = Limiter(key_func=rate_limit_key)
@@ -357,10 +372,18 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 CSRF_COOKIE_NAME = "csrf_token"
 CSRF_HEADER_NAME = "X-CSRF-Token"
 CSRF_SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
+# Paths exempt from CSRF because the caller is a server, not a browser, and so
+# can't hold our token. EVERY path here must carry its own authentication —
+# the Stripe webhook authenticates by HMAC signature
+# (billing.verify_webhook_signature), which is the only thing standing between
+# a stranger with this URL and a free subscription. Do not add a path here
+# unless it independently proves who is calling.
+CSRF_EXEMPT_PATHS = {"/api/billing/webhook"}
 
 class CSRFMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.method not in CSRF_SAFE_METHODS:
+        if (request.method not in CSRF_SAFE_METHODS
+                and request.url.path not in CSRF_EXEMPT_PATHS):
             cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
             header_token = request.headers.get(CSRF_HEADER_NAME)
             if not cookie_token or not header_token or not secrets.compare_digest(cookie_token, header_token):
@@ -733,7 +756,7 @@ def is_guest(request: Request) -> bool:
     return bool(request.session.get("guest"))
 
 
-def get_current_user_or_guest(request: Request):
+async def get_current_user_or_guest(request: Request):
     """Like `get_current_user`, but a guest session — OR a role-less Discord
     ("demo"/"sample") session — also passes, both at the guest tier.
 
@@ -752,12 +775,19 @@ def get_current_user_or_guest(request: Request):
         if is_demo(request):
             return {**user, "guest": True}
         return user
+    # A paying (or trialing) local account gets FULL playground access, but
+    # carries no Discord identity — id stays None, exactly like a guest, so
+    # nothing downstream can mistake it for a member. It is `guest: False`,
+    # which is the whole point: no scan cap, no truncated set list.
+    if await account_has_access(request):
+        return {"id": None, "username": request.session.get("account_email", "Member"),
+                "avatar": None, "guest": False, "account": True}
     if is_guest(request):
         return GUEST_USER
     raise HTTPException(status_code=401, detail="Not authenticated")
 
 
-def _viewer_context(request: Request, user) -> dict:
+async def _viewer_context(request: Request, user, allow_account: bool = False) -> dict:
     """Common template vars for a page open to full members, guests (no
     Discord identity), and demo/role-less Discord accounts — the latter two
     both render as the guest tier (`is_guest: True`) here. `user` is the
@@ -767,7 +797,21 @@ def _viewer_context(request: Request, user) -> dict:
     access to demo accounts — the main dashboard's `is_demo` check (redirect
     to /sample) is untouched and lives in its own routes.
     """
+    # Subscriber branch first, and it returns before the `int(user["id"])`
+    # admin lookup below — a local account has no Discord id to cast.
+    if user is not None and user.get("account"):
+        return {"username": user["username"], "avatar": None, "user_id": None,
+                "is_admin": False, "is_mod": False, "is_guest": False,
+                "is_subscriber": True, "upgrade_url": DEMO_UPGRADE_URL}
     if user is None:
+        # `allow_account` is opt-in per page: only the two Nexus Playground
+        # pages sell access. The sample Card Tracker is a Discord upsell, and
+        # a subscriber there must still see the guest-tier pitch.
+        if allow_account and await account_has_access(request):
+            return {"username": request.session.get("account_email", "Member"),
+                    "avatar": None, "user_id": None, "is_admin": False,
+                    "is_mod": False, "is_guest": False, "is_subscriber": True,
+                    "upgrade_url": DEMO_UPGRADE_URL}
         return {"username": GUEST_USER["username"], "avatar": None, "user_id": None,
                 "is_admin": False, "is_mod": False, "is_guest": True,
                 "upgrade_url": DEMO_UPGRADE_URL}
@@ -998,12 +1042,297 @@ async def guest_entry(request: Request):
         "guest_scan_daily_limit": GUEST_SCAN_DAILY_LIMIT,
     })
 
+# ---- Non-Discord accounts + Stripe subscriptions ----
+# A paid account unlocks the Nexus Playground tools (Grading Calculator, Card
+# Catalog) at full access — NOT the restock dashboard, map, analytics, card
+# tracker or inventory, which stay Discord-members-only.
+#
+# THE INVARIANT: a paid account never gets session["user"]. It gets
+# session["account_id"]. Every Discord-gated route reads session["user"], so
+# they all stay closed by construction. Setting session["user"] for a local
+# account would silently hand over the whole dashboard — see billing.py.
+PUBLIC_BASE = PUBLIC_BASE_URL.rstrip("/")
+
+
+def current_account_id(request: Request):
+    return request.session.get("account_id")
+
+
+async def account_has_access(request: Request) -> bool:
+    """Paid/trialing check for the signed-in local account, if any."""
+    account_id = current_account_id(request)
+    if not account_id:
+        return False
+    try:
+        return await billing.account_is_entitled(request.app.state.db, account_id)
+    except Exception:
+        # A DB hiccup must not silently upgrade someone — deny and log.
+        logger.exception("Billing: entitlement check failed for account %s", account_id)
+        return False
+
+
+async def _send_login_email(to_email: str, link: str) -> bool:
+    """Send the magic link. Returns False if it could not be sent.
+
+    Uses Resend's REST API over httpx rather than adding an SDK. When no
+    provider is configured the link is logged and False returned — never a
+    silent success, because "check your email" for a mail that was never sent
+    is the worst possible failure here.
+    """
+    api_key = os.getenv("RESEND_API_KEY", "")
+    sender = os.getenv("LOGIN_EMAIL_FROM", "")
+    if not api_key or not sender:
+        logger.warning("Billing: no RESEND_API_KEY/LOGIN_EMAIL_FROM set — login link "
+                       "for %s not sent. Link (dev only): %s", to_email, link)
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "from": sender,
+                    "to": [to_email],
+                    "subject": "Your Nexus Card Co sign-in link",
+                    "text": (f"Click to sign in:\n\n{link}\n\n"
+                             f"This link works once and expires in "
+                             f"{billing.LOGIN_TOKEN_TTL_MINUTES} minutes.\n"
+                             "If you didn't request it, you can ignore this email."),
+                })
+        if resp.status_code >= 300:
+            logger.warning("Billing: email provider returned %s: %s",
+                           resp.status_code, resp.text[:200])
+            return False
+        return True
+    except Exception:
+        logger.exception("Billing: login email send failed")
+        return False
+
+
 @app.get("/signin", response_class=HTMLResponse)
-async def signin_placeholder(request: Request):
-    """Standing entry point for a future non-Discord account system (likely
-    subscription-gated eventually). No accounts exist yet — this just tells
-    visitors that and points them at what does work today."""
-    return templates.TemplateResponse("signin.html", {"request": request})
+async def signin_page(request: Request):
+    """Email entry point for a non-Discord subscription account."""
+    return templates.TemplateResponse("signin.html", {
+        "request": request,
+        "account_email": request.session.get("account_email"),
+        "stripe_ready": billing.stripe_configured(),
+    })
+
+
+@app.post("/api/account/login-link")
+@limiter.limit("5/hour")
+async def api_account_login_link(request: Request):
+    """Email a single-use magic link.
+
+    ALWAYS returns the same response whether or not the address has an
+    account. Saying "no such account" would turn this into an endpoint for
+    testing which email addresses are customers.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    email = billing.normalize_email(body.get("email"))
+    generic = {"ok": True,
+               "detail": "If that address can sign in, a link is on its way. "
+                         "It expires in %d minutes." % billing.LOGIN_TOKEN_TTL_MINUTES}
+
+    if not billing.looks_like_email(email):
+        # Shape errors are safe to report — they reveal nothing about who has
+        # an account.
+        raise HTTPException(status_code=400, detail="That doesn't look like an email address.")
+
+    pool = request.app.state.db
+    try:
+        account = await billing.get_or_create_account(pool, email)
+        token = await billing.issue_login_token(pool, account["id"], get_real_ip(request))
+    except Exception:
+        logger.exception("Billing: could not issue login token")
+        raise HTTPException(status_code=503, detail="Sign-in is temporarily unavailable.")
+
+    link = f"{PUBLIC_BASE}/account/verify?token={token}"
+    sent = await _send_login_email(email, link)
+    if not sent and not os.getenv("RESEND_API_KEY"):
+        # Be honest rather than claim a mail was sent that wasn't.
+        raise HTTPException(
+            status_code=503,
+            detail="Email sign-in isn't switched on yet. Ask an admin to configure it.")
+    return JSONResponse(generic, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/account/verify")
+@limiter.limit("20/hour")
+async def account_verify(request: Request, token: str = ""):
+    """Consume a magic link and start a local-account session."""
+    account = await billing.consume_login_token(request.app.state.db, token)
+    if not account:
+        return templates.TemplateResponse("signin.html", {
+            "request": request,
+            "error": "That link has expired or was already used. Request a new one.",
+            "stripe_ready": billing.stripe_configured(),
+        }, status_code=400)
+
+    # Deliberately NOT session["user"] — see the invariant above.
+    request.session["account_id"] = account["id"]
+    request.session["account_email"] = account["email"]
+    logger.info("Billing: account %s signed in", account["id"])
+    return RedirectResponse("/account", status_code=303)
+
+
+@app.get("/account", response_class=HTMLResponse)
+async def account_page(request: Request):
+    account_id = current_account_id(request)
+    if not account_id:
+        return RedirectResponse("/signin")
+    entitled = await account_has_access(request)
+    return templates.TemplateResponse("account.html", {
+        "request": request,
+        "account_email": request.session.get("account_email", ""),
+        "entitled": entitled,
+        "stripe_ready": billing.stripe_configured(),
+        "trial_days": STRIPE_TRIAL_DAYS,
+    })
+
+
+@app.get("/account/logout")
+async def account_logout(request: Request):
+    request.session.pop("account_id", None)
+    request.session.pop("account_email", None)
+    return RedirectResponse("/signin")
+
+
+@app.post("/api/billing/checkout")
+@limiter.limit("10/hour")
+async def api_billing_checkout(request: Request):
+    """Create a Stripe Checkout Session and hand back its URL.
+
+    Checkout is hosted BY STRIPE on purpose: card details never reach this
+    server, which keeps it out of PCI scope entirely. Do not replace this
+    with an embedded card form.
+    """
+    account_id = current_account_id(request)
+    if not account_id:
+        raise HTTPException(status_code=401, detail="Sign in first.")
+    if not billing.stripe_configured():
+        raise HTTPException(status_code=503, detail="Billing isn't configured yet.")
+
+    email = request.session.get("account_email", "")
+    form = {
+        "mode": "subscription",
+        "success_url": f"{PUBLIC_BASE}/account?checkout=success",
+        "cancel_url": f"{PUBLIC_BASE}/account?checkout=cancelled",
+        "line_items[0][price]": os.getenv("STRIPE_PRICE_ID", ""),
+        "line_items[0][quantity]": "1",
+        # client_reference_id is what ties the completed checkout back to our
+        # account in the webhook. Without it we'd be matching on email, which
+        # a customer can change in Stripe's own form.
+        "client_reference_id": str(account_id),
+        "customer_email": email,
+        "subscription_data[trial_period_days]": str(STRIPE_TRIAL_DAYS),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            resp = await client.post(
+                "https://api.stripe.com/v1/checkout/sessions",
+                auth=(os.getenv("STRIPE_SECRET_KEY", ""), ""),
+                data=form)
+        if resp.status_code >= 300:
+            logger.warning("Stripe checkout create failed %s: %s",
+                           resp.status_code, resp.text[:300])
+            raise HTTPException(status_code=502, detail="Couldn't start checkout.")
+        url = (resp.json() or {}).get("url")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Stripe checkout create errored")
+        raise HTTPException(status_code=502, detail="Couldn't start checkout.")
+    if not url:
+        raise HTTPException(status_code=502, detail="Couldn't start checkout.")
+    return JSONResponse({"url": url}, headers={"Cache-Control": "no-store"})
+
+
+async def _fetch_stripe_subscription(sub_id: str):
+    """Read a subscription straight from Stripe. Used to repair event-order
+    races — Stripe is the source of truth, our table is only a mirror."""
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(
+                f"https://api.stripe.com/v1/subscriptions/{sub_id}",
+                auth=(os.getenv("STRIPE_SECRET_KEY", ""), ""))
+        if resp.status_code >= 300:
+            logger.warning("Stripe subscription fetch %s -> %s", sub_id, resp.status_code)
+            return None
+        return resp.json()
+    except Exception:
+        logger.exception("Stripe subscription fetch failed for %s", sub_id)
+        return None
+
+
+@app.post("/api/billing/webhook")
+async def api_billing_webhook(request: Request):
+    """Stripe event sink. CSRF-exempt (see CSRF_EXEMPT_PATHS) — the HMAC
+    signature is the authentication, and it is mandatory.
+
+    Entitlement is only ever written here, from Stripe's own account of the
+    world. Nothing a browser sends can grant access.
+    """
+    secret = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+    if not secret:
+        # Refuse rather than accept unverified events: an unconfigured secret
+        # must never degrade into "trust anything".
+        logger.error("Billing: webhook hit with no STRIPE_WEBHOOK_SECRET set — refusing")
+        raise HTTPException(status_code=503, detail="Webhook not configured.")
+
+    payload = await request.body()
+    sig = request.headers.get("Stripe-Signature", "")
+    if not billing.verify_webhook_signature(payload, sig, secret):
+        logger.warning("Billing: rejected webhook with a bad signature from %s",
+                       get_real_ip(request))
+        raise HTTPException(status_code=400, detail="Bad signature.")
+
+    try:
+        event = json.loads(payload.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Malformed payload.")
+
+    etype = event.get("type") or ""
+    obj = ((event.get("data") or {}).get("object")) or {}
+    pool = request.app.state.db
+
+    try:
+        if etype == "checkout.session.completed":
+            # First point the Stripe customer and our account are connected.
+            account_id = obj.get("client_reference_id")
+            customer_id = obj.get("customer")
+            if account_id and customer_id:
+                await billing.link_customer(pool, int(account_id), customer_id)
+                logger.info("Billing: linked customer %s to account %s",
+                            customer_id, account_id)
+                # Stripe does not guarantee event order, so
+                # customer.subscription.created may already have arrived and
+                # been dropped as "unknown customer". Pull the subscription
+                # back from Stripe now that the link exists — otherwise a
+                # customer who paid could sit there with no entitlement until
+                # their next billing event.
+                sub_id = obj.get("subscription")
+                if sub_id:
+                    sub = await _fetch_stripe_subscription(sub_id)
+                    if sub:
+                        await billing.apply_subscription(pool,
+                                                        billing.subscription_fields(sub))
+        elif etype.startswith("customer.subscription."):
+            fields = billing.subscription_fields(obj)
+            if etype.endswith(".deleted"):
+                fields["status"] = "canceled"
+            await billing.apply_subscription(pool, fields)
+        else:
+            logger.info("Billing: ignoring unhandled event %s", etype)
+    except Exception:
+        # 500 makes Stripe retry, which is what we want for a transient fault.
+        logger.exception("Billing: failed handling %s", etype)
+        raise HTTPException(status_code=500, detail="Handler error.")
+
+    return JSONResponse({"received": True}, headers={"Cache-Control": "no-store"})
 
 @app.get("/callback")
 @limiter.limit("30/minute")
@@ -1666,7 +1995,7 @@ async def sample_card_tracker_page(request: Request):
                         "Sign in with Discord or continue as a guest to try it.")
     return templates.TemplateResponse("sample_card_tracker.html", {
         "request": request,
-        **_viewer_context(request, user),
+        **await _viewer_context(request, user),
         # The upsell copy quotes the portfolio size; passing it keeps that
         # promise in step with the real cap instead of drifting.
         "max_portfolio_cards": MAX_USER_PORTFOLIO_CARDS,
@@ -2925,14 +3254,14 @@ async def grading_calculator_page(request: Request):
     if user:
         if not await terms_current(request, user):
             return RedirectResponse("/terms")
-    elif not is_guest(request):
+    elif not is_guest(request) and not await account_has_access(request):
         return login_redirect_or_preview(
             request, title="Grading Calculator — Nexus Card Co",
             description="Estimate a card's graded value across PSA, BGS, CGC, and more. "
                         "Sign in with Discord or continue as a guest to use it.")
     return templates.TemplateResponse("grading_calculator.html", {
         "request": request,
-        **_viewer_context(request, user),
+        **await _viewer_context(request, user, allow_account=True),
         "sources": price_sources.configured_sources(),
         "grade_labels": price_sources.GRADE_LABELS,
         "grade_levels": price_sources.GRADE_LEVEL,
@@ -3895,14 +4224,14 @@ async def catalog_page(request: Request):
     if user:
         if not await terms_current(request, user):
             return RedirectResponse("/terms")
-    elif not is_guest(request):
+    elif not is_guest(request) and not await account_has_access(request):
         return login_redirect_or_preview(
             request, title="Card Catalog — Nexus Card Co",
             description="Browse every stocked Pokémon and One Piece set with live prices. "
                         "Sign in with Discord or continue as a guest to use it.")
     return templates.TemplateResponse("catalog.html", {
         "request": request,
-        **_viewer_context(request, user),
+        **await _viewer_context(request, user, allow_account=True),
         # Drives rel="sponsored" and the disclosure line. Both must appear
         # only when the eBay links actually carry EPN tracking.
         "ebay_affiliate": catalog.ebay_affiliate_enabled(),
