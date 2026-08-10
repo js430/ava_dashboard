@@ -96,6 +96,19 @@
   .tier-list li::before { content: "\2013"; position: absolute; left: 0; color: #6f6a8f; }
   .soon-badge { font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
                 color: #b9b4d4; background: #241f3d; border-radius: 6px; padding: 2px 7px; }
+  /* The membership CTA sits below the Discord/Guest row: it's the paid path,
+     not the default one, so it reads as an alternative rather than competing
+     with the community's own sign-in. */
+  .btn-sub { background: #7c6de1; }
+  .btn-sub:hover { background: #6a59d4; }
+  .sub-note { font-size: 12px; color: #9791b8; line-height: 1.6;
+              margin: 10px auto 0; max-width: 430px; }
+  .tier-prices { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .tier-price { font-size: 11px; color: #cfc9ea; background: #241f3d;
+                border-radius: 6px; padding: 3px 8px; white-space: nowrap; }
+  .tier-cta { display: inline-block; margin-top: 12px; font-size: 12.5px;
+              font-weight: 600; color: #b9a9ff; text-decoration: none; }
+  .tier-cta:hover { color: #fff; }
   @media (max-width: 520px) {
     .tier-groups { grid-template-columns: 1fr; }
   }
@@ -121,6 +134,18 @@
       <a class="btn-outline" href="/guest">Continue as Guest</a>
     </div>
 
+    {% if subscriptions_open %}
+      <div class="btn-row" style="margin-top:12px;">
+        <a class="btn btn-sub" href="/signin">
+          {% if trial_days %}Start a {{ trial_days }}-day free trial{% else %}Get a membership{% endif %}
+        </a>
+      </div>
+      <p class="sub-note">
+        No Discord needed &mdash; unlocks the Card Catalog, scanner and Card Tracker in full.
+        {% if cheapest_text %}From {{ cheapest_text }}.{% endif %}
+      </p>
+    {% endif %}
+
     <div class="feat">
       <div>Restocks</div>
       <div>Analytics</div>
@@ -134,7 +159,7 @@
     </p>
 
     <p class="signin-note">
-      <a href="/signin">Sign in with an account instead</a>
+      Already a member? <a href="/signin">Sign in with your email</a>
     </p>
 
     <div class="tiers">
@@ -169,13 +194,29 @@
               <li>Card Catalog: newest {{ guest_catalog_visible_sets }} stocked sets only, no manual price refresh</li>
             </ul>
           </div>
-          <div class="tier-card tier-card-soon">
-            <div class="tier-name">Paid subscription <span class="soon-badge">Coming soon</span></div>
+          {% if subscriptions_open %}
+          <div class="tier-card tier-card-highlight">
+            <div class="tier-name">Membership{% if trial_days %} <span class="soon-badge">{{ trial_days }}-day free trial</span>{% endif %}</div>
             <div class="tier-desc">
-              A standalone account, no Discord required, with unrestricted access to the Grading Calculator
-              and Card Catalog.
+              A standalone account, no Discord required. Everything unlocked:
             </div>
+            <ul class="tier-list">
+              <li>Card Catalog: every set, English and Japanese, with manual price refresh</li>
+              <li>Scanner and grading calculator, no daily limit</li>
+              <li>Card Tracker: your own portfolio of up to {{ max_portfolio_cards }} cards</li>
+            </ul>
+            {% if plans %}
+              <div class="tier-prices">
+                {% for plan in plans %}
+                  <span class="tier-price">{{ plan.label }}{% if plan.price_text %} &middot; {{ plan.price_text }}{% endif %}</span>
+                {% endfor %}
+              </div>
+            {% endif %}
+            <a class="tier-cta" href="/signin">
+              {% if trial_days %}Start your free trial{% else %}Get a membership{% endif %} &rarr;
+            </a>
           </div>
+          {% endif %}
         </div>
       </div>
     </div>

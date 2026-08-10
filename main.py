@@ -952,6 +952,7 @@ async def index(request: Request):
             "discord_invite_url": DISCORD_INVITE_URL,
             "upgrade_url": DEMO_UPGRADE_URL,
             "guest_catalog_visible_sets": GUEST_CATALOG_VISIBLE_SETS,
+            **await _membership_offer(),
         })
     if is_demo(request):
         return RedirectResponse("/sample")
@@ -1078,6 +1079,7 @@ async def guest_entry(request: Request):
     return templates.TemplateResponse("guest_home.html", {
         "request": request,
         "guest_scan_daily_limit": GUEST_SCAN_DAILY_LIMIT,
+        **await _membership_offer(),
     })
 
 # ---- Non-Discord accounts + Stripe subscriptions ----
@@ -1390,6 +1392,29 @@ async def _plans_with_prices(force: bool = False) -> list:
     _PLAN_CACHE["plans"] = plans
     _PLAN_CACHE["at"] = now
     return plans
+
+
+async def _membership_offer() -> dict:
+    """Template vars for the "you could subscribe" pitch on the public pages.
+
+    `subscriptions_open` is False when no plan is configured, which hides the
+    offer entirely — better than a CTA that leads to a page with nothing to
+    buy. Prices may be absent if Stripe is unreachable; the pitch still shows,
+    just without figures, since inventing them is worse than omitting them.
+    """
+    plans = await _plans_with_prices() if billing.stripe_configured() else []
+    priced = [p for p in plans if p.get("amount") and p.get("months")]
+    cheapest = min(priced, key=lambda p: p["amount"] / p["months"]) if priced else None
+    return {
+        "subscriptions_open": bool(plans),
+        "plans": plans,
+        "trial_days": STRIPE_TRIAL_DAYS,
+        "max_portfolio_cards": MAX_USER_PORTFOLIO_CARDS,
+        # "From $4.99 / month" — the lowest per-month rate on offer, which is
+        # not necessarily the cheapest sticker price.
+        "cheapest_text": (f"{cheapest['price_text']} / {cheapest['interval_text']}"
+                          if cheapest and cheapest.get("price_text") else ""),
+    }
 
 
 async def _fetch_stripe_subscription(sub_id: str):
