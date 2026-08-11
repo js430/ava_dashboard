@@ -1230,12 +1230,18 @@ async def account_page(request: Request):
     entitled = await account_has_access(request)
     # Only pay the Stripe round-trip for someone who might actually buy.
     plans = [] if entitled else await _plans_with_prices()
+    # Someone coming back after a lapsed trial must not be offered another —
+    # and must not be shown copy promising one. The route enforces this
+    # regardless; this only keeps the page honest about it.
+    trial_available = bool(STRIPE_TRIAL_DAYS) and not entitled and not \
+        await billing.account_has_used_trial(request.app.state.db, account_id)
     return templates.TemplateResponse("account.html", {
         "request": request,
         "account_email": request.session.get("account_email", ""),
         "entitled": entitled,
         "stripe_ready": billing.stripe_configured(),
         "trial_days": STRIPE_TRIAL_DAYS,
+        "trial_available": trial_available,
         "plans": plans,
         "default_plan": billing.DEFAULT_PLAN,
         # Quoted in the sales copy — passing the real cap keeps the promise
@@ -1277,6 +1283,14 @@ async def api_billing_checkout(request: Request):
     if not price_id:
         raise HTTPException(status_code=400, detail="Pick a plan to continue.")
 
+    # Trial eligibility is decided HERE, not by the browser. The body can only
+    # ever DECLINE a trial ("subscribe now"), never request one — otherwise
+    # someone could cancel and re-trial forever, since Stripe grants a trial on
+    # every Checkout Session that asks for one.
+    wants_trial = not bool((body or {}).get("skip_trial"))
+    used_trial = await billing.account_has_used_trial(request.app.state.db, account_id)
+    apply_trial = bool(STRIPE_TRIAL_DAYS) and wants_trial and not used_trial
+
     email = request.session.get("account_email", "")
     form = {
         "mode": "subscription",
@@ -1289,8 +1303,12 @@ async def api_billing_checkout(request: Request):
         # a customer can change in Stripe's own form.
         "client_reference_id": str(account_id),
         "customer_email": email,
-        "subscription_data[trial_period_days]": str(STRIPE_TRIAL_DAYS),
     }
+    if apply_trial:
+        form["subscription_data[trial_period_days]"] = str(STRIPE_TRIAL_DAYS)
+    logger.info("Billing: checkout for account %s, plan %s, trial=%s%s",
+                account_id, plan, apply_trial,
+                " (already used)" if used_trial else "")
     try:
         async with httpx.AsyncClient(timeout=25.0) as client:
             resp = await client.post(

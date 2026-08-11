@@ -57,6 +57,14 @@
   }
   button.primary:hover { background: #6a59d4; }
   button.primary:disabled { opacity: .55; cursor: default; }
+  button.secondary {
+    width: 100%; padding: 11px; margin-top: 9px; border-radius: 10px;
+    background: transparent; color: #cfc9ea; border: 1px solid #3a3560;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+    transition: border-color .15s ease, color .15s ease;
+  }
+  button.secondary:hover { border-color: #7c6de1; color: #fff; }
+  button.secondary:disabled { opacity: .55; cursor: default; }
   .links { text-align: center; font-size: 13px; }
   .links a { color: #9a92c9; text-decoration: none; margin: 0 9px; }
   .links a:hover { color: #fff; }
@@ -85,7 +93,11 @@
         </p>
       {% else %}
         <div class="status off">No active membership</div>
-        <p>Start a {{ trial_days }}-day free trial and get:</p>
+        {% if trial_available %}
+          <p>Start a {{ trial_days }}-day free trial and get:</p>
+        {% else %}
+          <p>A membership gets you:</p>
+        {% endif %}
         <ul>
           <li>Card Catalog with every set, English and Japanese</li>
           <li>Scanner and grading calculator, no daily limit</li>
@@ -106,12 +118,26 @@
               </label>
             {% endfor %}
           </div>
-          <button class="primary" id="subscribe">Start my {{ trial_days }}-day free trial</button>
-          <p class="fine">
-            We take your card details now so your membership carries on automatically
-            when the trial ends. Cancel any time before then and you won't be charged.
-            Payment is handled by Stripe &mdash; your card number never touches our site.
-          </p>
+          {% if trial_available %}
+            <button class="primary" id="subscribe">Start my {{ trial_days }}-day free trial</button>
+            <button class="secondary" id="subscribe-now">Or subscribe now, no trial</button>
+            <p class="fine">
+              We take your card details now so your membership carries on automatically
+              when the trial ends. Cancel any time before then and you won't be charged.
+              Subscribing without the trial starts your membership and bills you straight
+              away. Either way, payment is handled by Stripe &mdash; your card number
+              never touches our site.
+            </p>
+          {% else %}
+            <button class="primary" id="subscribe-now">Subscribe</button>
+            <p class="fine">
+              {% if trial_days %}You've already used your free trial, so this starts your
+              membership and bills you today.{% else %}This starts your membership and
+              bills you today.{% endif %}
+              Cancel any time from Stripe's billing page. Payment is handled by Stripe
+              &mdash; your card number never touches our site.
+            </p>
+          {% endif %}
         {% else %}
           <p class="fine">Memberships aren't open for sign-up just yet. Check back soon.</p>
         {% endif %}
@@ -140,18 +166,25 @@
       return checked ? checked.value : null;
     }
 
-    const btn = document.getElementById("subscribe");
-    if (btn) {
-      btn.addEventListener("click", async () => {
+    // Both buttons run the same flow; skipTrial is the only difference.
+    // The server decides whether a trial is actually granted — this flag can
+    // only ever turn one down, never ask for one.
+    const buttons = ["subscribe", "subscribe-now"]
+      .map((id) => document.getElementById(id))
+      .filter(Boolean);
+
+    function startCheckout(btn, skipTrial) {
+      return async () => {
         const msg = document.getElementById("msg");
-        btn.disabled = true;
+        const original = btn.textContent;
+        buttons.forEach((b) => { b.disabled = true; });
         btn.textContent = "Opening checkout…";
         msg.innerHTML = "";
         try {
           const resp = await fetch("/api/billing/checkout", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ plan: selectedPlan() })
+            body: JSON.stringify({ plan: selectedPlan(), skip_trial: skipTrial })
           });
           const data = await resp.json().catch(() => ({}));
           if (resp.ok && data.url) {
@@ -163,10 +196,14 @@
         } catch (err) {
           msg.innerHTML = '<span class="err">Couldn\'t reach the server. Check your connection.</span>';
         }
-        btn.disabled = false;
-        btn.textContent = "Start my free trial";
-      });
+        buttons.forEach((b) => { b.disabled = false; });
+        btn.textContent = original;
+      };
     }
+
+    buttons.forEach((b) => {
+      b.addEventListener("click", startCheckout(b, b.id === "subscribe-now"));
+    });
   </script>
 </body>
 </html>

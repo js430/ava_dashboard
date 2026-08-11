@@ -950,3 +950,38 @@ table (duplicates every tracker query for no benefit).
 (`card_tracker.py`), not the bot.
 
 ---
+
+## 2026-08-10 — Buy-now option, and one trial per account
+
+**Decided:** Checkout offers two paths — start the free trial, or subscribe
+immediately and be billed today. A returning customer who has already used
+a trial is only offered the paid path.
+
+**Why the eligibility check exists:** Stripe grants a trial on EVERY
+Checkout Session that passes `trial_period_days`. It has no built-in
+one-trial-per-customer rule, so without this someone could cancel and
+re-subscribe indefinitely and never pay. `billing.account_has_used_trial()`
+answers it from our own mirror (`acct_subscriptions.trial_end IS NOT NULL`),
+which is the reason `trial_end` is mirrored at all.
+
+**The security shape:** the browser flag is `skip_trial` — a DECLINE, never
+a request. The server computes
+`bool(STRIPE_TRIAL_DAYS) and not declined and not already_used`. A hostile
+body can only cost the sender their own trial, never grant one.
+
+**Fails closed:** a DB error or missing account in the eligibility check
+returns "used", so a hiccup costs one person a free trial rather than
+opening unlimited ones.
+
+**When not granting a trial, `trial_period_days` is omitted entirely** —
+not set to 0, which Stripe rejects.
+
+**Public pages still advertise the trial unconditionally.** Landing and
+guest-home visitors are anonymous, so eligibility is unknowable there;
+`/account` is where the offer is corrected once we know who they are.
+
+**Rejected:** trusting a browser-supplied `trial` flag (a repeat-trial
+hole); checking eligibility against Stripe's API per checkout (a network
+round-trip for something our own mirror already answers).
+
+---

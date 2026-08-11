@@ -357,6 +357,35 @@ async def apply_subscription(pool, fields: dict) -> bool:
     return True
 
 
+async def account_has_used_trial(pool, account_id: int) -> bool:
+    """Has this account ever had a subscription with a trial on it?
+
+    Stripe does NOT stop a returning customer from starting a second trial —
+    every new Checkout Session with trial_period_days grants one. So a person
+    could cancel and re-subscribe indefinitely, never paying. This is the
+    check that prevents it, and it's why trial_end is mirrored at all.
+
+    Fails CLOSED: any error means "yes, used", so a DB hiccup costs someone a
+    free trial rather than handing out unlimited ones.
+    """
+    if not account_id:
+        return True
+    try:
+        async with pool.acquire() as conn:
+            used = await conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM acct_subscriptions
+                    WHERE account_id = $1 AND trial_end IS NOT NULL
+                )
+                """, account_id)
+        return bool(used)
+    except Exception:
+        logger.exception("Billing: trial-eligibility check failed for account %s — "
+                         "denying the trial", account_id)
+        return True
+
+
 async def link_customer(pool, account_id: int, customer_id: str) -> None:
     """Attach a Stripe customer id to an account, so later webhooks resolve."""
     if not account_id or not customer_id:
