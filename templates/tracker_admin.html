@@ -661,38 +661,109 @@ async function importAllSealed() {
                  "It stops early to leave some.")) return;
     say("sealedMsg", "Working through " + todo.length + " set(s), newest first…", "busy");
     const names = todo.map(s => s.set_name);
-    const data = await api("/api/portfolios/sealed/import", {
+    let data = await api("/api/portfolios/sealed/import", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ set_names: names })
     });
-    let note = "Looked up " + data.checked + " set(s): " + data.added +
-      " added, " + data.updated + " updated.";
-    if (data.skipped_known_empty > 0) {
-      note += " Skipped " + data.skipped_known_empty +
-        " already known to have none.";
+
+    // The included daily allowance ran out. The account has prepaid credits,
+    // so this can continue — but only after saying exactly what it will run
+    // and what it will spend. Never assumed.
+    if (data.stopped === "daily_exhausted" || data.stopped === "reserve") {
+      const done = data.checked || 0;
+      const left = names.length - done;
+      const reason = data.stopped === "daily_exhausted"
+        ? "The included daily allowance is used up."
+        : "Stopped to leave calls for the card catalog and the nightly price run.";
+      const ok = confirm(
+        reason + "
+
+" +
+        "Checked so far: " + done + " set(s), " + data.added + " product(s) added.
+" +
+        "Still to check: " + left + " set(s), newest first.
+
+" +
+        "Continuing uses your PREPAID CREDITS — roughly one call per set, so up to " +
+        left + " credit(s).
+
+" +
+        "Continue and spend prepaid credits?");
+      if (!ok) {
+        say("sealedMsg", summariseImport(data, names.length), "busy");
+        return;
+      }
+      data = await runWithCredits(names.slice(done), data);
     }
-    let tone = "ok";
-    if (data.stopped === "daily_exhausted") {
-      note += " Stopped: the price API's daily allowance is used up. It's shared " +
-        "with the card catalog and the nightly price run, so leave it until it resets.";
-      tone = "err";
-    } else if (data.stopped === "rate_limited") {
-      note += " Paused on a per-minute limit — run it again in a minute to carry on.";
-      tone = "busy";
-    } else if (data.stopped === "reserve") {
-      note += " Stopped early to leave calls for the catalog and the nightly " +
-        "price run. Run it again tomorrow to continue.";
-      tone = "busy";
-    }
-    if (data.daily_remaining !== null && data.daily_remaining !== undefined) {
-      note += " (" + data.daily_remaining + " API calls left today.)";
-    }
-    say("sealedMsg", note, tone);
+    say("sealedMsg", summariseImport(data, names.length),
+        data.stopped === "daily_exhausted" ? "err" : "ok");
     loadStats();
     loadSealedSets();
   } catch (e) {
     say("sealedMsg", e.message, "err");
   }
+}
+
+function summariseImport(data, requested) {
+  let note = "Looked up " + (data.checked || 0) + " set(s): " + data.added +
+    " added, " + data.updated + " updated.";
+  if (data.skipped_known_empty > 0) {
+    note += " Skipped " + data.skipped_known_empty + " already known to have none.";
+  }
+  if (data.used_extra_credits) note += " Used prepaid credits.";
+  if (data.stopped === "daily_exhausted") {
+    note += " Stopped: the included daily allowance is used up.";
+  } else if (data.stopped === "rate_limited") {
+    note += " Paused on a per-minute limit" +
+      (data.retry_after ? " — resuming in " + data.retry_after + "s." : ".");
+  } else if (data.stopped === "reserve") {
+    note += " Stopped to leave calls for the catalog and the nightly price run.";
+  }
+  if (data.daily_remaining !== null && data.daily_remaining !== undefined) {
+    note += " (" + data.daily_remaining + " included call(s) left today.)";
+  }
+  return note;
+}
+
+// Continue a run on prepaid credits. The per-minute window still applies and
+// nothing can bypass it, so this waits out each pause and resumes rather than
+// holding one very long request open.
+async function runWithCredits(remaining, soFar) {
+  const totals = {
+    checked: soFar.checked || 0, added: soFar.added || 0,
+    updated: soFar.updated || 0, skipped_known_empty: soFar.skipped_known_empty || 0,
+    used_extra_credits: true, stopped: null, daily_remaining: soFar.daily_remaining,
+  };
+  let todo = remaining;
+  // Bounded so a mistake can't loop forever spending credits.
+  for (let round = 0; round < 40 && todo.length; round++) {
+    say("sealedMsg", "Using prepaid credits — " + todo.length + " set(s) to go…", "busy");
+    const data = await api("/api/portfolios/sealed/import", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ set_names: todo, use_extra_credits: true })
+    });
+    totals.checked += data.checked || 0;
+    totals.added += data.added || 0;
+    totals.updated += data.updated || 0;
+    totals.skipped_known_empty += data.skipped_known_empty || 0;
+    totals.daily_remaining = data.daily_remaining;
+    todo = todo.slice(data.checked || 0);
+    loadStats();
+
+    if (data.stopped === "rate_limited" && todo.length) {
+      const wait = Math.min(Math.max(data.retry_after || 30, 5), 90);
+      for (let left = wait; left > 0; left--) {
+        say("sealedMsg", "Per-minute limit — resuming in " + left + "s (" +
+          todo.length + " set(s) left, " + totals.added + " added so far)…", "busy");
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      continue;
+    }
+    if (data.stopped) { totals.stopped = data.stopped; break; }
+    if (!data.checked) break;   // no progress; stop rather than spin
+  }
+  loadSealedSets();
+  return totals;
 }
 
 async function purgeSealed(mode, dryRun) {

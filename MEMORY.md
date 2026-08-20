@@ -1268,3 +1268,33 @@ same identifiers from the same source. The catalog had the right set list
 all along; the sealed import invented its own from a derived table.
 
 ---
+
+## 2026-08-20 — Prepaid credits: opt-in overage on the sealed import
+
+**Decided:** `daily-remaining=0` is no longer a hard stop. The account has
+prepaid credits, so a bulk sealed import can continue past the included
+daily allowance — but ONLY after an explicit confirmation that states what
+will run and what it will cost.
+
+**The shape:**
+  * `fetch_ppt_sealed(..., allow_over_quota=False)` — default is still to
+    stop. `daily_exhausted` is returned unless the caller opted in.
+  * Opting in also lifts `PPT_DAILY_RESERVE`, because that reserve exists to
+    protect the tracker and catalog from a bulk run, and paying for the
+    overage is precisely what makes that unnecessary.
+  * The per-minute window is NEVER bypassed — nothing can buy past it. The
+    opt-in just means waiting out each `Retry-After` and resuming.
+  * The confirm names: sets checked so far, products added, sets still to
+    check, and "up to N credit(s)".
+  * Paid runs log at WARNING with `PAID_OVERAGE=True`.
+
+**Resumption is client-side and bounded**: a run continues in rounds,
+waiting out each minute limit with a visible countdown, capped at 40 rounds
+and stopping if a round makes no progress. Long-held server requests were
+rejected — they time out and give no feedback while money is being spent.
+
+**Rule:** any future bulk operation against a paid API follows this shape —
+default stop, explicit opt-in, cost stated before it runs, and a bounded
+resumable loop rather than one long request.
+
+---

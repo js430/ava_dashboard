@@ -1525,7 +1525,8 @@ def _daily_remaining(resp):
         return None
 
 
-async def fetch_ppt_sealed(set_name: str, limit: int = None) -> tuple:
+async def fetch_ppt_sealed(set_name: str, limit: int = None,
+                           allow_over_quota: bool = False) -> tuple:
     """Sealed product for one set. Returns (rows, status, meta).
 
     status: "ok", "empty", "no_key", "rate_limited", "daily_exhausted",
@@ -1537,6 +1538,13 @@ async def fetch_ppt_sealed(set_name: str, limit: int = None) -> tuple:
 
     `rows` are RAW API records — the caller shows them to a human before
     anything is stored.
+
+    `allow_over_quota` is for accounts with PREPAID CREDITS, where a spent
+    daily allowance is not a wall — further calls simply draw on paid
+    credit. It never bypasses the per-minute window (nothing can), so the
+    caller still gets "rate_limited" with a Retry-After and is expected to
+    wait and resume. Off by default: the caller opting in is what makes
+    spending money a decision rather than an accident.
     """
     global _sealed_working_path
     if not os.getenv("POKEMONPRICETRACKER_API_KEY"):
@@ -1565,10 +1573,14 @@ async def fetch_ppt_sealed(set_name: str, limit: int = None) -> tuple:
                     meta["retry_after"] = int(resp.headers.get("Retry-After") or 0)
                 except (TypeError, ValueError):
                     meta["retry_after"] = 0
-                # A spent daily allowance is a different problem from a minute
-                # window, and the caller must react differently.
-                if remaining == 0:
+                # A spent daily allowance is a different problem from a
+                # minute window — unless the caller has said they'll pay
+                # for the overage, in which case it is just another minute
+                # window to wait out.
+                if remaining == 0 and not allow_over_quota:
                     return [], "daily_exhausted", meta
+                if remaining == 0:
+                    meta["over_quota"] = True
                 return [], "rate_limited", meta
             if resp.status_code == 404:
                 logger.info("PokemonPriceTracker: no sealed endpoint at %s", path)

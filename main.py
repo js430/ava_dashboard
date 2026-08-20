@@ -3346,7 +3346,11 @@ async def api_portfolio_sealed_preview(request: Request,
     if not set_name:
         raise HTTPException(status_code=400, detail="Pick a set first.")
 
-    rows, status, meta = await price_sources.fetch_ppt_sealed(set_name)
+    # Prepaid credits mean a spent daily allowance isn't a wall. Opt-in only,
+    # so a look-up never quietly costs money.
+    use_extra = bool(body.get("use_extra_credits"))
+    rows, status, meta = await price_sources.fetch_ppt_sealed(
+        set_name, allow_over_quota=use_extra)
     parsed, skipped = portfolios.parse_sealed_rows(rows, set_name)
 
     wait = meta.get("retry_after") or 0
@@ -3408,6 +3412,11 @@ async def api_portfolio_sealed_import(request: Request,
     if not set_names:
         raise HTTPException(status_code=400, detail="Pick at least one set.")
 
+    # Opt-in overage: the account has prepaid credits, so running past the
+    # included daily allowance is allowed when the caller has confirmed it.
+    # Never the default — this is the flag that turns API calls into money.
+    use_extra = bool(body.get("use_extra_credits"))
+
     pool = request.app.state.db
     added = updated = skipped = checked = 0
     failures = []
@@ -3422,7 +3431,8 @@ async def api_portfolio_sealed_import(request: Request,
     for set_name in set_names:
         if set_name in recent:
             continue
-        rows, status, meta = await price_sources.fetch_ppt_sealed(set_name)
+        rows, status, meta = await price_sources.fetch_ppt_sealed(
+            set_name, allow_over_quota=use_extra)
         checked += 1
         if meta.get("daily_remaining") is not None:
             daily_remaining = meta["daily_remaining"]
@@ -3433,8 +3443,10 @@ async def api_portfolio_sealed_import(request: Request,
                              "retry_after": meta.get("retry_after")})
             break
         # Leave headroom for the features members actually use rather than
-        # spending the last of the allowance on a bulk backfill.
-        if daily_remaining is not None and                 daily_remaining <= price_sources.PPT_DAILY_RESERVE:
+        # spending the last of the allowance on a bulk backfill. The reserve
+        # is about protecting the tracker and catalog, so opting into paid
+        # overage is exactly what lifts it.
+        if not use_extra and daily_remaining is not None and                 daily_remaining <= price_sources.PPT_DAILY_RESERVE:
             stopped = "reserve"
             break
 
@@ -3449,16 +3461,21 @@ async def api_portfolio_sealed_import(request: Request,
         added += result["added"]
         updated += result["updated"]
 
-    logger.info("Sealed import by %s: %d requested, %d checked, %d added, "
-                "%d updated, %d failed, stopped=%s, daily_remaining=%s",
-                user["id"], len(set_names), checked, added, updated,
-                len(failures), stopped, daily_remaining)
+    # Log the overage flag prominently: this is the one that spends money.
+    log = logger.warning if use_extra else logger.info
+    log("Sealed import by %s: %d requested, %d checked, %d added, %d updated, "
+        "%d failed, stopped=%s, daily_remaining=%s, PAID_OVERAGE=%s",
+        user["id"], len(set_names), checked, added, updated,
+        len(failures), stopped, daily_remaining, use_extra)
     return JSONResponse({
         "sets": len(set_names), "checked": checked, "skipped_known_empty":
             len(set_names) - checked - (1 if stopped else 0),
         "added": added, "updated": updated, "skipped": skipped,
         "failures": failures, "stopped": stopped,
         "daily_remaining": daily_remaining,
+        "used_extra_credits": use_extra,
+        "retry_after": next((f.get("retry_after") for f in failures
+                             if f.get("retry_after")), None),
     }, headers={"Cache-Control": "no-store"})
 
 
