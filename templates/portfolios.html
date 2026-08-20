@@ -86,6 +86,13 @@
   .search-row.sel { background: #eef0ff; }
   .chosen { font-size: 12.5px; padding: 8px 11px; background: #eef0ff; border-radius: 8px; margin-top: 8px; }
 
+  .sub-row td { background: #fafafb; font-size: 12.5px; }
+  .sub-row .sub-inner { padding-left: 22px; }
+  .expander { cursor: pointer; user-select: none; color: #888; font-size: 11px; width: 24px; text-align: center; }
+  .est { font-size: 10px; padding: 1px 6px; border-radius: 999px; background: #fdf1dc; color: #8a5a10; margin-left: 6px; white-space: nowrap; }
+  .preview-box { margin-top: 14px; padding: 12px 14px; border: 1px solid #e4e4e7; border-radius: 10px; background: #fafafb; font-size: 12.5px; line-height: 1.7; }
+  [data-theme="dark"] .sub-row td, [data-theme="dark"] .preview-box { background: #202027; }
+  [data-theme="dark"] .preview-box { border-color: #2c2c34; }
   .seg { display: inline-flex; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; }
   .seg button { font-family: inherit; font-size: 12.5px; padding: 7px 14px; border: none; background: #fff; color: #555; cursor: pointer; }
   .seg button.on { background: #5865F2; color: #fff; }
@@ -169,16 +176,15 @@
       <table id="lots">
         <thead>
           <tr>
+            <th style="width:24px;"></th>
             <th>Item</th>
-            <th>Condition</th>
-            <th class="num">Qty</th>
-            <th class="num">Paid ea.</th>
-            <th class="num">Cost</th>
+            <th class="num">Held</th>
+            <th class="num">Avg cost</th>
+            <th class="num">Total cost</th>
             <th class="num">Now ea.</th>
             <th class="num">Value</th>
-            <th class="num">Gain</th>
-            <th>Bought</th>
-            <th>From</th>
+            <th class="num">Unrealized</th>
+            <th class="num">Realized</th>
             <th></th>
           </tr>
         </thead>
@@ -282,6 +288,41 @@
     <div class="msg" id="addMsg" role="status" aria-live="polite"></div>
   </div>
 
+
+  <!-- Sell some or all of a position -->
+  <div class="card" id="sellCard" style="display:none;">
+    <div class="card-title" id="sellTitle">Sell</div>
+    <div class="form-grid">
+      <div>
+        <label for="sQty">How many are you selling</label>
+        <input type="number" id="sQty" min="1" step="1" value="1">
+        <div class="hint" id="sHeld"></div>
+      </div>
+      <div>
+        <label for="sPrice">Sold for, each</label>
+        <input type="number" id="sPrice" min="0" step="0.01" placeholder="0.00">
+      </div>
+      <div>
+        <label for="sFees">Selling fees, total</label>
+        <input type="number" id="sFees" min="0" step="0.01" placeholder="0.00">
+      </div>
+      <div>
+        <label for="sDate">Date sold</label>
+        <input type="date" id="sDate">
+      </div>
+    </div>
+    <div>
+      <label for="sNotes">Notes</label>
+      <input type="text" id="sNotes" placeholder="Buyer, platform, anything worth remembering">
+    </div>
+    <div id="sellPreview" class="preview-box" style="display:none;"></div>
+    <div style="display:flex;gap:8px;margin-top:14px;">
+      <button class="btn btn-primary" id="sellBtn" onclick="confirmSell()">Record the sale</button>
+      <button class="btn" onclick="cancelSell()">Cancel</button>
+    </div>
+    <div class="msg" id="sellMsg" role="status" aria-live="polite"></div>
+  </div>
+
   <div id="noPortfolios" class="card empty" style="display:none;">
     You don't have any portfolios yet.<br>
     Create one to start tracking what you paid and what it's worth.
@@ -303,6 +344,9 @@ let activeId = null;
 let addKind = "card";
 let chosenItem = null;     // {kind, id, label}
 let editingLotId = null;
+let expanded = new Set();   // which positions are showing their purchases
+let sellPos = null;
+let sellTimer = null;
 
 function toggleNavGroup(e) {
   const group = e.currentTarget.closest(".nav-group");
@@ -396,7 +440,7 @@ async function selectPortfolio(id) {
   renderTabs({ items_used: undefined });
   const data = await api("/api/portfolios/" + id + "/lots");
   renderSummary(data.summary);
-  renderLots(data.lots);
+  renderPositions(data.positions || []);
   document.getElementById("holdingsCard").style.display = "block";
   // Refresh the cap note with a real count.
   const all = await api("/api/portfolios");
@@ -428,41 +472,201 @@ function card(label, value, sub, cls) {
     '<div class="stat-sub">' + esc(sub) + '</div></div>';
 }
 
-function renderLots(lots) {
+function renderPositions(positions) {
   const body = document.getElementById("lotRows");
   body.innerHTML = "";
-  document.getElementById("emptyLots").style.display = lots.length ? "none" : "block";
-  document.getElementById("lots").style.display = lots.length ? "table" : "none";
-  lots.forEach(l => {
+  document.getElementById("emptyLots").style.display = positions.length ? "none" : "block";
+  document.getElementById("lots").style.display = positions.length ? "table" : "none";
+
+  positions.forEach(pos => {
+    const key = pos.kind + ":" + pos.item_id;
+    const open = expanded.has(key);
     const tr = document.createElement("tr");
-    const kindPill = l.kind === "sealed"
+    const kindPill = pos.kind === "sealed"
       ? '<span class="pill pill-sealed">Sealed</span>'
       : '<span class="pill">Card</span>';
-    const soldPill = l.closed ? ' <span class="pill pill-sold">Sold</span>' : "";
-    const nowEach = l.unpriced
+    const sub = [pos.set_name, pos.card_number, pos.variant].filter(Boolean).join(" · ");
+    const nowEach = pos.unpriced
       ? '<span class="pill pill-none">no price yet</span>'
-      : (money(l.unit_price) || '<span class="muted">—</span>');
-    const sub = [l.set_name, l.card_number, l.variant].filter(Boolean).join(" · ");
+      : (money(pos.unit_price) || '<span class="muted">—</span>');
+    const soldNote = pos.sold_quantity
+      ? ' <span class="pill pill-sold">' + pos.sold_quantity + ' sold</span>' : "";
+    const nPurch = pos.purchases.length;
+
     tr.innerHTML =
-      '<td><div style="font-weight:600;">' + esc(l.name) + soldPill + '</div>' +
-        '<div class="muted" style="font-size:11.5px;margin-top:2px;">' + kindPill + " " + esc(sub) + '</div></td>' +
-      '<td>' + esc(conditionLabel(l.condition, l.kind)) + '</td>' +
-      '<td class="num">' + l.quantity + '</td>' +
-      '<td class="num">' + (money(l.unit_cost) || "—") + '</td>' +
-      '<td class="num">' + (money(l.cost_basis) || "—") + '</td>' +
+      '<td class="expander">' + (open ? "▾" : "▸") + '</td>' +
+      '<td><div style="font-weight:600;">' + esc(pos.name) + soldNote + '</div>' +
+        '<div class="muted" style="font-size:11.5px;margin-top:2px;">' + kindPill + " " +
+        esc(sub) + " · " + nPurch + (nPurch === 1 ? " purchase" : " purchases") + '</div></td>' +
+      '<td class="num">' + pos.quantity + '</td>' +
+      '<td class="num">' + (money(pos.avg_unit_cost) || '<span class="muted">—</span>') + '</td>' +
+      '<td class="num">' + (money(pos.cost_basis) || "—") + '</td>' +
       '<td class="num">' + nowEach + '</td>' +
-      '<td class="num">' + (l.closed ? '<span class="muted">sold</span>' : (money(l.market_value) || '<span class="muted">—</span>')) + '</td>' +
-      '<td class="num">' + gainCell(l) + '</td>' +
-      '<td>' + esc(l.purchased_on || "—") + '</td>' +
-      '<td>' + esc(l.acquired_from || "—") + '</td>' +
+      '<td class="num">' + (money(pos.market_value) || '<span class="muted">—</span>') + '</td>' +
+      '<td class="num">' + signed(pos.unrealized, pos.unrealized_pct) + '</td>' +
+      '<td class="num">' + (pos.sold_quantity ? signed(pos.realized, pos.realized_pct)
+                                              : '<span class="muted">—</span>') + '</td>' +
       '<td><div class="row-actions">' +
-        '<button class="btn btn-sm" data-edit="' + l.id + '">Edit</button>' +
-        '<button class="btn btn-sm btn-danger" data-del="' + l.id + '">Remove</button>' +
+        (pos.quantity > 0
+          ? '<button class="btn btn-sm" data-sell="1">Sell</button>' : "") +
+        '<button class="btn btn-sm" data-add="1">Buy more</button>' +
       '</div></td>';
     body.appendChild(tr);
-    tr.querySelector("[data-edit]").onclick = () => editLot(l);
-    tr.querySelector("[data-del]").onclick = () => removeLot(l.id);
+
+    tr.querySelector(".expander").onclick = () => {
+      if (expanded.has(key)) expanded.delete(key); else expanded.add(key);
+      renderPositions(positions);
+    };
+    const sellBtn = tr.querySelector("[data-sell]");
+    if (sellBtn) sellBtn.onclick = () => showSell(pos);
+    tr.querySelector("[data-add]").onclick = () => showAdd(pos);
+
+    if (!open) return;
+
+    // Every individual purchase: what it cost, when, and from whom. This is
+    // the breakdown the position row averages over.
+    pos.purchases.forEach(l => {
+      const sr = document.createElement("tr");
+      sr.className = "sub-row";
+      const est = l.cost_is_estimated
+        ? '<span class="est" title="Filled in from market price because it was left blank. Edit to correct it.">estimated</span>'
+        : "";
+      const state = l.closed
+        ? '<span class="pill pill-sold">sold ' + esc(l.sold_on || "") +
+          " @ " + (money(l.sale_unit_price) || "—") + '</span>'
+        : "";
+      sr.innerHTML =
+        '<td></td>' +
+        '<td class="sub-inner">' + esc(l.purchased_on || "no date") +
+          ' · ' + esc(l.acquired_from || "source not recorded") +
+          ' · ' + esc(conditionLabel(l.condition, l.kind)) + ' ' + state +
+          (l.notes ? '<div class="muted" style="font-size:11px;">' + esc(l.notes) + '</div>' : "") +
+        '</td>' +
+        '<td class="num">' + l.quantity + '</td>' +
+        '<td class="num">' + (money(l.unit_cost) || "—") + est + '</td>' +
+        '<td class="num">' + (money(l.cost_basis) || "—") + '</td>' +
+        '<td class="num muted">' + (Number(l.fees) ? "+" + money(l.fees) + " fees" : "") + '</td>' +
+        '<td class="num">' + (l.closed ? '<span class="muted">sold</span>'
+                                       : (money(l.market_value) || '<span class="muted">—</span>')) + '</td>' +
+        '<td class="num">' + (l.closed ? '<span class="muted">—</span>' : gainCell(l)) + '</td>' +
+        '<td class="num">' + (l.closed ? gainCell(l) : '<span class="muted">—</span>') + '</td>' +
+        '<td><div class="row-actions">' +
+          '<button class="btn btn-sm" data-edit="' + l.id + '">Edit</button>' +
+          '<button class="btn btn-sm btn-danger" data-del="' + l.id + '">Remove</button>' +
+        '</div></td>';
+      body.appendChild(sr);
+      sr.querySelector("[data-edit]").onclick = () => editLot(l);
+      sr.querySelector("[data-del]").onclick = () => removeLot(l.id);
+    });
   });
+}
+
+function signed(amount, pct) {
+  if (amount === null || amount === undefined) return '<span class="muted">—</span>';
+  const n = Number(amount);
+  const cls = n >= 0 ? "up" : "down";
+  const sign = n >= 0 ? "+" : "−";
+  const p = (pct === null || pct === undefined)
+    ? "" : ' <span style="font-size:11px;">(' + sign + Math.abs(pct).toFixed(1) + '%)</span>';
+  return '<span class="' + cls + '">' + sign + money(Math.abs(n)) + p + '</span>';
+}
+
+// ── Selling ─────────────────────────────────────────────────────────────
+function showSell(pos) {
+  sellPos = pos;
+  cancelAdd();
+  document.getElementById("sellTitle").textContent = "Sell: " + pos.name;
+  document.getElementById("sHeld").textContent =
+    "You hold " + pos.quantity + " across " +
+    pos.purchases.filter(p => !p.closed).length + " purchase(s). " +
+    "The oldest is sold first.";
+  document.getElementById("sQty").value = 1;
+  document.getElementById("sQty").max = pos.quantity;
+  document.getElementById("sPrice").value = pos.unit_price || "";
+  document.getElementById("sFees").value = "";
+  document.getElementById("sDate").value = new Date().toISOString().slice(0, 10);
+  document.getElementById("sNotes").value = "";
+  document.getElementById("sellPreview").style.display = "none";
+  document.getElementById("sellMsg").innerHTML = "";
+  document.getElementById("sellCard").style.display = "block";
+  document.getElementById("sellCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  refreshSellPreview();
+}
+
+function cancelSell() {
+  document.getElementById("sellCard").style.display = "none";
+  sellPos = null;
+}
+
+["sQty", "sPrice", "sFees"].forEach(id => {
+  document.getElementById(id).addEventListener("input", () => {
+    clearTimeout(sellTimer);
+    sellTimer = setTimeout(refreshSellPreview, 250);
+  });
+});
+
+async function refreshSellPreview() {
+  if (!sellPos) return;
+  const box = document.getElementById("sellPreview");
+  try {
+    const data = await api("/api/portfolios/" + activeId + "/sell/preview", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: sellPos.kind, item_id: sellPos.item_id,
+        quantity: document.getElementById("sQty").value,
+        unit_price: document.getElementById("sPrice").value || 0,
+        sale_fees: document.getElementById("sFees").value || 0
+      })
+    });
+    const t = data.totals;
+    let html = "<strong>This sale takes from:</strong><br>";
+    data.consumes.forEach(c => {
+      html += "&nbsp;&nbsp;• " + c.take + " of " + c.of + " bought " +
+        esc(c.purchased_on || "no date") +
+        (c.acquired_from ? " from " + esc(c.acquired_from) : "") +
+        " at " + money(c.unit_cost) + " each" +
+        (c.splits ? ' <span class="muted">(splits this purchase)</span>' : "") + "<br>";
+    });
+    html += "<br>Cost of those units: " + money(t.cost_basis) +
+      "<br>You receive: " + money(t.net) +
+      (Number(t.fees) ? ' <span class="muted">(after ' + money(t.fees) + " fees)</span>" : "") +
+      "<br><strong>Realized gain: " + signed(t.gain, t.gain_pct) + "</strong>";
+    box.innerHTML = html;
+    box.style.display = "block";
+  } catch (e) {
+    box.innerHTML = '<span class="err">' + esc(e.message) + "</span>";
+    box.style.display = "block";
+  }
+}
+
+async function confirmSell() {
+  if (!sellPos) return;
+  const btn = document.getElementById("sellBtn");
+  btn.disabled = true;
+  say("sellMsg", "");
+  try {
+    const t = await api("/api/portfolios/" + activeId + "/sell", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: sellPos.kind, item_id: sellPos.item_id,
+        quantity: document.getElementById("sQty").value,
+        unit_price: document.getElementById("sPrice").value,
+        sale_fees: document.getElementById("sFees").value || 0,
+        sold_on: document.getElementById("sDate").value || null,
+        notes: document.getElementById("sNotes").value
+      })
+    });
+    cancelSell();
+    await selectPortfolio(activeId);
+  } catch (e) {
+    say("sellMsg", e.message, "err");
+  }
+  btn.disabled = false;
+}
+
+function say(id, text, cls) {
+  document.getElementById(id).innerHTML = text
+    ? '<span class="' + (cls || "") + '">' + esc(text) + "</span>" : "";
 }
 
 function conditionLabel(key, kind) {
@@ -508,7 +712,7 @@ async function deletePortfolio() {
   } catch (e) { alert(e.message); }
 }
 
-function showAdd() {
+function showAdd(pos) {
   editingLotId = null;
   chosenItem = null;
   document.getElementById("addTitle").textContent = "Add an item";
@@ -523,6 +727,12 @@ function showAdd() {
   });
   clearForm();
   setKind("card");
+  if (pos) {
+    // "Buy more" of something already held: skip the search entirely.
+    chosenItem = { kind: pos.kind, id: pos.item_id, label: pos.name };
+    document.getElementById("pickStep").style.display = "none";
+    showChosen();
+  }
 }
 
 function cancelAdd() {

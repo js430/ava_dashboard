@@ -2959,10 +2959,19 @@ def _serialize_lot(lot, prices) -> dict:
         "gain_pct": pct,
         "gain_kind": kind,
         "closed": portfolios.is_closed(lot),
+        # True when we filled the cost from market price because it was left
+        # blank — the UI marks it so nobody mistakes it for a real receipt.
+        "cost_is_estimated": bool(lot.get("cost_is_estimated")),
         # True when there's no price for this item at all — the UI says
         # "no price yet" rather than showing a misleading $0.
         "unpriced": unit_price is None and not portfolios.is_closed(lot),
     }
+
+
+def _serialize_position(pos, prices) -> dict:
+    out = {k: _portfolio_json(v) for k, v in pos.items() if k != "lots"}
+    out["purchases"] = [_serialize_lot(l, prices) for l in pos["lots"]]
+    return out
 
 
 def _serialize_summary(summary: dict) -> dict:
@@ -3083,7 +3092,12 @@ async def api_portfolio_lots(request: Request, portfolio_id: int,
     pool = request.app.state.db
     lots = await portfolios.list_lots(pool, portfolio_id)
     prices = await portfolios.current_prices(pool, lots)
+    positions = portfolios.group_positions(lots, prices)
     return JSONResponse({
+        # Positions are what the table shows: one row per item, with its
+        # individual purchases nested underneath. `lots` is kept alongside so
+        # nothing that already reads it breaks.
+        "positions": [_serialize_position(p, prices) for p in positions],
         "lots": [_serialize_lot(l, prices) for l in lots],
         "summary": _serialize_summary(portfolios.summarize(lots, prices)),
     }, headers={"Cache-Control": "no-store"})
@@ -3121,6 +3135,82 @@ async def api_portfolio_lot_add(request: Request, portfolio_id: int,
     if error:
         raise HTTPException(status_code=400, detail=error)
     return JSONResponse({"id": lot["id"]}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/portfolios/{portfolio_id}/sell")
+@limiter.limit("120/hour")
+async def api_portfolio_sell(request: Request, portfolio_id: int,
+                             user=Depends(get_member_or_subscriber)):
+    """Sell some or all of a position.
+
+    Consumes the oldest purchase first and splits a lot when the sale is
+    smaller than that purchase, so the units sold keep the price, date and
+    source they were actually bought at. See portfolios.plan_sale.
+    """
+    await _require_own_portfolio(request, user, portfolio_id)
+    body = await request.json()
+    kind = (body.get("kind") or "card").strip().lower()
+    try:
+        item_id = int(body.get("item_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Pick an item to sell.")
+
+    totals, error = await portfolios.sell_from_position(
+        request.app.state.db, int(user["id"]), portfolio_id, kind, item_id,
+        body.get("quantity"), body.get("unit_price"), body.get("sale_fees"),
+        body.get("sold_on") or None, body.get("notes") or "")
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    return JSONResponse({k: _portfolio_json(v) for k, v in totals.items()},
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/portfolios/{portfolio_id}/sell/preview")
+@limiter.limit("240/hour")
+async def api_portfolio_sell_preview(request: Request, portfolio_id: int,
+                                     user=Depends(get_member_or_subscriber)):
+    """What a sale WOULD do, without doing it.
+
+    Splitting a purchase in half is not something to discover afterwards, so
+    the page shows which purchases get consumed and what the realized gain
+    comes to before anything is written.
+    """
+    await _require_own_portfolio(request, user, portfolio_id)
+    body = await request.json()
+    kind = (body.get("kind") or "card").strip().lower()
+    if kind not in ("card", "sealed"):
+        raise HTTPException(status_code=400, detail="Unknown item type.")
+    try:
+        item_id = int(body.get("item_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Pick an item to sell.")
+
+    pool = request.app.state.db
+    all_lots = await portfolios.list_lots(pool, portfolio_id)
+    key = (kind, item_id)
+    lots = [l for l in all_lots if portfolios.item_key(l) == key]
+    if not lots:
+        raise HTTPException(status_code=404, detail="That item isn't in this portfolio.")
+
+    plan, error = portfolios.plan_sale(lots, body.get("quantity"),
+                                       body.get("sale_fees"))
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    totals = portfolios.plan_totals(plan, body.get("unit_price") or 0)
+    return JSONResponse({
+        "totals": {k: _portfolio_json(v) for k, v in totals.items()},
+        "consumes": [{
+            "lot_id": e["lot_id"],
+            "take": e["take"],
+            "of": e["lot_quantity"],
+            "splits": e["splits"],
+            "unit_cost": _portfolio_json(e["unit_cost"]),
+            "purchased_on": (e["purchased_on"].isoformat()
+                             if hasattr(e["purchased_on"], "isoformat")
+                             else e["purchased_on"]),
+            "acquired_from": e["acquired_from"],
+        } for e in plan],
+    }, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/portfolios/lots/{lot_id}")

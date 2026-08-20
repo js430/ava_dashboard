@@ -159,6 +159,11 @@ PORTFOLIO_SCHEMA = [
             CHECK ((card_id IS NOT NULL)::int + (sealed_id IS NOT NULL)::int = 1)
     )
     """,
+    # Set when we filled the cost from market price because the member left
+    # it blank. Kept so the UI can flag it as an estimate — an unmarked guess
+    # sitting in someone's cost basis is worse than no number at all.
+    "ALTER TABLE portfolio_lots ADD COLUMN IF NOT EXISTS "
+    "cost_is_estimated BOOLEAN NOT NULL DEFAULT FALSE",
     "CREATE INDEX IF NOT EXISTS idx_lots_portfolio ON portfolio_lots (portfolio_id)",
     "CREATE INDEX IF NOT EXISTS idx_lots_card ON portfolio_lots (card_id)",
     "CREATE INDEX IF NOT EXISTS idx_lots_sealed ON portfolio_lots (sealed_id)",
@@ -389,9 +394,19 @@ def validate_lot(payload: dict, kind: str) -> tuple:
     if qty > MAX_LOT_QUANTITY:
         return None, f"Quantity can't be more than {MAX_LOT_QUANTITY:,}."
 
-    unit_cost = to_money(payload.get("unit_cost", 0), Decimal("0"))
-    if unit_cost is None or unit_cost < 0:
-        return None, "Price paid can't be negative."
+    # BLANK and ZERO are different answers and must stay that way:
+    #   blank -> "I don't remember what I paid"  -> fill from market price
+    #   0     -> "it was free" (pack pull, gift)  -> a real cost basis of zero
+    # Collapsing them would either erase free pulls or invent a cost for them.
+    raw_cost = payload.get("unit_cost")
+    if raw_cost is None or str(raw_cost).strip() == "":
+        unit_cost = None
+    else:
+        unit_cost = to_money(raw_cost)
+        if unit_cost is None:
+            return None, "That price doesn't look like a number."
+        if unit_cost < 0:
+            return None, "Price paid can't be negative."
     fees = to_money(payload.get("fees", 0), Decimal("0"))
     if fees is None or fees < 0:
         return None, "Fees and shipping can't be negative."
@@ -523,7 +538,8 @@ async def delete_portfolio(pool, user_id: int, portfolio_id: int) -> bool:
 LOT_COLUMNS = """
     l.id, l.portfolio_id, l.card_id, l.sealed_id, l.quantity, l.condition,
     l.unit_cost, l.fees, l.purchased_on, l.acquired_from,
-    l.sold_on, l.sale_unit_price, l.sale_fees, l.notes, l.created_at
+    l.sold_on, l.sale_unit_price, l.sale_fees, l.notes, l.created_at,
+    l.cost_is_estimated
 """
 
 
@@ -583,6 +599,33 @@ async def item_already_held(pool, user_id: int, card_id, sealed_id) -> bool:
             """, user_id, card_id, sealed_id))
 
 
+
+async def latest_unit_price(pool, kind: str, item_id):
+    """Most recent known market price for one item, or None.
+
+    Used to fill in a blank "price paid". It reads the SAME shared
+    price_snapshots history the tracker maintains — no API call, so leaving
+    the price blank costs nothing.
+
+    Returns None for sealed product: there is no sealed price source yet (see
+    the note above seed_sealed_for_set), so there is nothing honest to fill
+    in. The caller leaves the cost at zero and does NOT flag it as estimated.
+    """
+    if kind != "card" or not item_id:
+        return None
+    try:
+        async with pool.acquire() as conn:
+            value = await conn.fetchval(
+                "SELECT price_mid FROM price_snapshots WHERE card_id = $1 "
+                "AND price_mid IS NOT NULL ORDER BY captured_at DESC LIMIT 1",
+                int(item_id))
+        return to_money(value)
+    except Exception:
+        # A lookup failure must not block someone recording a purchase.
+        logger.exception("Portfolios: price lookup failed for %s %s", kind, item_id)
+        return None
+
+
 async def add_lot(pool, user_id: int, portfolio_id: int, kind: str,
                   item_id: int, payload: dict) -> tuple:
     """Add one purchase to a portfolio. Returns (lot, error)."""
@@ -594,6 +637,20 @@ async def add_lot(pool, user_id: int, portfolio_id: int, kind: str,
 
     card_id = int(item_id) if kind == "card" else None
     sealed_id = int(item_id) if kind == "sealed" else None
+
+    # Blank price paid: fall back to what the item is worth now, and mark it
+    # as an estimate. Better than a silent zero, which would read as a free
+    # pull and overstate every gain. If we have no price either (sealed today)
+    # it stays zero and is NOT marked estimated — there's nothing to estimate
+    # from, and claiming otherwise would be a lie in the UI.
+    estimated = False
+    if cleaned["unit_cost"] is None:
+        market = await latest_unit_price(pool, kind, card_id or sealed_id)
+        if market is not None:
+            cleaned["unit_cost"] = market
+            estimated = True
+        else:
+            cleaned["unit_cost"] = Decimal("0")
 
     # The cap counts distinct items, so adding a second lot of something
     # already held is always allowed — it costs no extra price fetches.
@@ -608,14 +665,15 @@ async def add_lot(pool, user_id: int, portfolio_id: int, kind: str,
             INSERT INTO portfolio_lots
                 (portfolio_id, card_id, sealed_id, quantity, condition, unit_cost,
                  fees, purchased_on, acquired_from, sold_on, sale_unit_price,
-                 sale_fees, notes)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8::date,$9,$10::date,$11,$12,$13)
+                 sale_fees, notes, cost_is_estimated)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8::date,$9,$10::date,$11,$12,$13,$14)
             RETURNING {LOT_COLUMNS}
             """,
             portfolio_id, card_id, sealed_id, cleaned["quantity"],
             cleaned["condition"], cleaned["unit_cost"], cleaned["fees"],
             cleaned["purchased_on"], cleaned["acquired_from"], cleaned["sold_on"],
-            cleaned["sale_unit_price"], cleaned["sale_fees"], cleaned["notes"])
+            cleaned["sale_unit_price"], cleaned["sale_fees"], cleaned["notes"],
+            estimated)
     return dict(row), None
 
 
@@ -625,7 +683,7 @@ async def update_lot(pool, user_id: int, lot_id: int, payload: dict) -> tuple:
     async with pool.acquire() as conn:
         existing = await conn.fetchrow(
             """
-            SELECT l.id, l.card_id, l.sealed_id
+            SELECT l.id, l.card_id, l.sealed_id, l.unit_cost, l.cost_is_estimated
             FROM portfolio_lots l
             JOIN portfolios p ON p.id = l.portfolio_id
             WHERE l.id = $1 AND p.user_id = $2
@@ -636,20 +694,28 @@ async def update_lot(pool, user_id: int, lot_id: int, payload: dict) -> tuple:
         cleaned, error = validate_lot(payload, kind)
         if error:
             return None, error
+        if cleaned["unit_cost"] is None:
+            # Left blank on an edit: keep whatever is already recorded rather
+            # than re-estimating over a figure the member may have corrected.
+            cleaned["unit_cost"] = to_money(existing["unit_cost"], Decimal("0"))
+            still_estimated = bool(existing["cost_is_estimated"])
+        else:
+            # They typed a number, so it's theirs now, not our guess.
+            still_estimated = False
         row = await conn.fetchrow(
             f"""
             UPDATE portfolio_lots
                SET quantity = $2, condition = $3, unit_cost = $4, fees = $5,
                    purchased_on = $6::date, acquired_from = $7, sold_on = $8::date,
                    sale_unit_price = $9, sale_fees = $10, notes = $11,
-                   updated_at = NOW()
+                   cost_is_estimated = $12, updated_at = NOW()
              WHERE id = $1
             RETURNING {LOT_COLUMNS}
             """,
             lot_id, cleaned["quantity"], cleaned["condition"], cleaned["unit_cost"],
             cleaned["fees"], cleaned["purchased_on"], cleaned["acquired_from"],
             cleaned["sold_on"], cleaned["sale_unit_price"], cleaned["sale_fees"],
-            cleaned["notes"])
+            cleaned["notes"], still_estimated)
     return dict(row), None
 
 
@@ -763,3 +829,283 @@ async def sealed_price_available() -> bool:
     above. Exposed as a function so the UI asks rather than hardcoding it, and
     so turning it on later is a one-line change here."""
     return False
+
+
+# ── Positions and partial sales ──────────────────────────────────────────
+# A POSITION is every purchase of one item in one portfolio, seen as a single
+# holding: total quantity, weighted average cost, current value. Lots remain
+# the source of truth underneath — the position is a view over them, never a
+# stored total that could drift out of step with the purchases it came from.
+#
+# Selling acts on the position ("sell 1 of these 3"), and consumes the OLDEST
+# purchase first (FIFO). When a sale is smaller than the purchase it lands on,
+# that lot is SPLIT: the sold units become their own closed lot carrying the
+# original price, date and source, and the rest stays open. That's what keeps
+# realized gain honest — the closed lot still knows what those exact units
+# cost, instead of an average smeared across every purchase.
+
+def group_positions(lots, prices: dict) -> list:
+    """Group lots into positions, one per item, newest activity first.
+
+    Closed lots stay attached to their position so a sold-out holding still
+    shows its history rather than vanishing.
+    """
+    by_item = {}
+    for lot in lots:
+        by_item.setdefault(item_key(lot), []).append(lot)
+
+    positions = []
+    for key, group in by_item.items():
+        open_lots = [l for l in group if not is_closed(l)]
+        closed_lots = [l for l in group if is_closed(l)]
+        unit_price = prices.get(key)
+
+        open_qty = sum(int(l["quantity"] or 0) for l in open_lots)
+        open_cost = sum((cost_basis(l) for l in open_lots), Decimal("0"))
+        sold_qty = sum(int(l["quantity"] or 0) for l in closed_lots)
+        sold_cost = sum((cost_basis(l) for l in closed_lots), Decimal("0"))
+        sold_proceeds = sum((proceeds(l) or Decimal("0") for l in closed_lots),
+                            Decimal("0"))
+
+        value = None
+        price = to_money(unit_price)
+        if price is not None and open_qty:
+            value = (price * open_qty).quantize(TWO_DP, rounding=ROUND_HALF_UP)
+
+        unrealized = None
+        unrealized_pct = None
+        if value is not None:
+            unrealized = (value - open_cost).quantize(TWO_DP, rounding=ROUND_HALF_UP)
+            if open_cost > 0:
+                unrealized_pct = float((unrealized / open_cost * 100)
+                                       .quantize(TWO_DP, rounding=ROUND_HALF_UP))
+
+        realized = (sold_proceeds - sold_cost).quantize(TWO_DP, rounding=ROUND_HALF_UP)
+        realized_pct = None
+        if sold_cost > 0:
+            realized_pct = float((realized / sold_cost * 100)
+                                 .quantize(TWO_DP, rounding=ROUND_HALF_UP))
+
+        sample = group[0]
+        positions.append({
+            "kind": key[0],
+            "item_id": key[1],
+            "name": sample.get("item_name") or "",
+            "set_name": sample.get("set_name") or "",
+            "card_number": sample.get("card_number") or "",
+            "variant": sample.get("variant") or "",
+            "product_type": sample.get("product_type") or "",
+            "language": sample.get("language") or "",
+            "quantity": open_qty,
+            "sold_quantity": sold_qty,
+            "cost_basis": open_cost.quantize(TWO_DP),
+            # The number your side-note wants: what a unit cost you on average,
+            # across every purchase still held.
+            "avg_unit_cost": ((open_cost / open_qty).quantize(TWO_DP, rounding=ROUND_HALF_UP)
+                              if open_qty else None),
+            "unit_price": price,
+            "market_value": value,
+            "unrealized": unrealized,
+            "unrealized_pct": unrealized_pct,
+            "realized": realized,
+            "realized_pct": realized_pct,
+            "unpriced": price is None and open_qty > 0,
+            "lots": sorted(group, key=_purchase_sort_key),
+        })
+
+    positions.sort(key=lambda p: ((p["quantity"] == 0), p["name"].lower()))
+    return positions
+
+
+def _purchase_sort_key(lot):
+    """Oldest purchase first. A lot with no date sorts LAST rather than first:
+    an unknown date shouldn't jump the FIFO queue ahead of a purchase we can
+    actually date."""
+    when = lot.get("purchased_on")
+    return (when is None, str(when or ""), int(lot.get("id") or 0))
+
+
+def open_lots_fifo(lots) -> list:
+    """Open lots for one item, oldest purchase first."""
+    return sorted((l for l in lots if not is_closed(l)), key=_purchase_sort_key)
+
+
+def plan_sale(lots, quantity, sale_fees=None) -> tuple:
+    """Work out which purchases a sale consumes. Returns (plan, error).
+
+    Pure, so the arithmetic that decides someone's realized gain can be tested
+    without a database. Each plan entry says how many units come off which
+    lot, how that lot's purchase fees split, and its share of the selling
+    fees.
+
+    Fee splitting is proportional AND exact: the final entry absorbs any
+    rounding remainder, so the parts always add back to the original total.
+    A cent leaking out of a cost basis on every partial sale is how a
+    portfolio slowly stops reconciling.
+    """
+    try:
+        want = int(quantity)
+    except (TypeError, ValueError):
+        return None, "How many did you sell?"
+    if want < 1:
+        return None, "Enter how many you sold."
+
+    available = open_lots_fifo(lots)
+    have = sum(int(l["quantity"] or 0) for l in available)
+    if have == 0:
+        return None, "You don't have any of these left to sell."
+    if want > have:
+        return None, ("You only have %d of these. Reduce the quantity, or add the "
+                      "purchase first." % have)
+
+    total_sale_fees = to_money(sale_fees, Decimal("0")) or Decimal("0")
+    plan = []
+    remaining = want
+    for lot in available:
+        if remaining <= 0:
+            break
+        lot_qty = int(lot["quantity"] or 0)
+        take = min(lot_qty, remaining)
+        lot_fees = to_money(lot.get("fees"), Decimal("0")) or Decimal("0")
+        # Purchase fees follow the units they were paid on.
+        sold_fees = (lot_fees * take / lot_qty).quantize(TWO_DP, rounding=ROUND_HALF_UP) \
+            if lot_qty else Decimal("0")
+        plan.append({
+            "lot": lot,
+            "lot_id": lot.get("id"),
+            "take": take,
+            "lot_quantity": lot_qty,
+            "splits": take < lot_qty,
+            "unit_cost": to_money(lot.get("unit_cost"), Decimal("0")),
+            "purchased_on": lot.get("purchased_on"),
+            "acquired_from": lot.get("acquired_from") or "",
+            "condition": lot.get("condition"),
+            "sold_fees": sold_fees,
+            "kept_fees": (lot_fees - sold_fees).quantize(TWO_DP),
+        })
+        remaining -= take
+
+    # Selling fees split across the consumed units, remainder on the last
+    # entry so the shares sum to exactly what was entered.
+    allocated = Decimal("0")
+    for i, entry in enumerate(plan):
+        if i == len(plan) - 1:
+            entry["sale_fee_share"] = (total_sale_fees - allocated).quantize(TWO_DP)
+        else:
+            share = (total_sale_fees * entry["take"] / want).quantize(
+                TWO_DP, rounding=ROUND_HALF_UP)
+            entry["sale_fee_share"] = share
+            allocated += share
+    return plan, None
+
+
+def plan_totals(plan, unit_price) -> dict:
+    """What a planned sale comes to — shown for confirmation BEFORE it's
+    committed, because splitting lots is not something to discover after."""
+    price = to_money(unit_price, Decimal("0")) or Decimal("0")
+    units = sum(e["take"] for e in plan)
+    cost = sum((e["unit_cost"] * e["take"] + e["sold_fees"] for e in plan), Decimal("0"))
+    fees = sum((e["sale_fee_share"] for e in plan), Decimal("0"))
+    gross = (price * units).quantize(TWO_DP, rounding=ROUND_HALF_UP)
+    net = (gross - fees).quantize(TWO_DP)
+    gain = (net - cost).quantize(TWO_DP)
+    return {
+        "units": units,
+        "lots_touched": len(plan),
+        "splits": sum(1 for e in plan if e["splits"]),
+        "cost_basis": cost.quantize(TWO_DP),
+        "gross": gross,
+        "fees": fees.quantize(TWO_DP),
+        "net": net,
+        "gain": gain,
+        "gain_pct": (float((gain / cost * 100).quantize(TWO_DP, rounding=ROUND_HALF_UP))
+                     if cost > 0 else None),
+    }
+
+
+async def sell_from_position(pool, user_id: int, portfolio_id: int, kind: str,
+                             item_id: int, quantity, unit_price, sale_fees=None,
+                             sold_on=None, notes: str = "") -> tuple:
+    """Record a sale against a position. Returns (result, error).
+
+    Runs in ONE transaction: a partial sale rewrites the lot it lands on and
+    inserts the sold half, and a half-applied version of that would either
+    duplicate units or lose them.
+    """
+    if kind not in ("card", "sealed"):
+        return None, "Unknown item type."
+    price = to_money(unit_price)
+    if price is None or price < 0:
+        return None, "Enter what it sold for."
+    fees = to_money(sale_fees, Decimal("0"))
+    if fees is None or fees < 0:
+        return None, "Selling fees can't be negative."
+
+    if not await owns_portfolio(pool, user_id, portfolio_id):
+        return None, "That isn't one of your portfolios."
+
+    card_id = int(item_id) if kind == "card" else None
+    sealed_id = int(item_id) if kind == "sealed" else None
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                """
+                SELECT id, quantity, condition, unit_cost, fees, purchased_on,
+                       acquired_from, sold_on, sale_unit_price, sale_fees, notes,
+                       card_id, sealed_id
+                FROM portfolio_lots
+                WHERE portfolio_id = $1
+                  AND ($2::int IS NOT NULL AND card_id = $2::int
+                       OR $3::int IS NOT NULL AND sealed_id = $3::int)
+                FOR UPDATE
+                """, portfolio_id, card_id, sealed_id)
+            lots = [dict(r) for r in rows]
+            if not lots:
+                return None, "That item isn't in this portfolio."
+
+            plan, error = plan_sale(lots, quantity, fees)
+            if error:
+                return None, error
+
+            for entry in plan:
+                lot = entry["lot"]
+                if entry["splits"]:
+                    # Shrink the open lot, then record the sold units as their
+                    # own closed lot carrying the ORIGINAL purchase details.
+                    await conn.execute(
+                        "UPDATE portfolio_lots SET quantity = $2, fees = $3, "
+                        "updated_at = NOW() WHERE id = $1",
+                        lot["id"], entry["lot_quantity"] - entry["take"],
+                        entry["kept_fees"])
+                    await conn.execute(
+                        """
+                        INSERT INTO portfolio_lots
+                            (portfolio_id, card_id, sealed_id, quantity, condition,
+                             unit_cost, fees, purchased_on, acquired_from,
+                             sold_on, sale_unit_price, sale_fees, notes)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8::date,$9,$10::date,$11,$12,$13)
+                        """,
+                        portfolio_id, card_id, sealed_id, entry["take"],
+                        entry["condition"], entry["unit_cost"], entry["sold_fees"],
+                        entry["purchased_on"], entry["acquired_from"],
+                        sold_on, price, entry["sale_fee_share"],
+                        str(notes or "")[:MAX_NOTE_LEN])
+                else:
+                    # The whole purchase sold — close it where it stands, so
+                    # its id and history survive.
+                    await conn.execute(
+                        """
+                        UPDATE portfolio_lots
+                           SET sold_on = $2::date, sale_unit_price = $3,
+                               sale_fees = $4, updated_at = NOW(),
+                               notes = CASE WHEN $5 = '' THEN notes ELSE $5 END
+                         WHERE id = $1
+                        """, lot["id"], sold_on, price, entry["sale_fee_share"],
+                        str(notes or "")[:MAX_NOTE_LEN])
+
+    totals = plan_totals(plan, price)
+    logger.info("Portfolio %s: sold %d of %s %s (%d lot(s), %d split) for %s",
+                portfolio_id, totals["units"], kind, item_id,
+                totals["lots_touched"], totals["splits"], totals["net"])
+    return totals, None

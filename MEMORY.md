@@ -1079,3 +1079,59 @@ ADMIN_USER_IDS-only and mods need these); leaving set import on the card
 tracker page (the ask was to consolidate).
 
 ---
+
+## 2026-08-19 — Positions, FIFO partial sales, and estimated cost
+
+**Decided:** The holdings table now groups by ITEM (a "position"): one row
+per item with total held, weighted-average cost, value and gain,
+expandable to show every individual purchase with its price, date and
+source. Lots remain the source of truth; a position is a view over them,
+never a stored total that could drift.
+
+**Selling is FIFO with automatic lot splitting.** You sell N units of a
+position; the oldest purchase is consumed first, and when the sale is
+smaller than that purchase the lot SPLITS — the sold units become their
+own closed lot carrying the original price, date and source, and the rest
+stays open.
+
+**Why not weighted average (the user's first instinct):** it works and is
+simpler, but it blends purchases permanently, so once units are sold you
+can no longer tell how a specific buy performed. Worked example given to
+the user — 1 @ $119.99 (March) + 2 @ $142.50 +$11.20 fees (July), sell one
+at $175: FIFO realizes $55.01, weighted average $36.27, specific-July
+$26.90. All defensible; FIFO keeps per-purchase records intact and
+produces the same grouped UI.
+
+**Fee arithmetic is exact, not approximate.** Purchase fees follow the
+units they were paid on ($11.20 over 2 units -> $5.60/$5.60), and selling
+fees are split across consumed lots with the LAST share absorbing the
+rounding remainder. Verified that parts always sum back to the original
+total — a cent leaking per partial sale is how a portfolio stops
+reconciling.
+
+**Sale runs in one transaction with `FOR UPDATE`** on the item's lots: a
+split writes two rows, and two concurrent sales could otherwise oversell.
+
+**A purchase with no date sorts LAST in the FIFO queue**, not first — an
+unknown date must not jump ahead of a purchase we can actually date.
+
+**Blank price paid defaults to market price** (from the shared
+price_snapshots history, so no API call), and the row is flagged
+`cost_is_estimated` and labelled in the UI. BLANK and ZERO are kept
+distinct: blank means "I don't remember", zero means "it was free" (pack
+pull, gift). Collapsing them would either erase free pulls or invent a
+cost for them. Editing in a real number clears the flag; leaving it blank
+on an edit keeps what's there rather than re-estimating over a correction.
+Sealed has no price source, so its cost stays 0 and is NOT labelled an
+estimate — there is nothing to estimate from.
+
+**Rejected:** weighted-average cost basis (above); specific-lot selection
+(more accurate still, but an extra choice per sale — it is a superset of
+FIFO and can be added later without rework); a separate sales table
+(splitting lots keeps one source of truth).
+
+**Not advice:** which cost-basis method suits someone's tax records varies
+by jurisdiction; the user was told to ask someone qualified rather than
+given a recommendation.
+
+---
