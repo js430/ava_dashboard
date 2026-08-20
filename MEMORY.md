@@ -1042,3 +1042,40 @@ portfolio (would multiply nightly ingest cost fivefold).
 touched. `card_tracker.py`'s two cost-control queries were widened.
 
 ---
+
+## 2026-08-19 — Tracker Management page (admins + server mods)
+
+**Decided:** New `/tracker-admin` page under Admin Tools, gated by a new
+`require_server_mod` (ADMIN_USER_IDS **or** `session["mod"]` from
+MOD_ROLE_IDS). It holds three jobs: add/re-seed a single card, import a
+whole set, and seed sealed product per set.
+
+**Why server mods and not `all_mods`:** the all_mods group exists to open
+the invite network to role managers. Every action on this page either
+spends PokemonPriceTracker credits or writes to a catalogue every member
+reads, so it follows the narrower MOD_ROLE_IDS set. A role manager reaches
+/invite-network but not this page.
+
+**What moved:** the set-import panel and its ~119 lines of JS came off
+`/card-tracker`. `_require_tracker_admin` widened from admin-only to
+admins + server mods to match the page it now lives on. Sealed seeding
+moved off curl-only (`require_admin`) onto this page's gate.
+
+**What did NOT move:** every destructive global tool — reset-history,
+refresh, rematch, remove, the full shared catalog list — stays
+`require_admin`. Seeding and importing are additive; wiping history is not.
+
+**Pokemon only**, confirmed with the user: PokemonPriceTracker is the only
+price API, so the single-card search sends `game: "pokemon"` and the sealed
+seeder reads only `game='pokemon'` sets. The set importer still offers One
+Piece because it uses the free catalog APIs, not PPT.
+
+**Nav:** the link sits inside the Admin Tools menu on all 14 templates
+carrying that menu, shown to whoever can open the menu. The route is the
+real gate — a link that 403s is as bad as a page nobody can find.
+
+**Rejected:** putting these controls on /admin (that page is
+ADMIN_USER_IDS-only and mods need these); leaving set import on the card
+tracker page (the ask was to consolidate).
+
+---

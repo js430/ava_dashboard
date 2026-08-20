@@ -1927,6 +1927,22 @@ async def api_raffle_spin(request: Request, user=Depends(get_current_user)):
 # catalog and the destructive tools (refresh, rematch, reset-history, remove,
 # backdate, import).
 
+def require_server_mod(request: Request) -> dict:
+    """Admins or SERVER MODS (MOD_ROLE_IDS). Backs the Tracker Management
+    page and its actions.
+
+    Deliberately NOT the all_mods group: that set exists to open the invite
+    network to role managers, and these actions spend PokemonPriceTracker
+    credits and write to the shared card catalogue every member reads.
+    """
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if int(user["id"]) not in ADMIN_USER_IDS and not request.session.get("mod", False):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return user
+
+
 def require_admin(request: Request) -> dict:
     """Admin-only session gate (ADMIN_USER_IDS).
 
@@ -2783,6 +2799,114 @@ async def api_card_tracker_backdate_status(request: Request, user=Depends(requir
     return JSONResponse(dict(_tracker_backdate_state(request.app)),
                         headers={"Cache-Control": "no-store"})
 
+# ── Tracker Management (admins + server mods) ────────────────────────────
+# One place for the jobs that stock the shared catalogue: importing a set,
+# seeding sealed product, and adding or re-seeding a single card. These used
+# to be scattered across the Card Tracker page (set import) and curl-only
+# endpoints (sealed seeding).
+#
+# Gated on require_server_mod — not the all_mods group, because every action
+# here either spends PokemonPriceTracker credits or writes to a catalogue
+# every member reads.
+
+@app.get("/tracker-admin", response_class=HTMLResponse)
+async def tracker_admin_page(request: Request, user=Depends(require_server_mod)):
+    return templates.TemplateResponse("tracker_admin.html", {
+        "request": request,
+        "username": user["username"],
+        "avatar": user.get("avatar"),
+        "user_id": user["id"],
+        "is_admin": int(user["id"]) in ADMIN_USER_IDS,
+        "is_mod": request.session.get("mod", False),
+        "backdate_days": list(BACKDATE_DAY_CHOICES),
+        "backdate_max": BACKDATE_MAX_CARDS,
+        "sealed_types": [{"key": k, "label": portfolios.SEALED_TYPE_LABELS[k]}
+                         for k in portfolios.SEALED_PRODUCT_TYPES],
+        "default_sealed_types": list(portfolios.DEFAULT_SEALED_TYPES),
+    })
+
+
+@app.post("/api/card-tracker/seed-card")
+@limiter.limit("60/hour")
+async def api_card_tracker_seed_card(request: Request,
+                                     user=Depends(require_server_mod)):
+    """Add one specific card to the shared tracked catalogue, or report that
+    it's already there.
+
+    This is the "seed a single card" path: pick an exact printing from the
+    catalog search and it becomes eligible for nightly pricing. Returns
+    whether it was newly added, plus its id so the caller can immediately
+    re-seed its price history if wanted.
+    """
+    body = await request.json()
+    game = body.get("game", "pokemon")
+    name = (body.get("name") or "").strip()[:200]
+    set_name = (body.get("set_name") or "").strip()[:200]
+    card_number = (body.get("card_number") or "").strip()[:40]
+    variant = (body.get("variant") or "").strip()[:200] or None
+    tcgplayer_id = (body.get("tcgplayer_id") or "").strip()[:40] or None
+    language = price_sources.ppt_language(body.get("language"))
+    if game not in VALID_GAMES or not name:
+        raise HTTPException(status_code=400, detail="Pick a card first.")
+
+    pool = request.app.state.db
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            inserted = await conn.fetchrow(
+                "INSERT INTO tracked_cards (name, game, set_name, card_number, variant, "
+                "tcgplayer_id, language) VALUES ($1, $2, $3, $4, $5, $6, $7) "
+                "ON CONFLICT (game, name, set_name, card_number, language) "
+                "DO NOTHING RETURNING id",
+                name, game, set_name, card_number, variant,
+                tcgplayer_id if game == "pokemon" else None, language)
+            if inserted:
+                card_id = inserted["id"]
+                total = await conn.fetchval("SELECT COUNT(*) FROM tracked_cards")
+                if total > MAX_TRACKED_CARDS:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="The shared card catalogue is at its cap. Raise "
+                               "MAX_TRACKED_CARDS before adding more.")
+            else:
+                existing = await conn.fetchrow(
+                    "SELECT id FROM tracked_cards WHERE game=$1 AND name=$2 "
+                    "AND set_name=$3 AND card_number=$4 AND language=$5",
+                    game, name, set_name, card_number, language)
+                card_id = existing["id"]
+    logger.info("Tracker: card %s (%s) seeded by %s (new=%s)",
+                card_id, name, user["id"], bool(inserted))
+    return JSONResponse({"card_id": card_id, "added": bool(inserted)},
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/card-tracker/catalog-stats")
+async def api_card_tracker_catalog_stats(request: Request,
+                                         user=Depends(require_server_mod)):
+    """What's in the shared catalogue right now — so the page can show the
+    effect of a seed rather than claiming success blindly."""
+    async with request.app.state.db.acquire() as conn:
+        tracked = await conn.fetchval("SELECT COUNT(*) FROM tracked_cards")
+        sealed = await conn.fetchval("SELECT COUNT(*) FROM sealed_products")
+        sealed_sets = await conn.fetchval(
+            "SELECT COUNT(DISTINCT set_name) FROM sealed_products WHERE set_name <> ''")
+        priced_today = await conn.fetchval(
+            "SELECT COUNT(DISTINCT p.card_id) FROM price_snapshots p "
+            "WHERE (p.captured_at AT TIME ZONE 'UTC')::date "
+            "      = (NOW() AT TIME ZONE 'UTC')::date")
+        referenced = await conn.fetchval(
+            "SELECT COUNT(*) FROM tracked_cards t WHERE "
+            "EXISTS (SELECT 1 FROM user_tracked_cards u WHERE u.card_id = t.id) "
+            "OR EXISTS (SELECT 1 FROM portfolio_lots l WHERE l.card_id = t.id)")
+    return JSONResponse({
+        "tracked_cards": tracked,
+        "referenced_cards": referenced,
+        "priced_today": priced_today,
+        "sealed_products": sealed,
+        "sealed_sets": sealed_sets,
+        "max_tracked": MAX_TRACKED_CARDS,
+    }, headers={"Cache-Control": "no-store"})
+
+
 # ── Custom portfolios ────────────────────────────────────────────────────
 # The Card Tracker watchlist (above) answers "what am I watching". A
 # portfolio answers "what do I own, what did it cost, what's it worth now" —
@@ -3108,14 +3232,14 @@ async def api_portfolio_sealed(request: Request, set_name: str = "", q: str = ""
 
 @app.post("/api/portfolios/sealed/seed")
 @limiter.limit("20/hour")
-async def api_portfolio_sealed_seed(request: Request, user=Depends(require_admin)):
-    """Admin: create the standard sealed SKUs for one set, or for every set in
-    the catalog.
+async def api_portfolio_sealed_seed(request: Request, user=Depends(require_server_mod)):
+    """Create the standard sealed SKUs for one set, or for every set in the
+    catalog. Admins and server mods (Tracker Management page).
 
-    Admin-only because it writes to a catalog every member picks from — a
-    member adding a typo'd "Prismatick Evolutions Booster Box" would be there
-    for everyone. Idempotent, so re-running after new sets are stocked only
-    adds what's missing.
+    Not open to members because it writes to a catalogue everyone picks
+    from — one typo'd "Prismatick Evolutions Booster Box" would be there for
+    the whole community. Idempotent, so re-running after new sets are stocked
+    only adds what's missing.
     """
     body = await request.json()
     set_name = (body.get("set_name") or "").strip()
@@ -3159,13 +3283,15 @@ async def api_portfolio_sealed_sets(request: Request,
 #    source API server-side — the client never supplies card data directly. ──
 
 def _require_tracker_admin(request: Request) -> dict:
-    """Set import is admin-only. Kept as a named wrapper so the error message
-    says why, rather than a bare "Not authorized"."""
+    """Set import: admins and server mods, matching the Tracker Management
+    page these controls now live on. Kept as a named wrapper so the error
+    message says why, rather than a bare "Not authorized"."""
     user = request.session.get("user")
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    if int(user["id"]) not in ADMIN_USER_IDS:
-        raise HTTPException(status_code=403, detail="Importing is admin-only")
+    if int(user["id"]) not in ADMIN_USER_IDS and not request.session.get("mod", False):
+        raise HTTPException(status_code=403,
+                            detail="Importing is for admins and server mods")
     return user
 
 # pokemontcg.io can be slow even with trimmed payloads — generous read timeout

@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/brand/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/brand/icon-180.png">
+<script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tracker Management — Nexus Card Co</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .header-title { font-size: 16px; font-weight: 600; color: #111; }
+  .header-sub { font-size: 12px; color: #999; margin-top: 1px; }
+  .nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; }
+  .nav a:hover { background: #f4f4f5; }
+  .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-group { position: relative; display: inline-flex; }
+  .nav-group-btn { font-family: inherit; font-size: 12px; color: #555; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+  .nav-group-btn:hover { background: #f4f4f5; }
+  .nav-group-btn.active, .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-caret { font-size: 9px; line-height: 1; }
+  .nav-menu { display: none; position: absolute; top: calc(100% + 4px); right: 0; min-width: 170px; padding: 4px; background: #fff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.10); z-index: 400; }
+  .nav-group.open .nav-menu { display: block; }
+  .nav-menu a { display: block; padding: 6px 10px; border: none; border-radius: 5px; background: none; font-size: 12px; color: #555; text-decoration: none; white-space: nowrap; }
+  .nav-menu a:hover { background: #f4f4f5; }
+  .nav-menu a.active { background: #5865F2; color: #fff; }
+  .theme-toggle { font-family: inherit; font-size: 13px; padding: 3px 8px; border: 1px solid #ddd; border-radius: 6px; background: #fff; cursor: pointer; line-height: 1.4; }
+  .main { padding: 24px; max-width: 1200px; margin: 0 auto; }
+
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .stat-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 13px 15px; }
+  .stat-label { font-size: 11px; color: #888; margin-bottom: 5px; text-transform: uppercase; letter-spacing: .04em; }
+  .stat-value { font-size: 20px; font-weight: 600; }
+  .stat-sub { font-size: 11px; color: #999; margin-top: 3px; }
+
+  .card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; padding: 18px; margin-bottom: 16px; }
+  .card-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+  .card-desc { font-size: 12.5px; color: #777; line-height: 1.6; margin-bottom: 14px; }
+
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .field { flex: 1 1 190px; min-width: 150px; }
+  label { display: block; font-size: 11.5px; color: #666; margin-bottom: 4px; }
+  input[type=text], select { width: 100%; font-family: inherit; font-size: 13px; padding: 8px 10px; border: 1px solid #ddd; border-radius: 8px; background: #fff; color: #111; }
+  input:focus, select:focus { outline: none; border-color: #5865F2; }
+
+  .btn { font-family: inherit; font-size: 12.5px; padding: 8px 14px; border-radius: 8px; border: 1px solid #ddd; background: #fff; color: #444; cursor: pointer; white-space: nowrap; }
+  .btn:hover { background: #f4f4f5; }
+  .btn-primary { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .btn-primary:hover { background: #4752d4; }
+  .btn:disabled { opacity: .55; cursor: default; }
+  .btn-sm { font-size: 11.5px; padding: 5px 10px; }
+
+  .msg { font-size: 12.5px; margin-top: 10px; line-height: 1.6; }
+  .msg.ok { color: #16794c; }
+  .msg.err { color: #b42318; }
+  .msg.busy { color: #777; }
+  .hint { font-size: 11.5px; color: #999; margin-top: 6px; line-height: 1.5; }
+
+  .search-results { max-height: 240px; overflow-y: auto; border: 1px solid #eee; border-radius: 8px; margin-top: 8px; }
+  .search-row { padding: 8px 11px; font-size: 12.5px; cursor: pointer; border-bottom: 1px solid #f4f4f5; display: flex; justify-content: space-between; gap: 10px; }
+  .search-row:last-child { border-bottom: none; }
+  .search-row:hover { background: #f6f6ff; }
+  .muted { color: #999; }
+
+  .preview-list { max-height: 300px; overflow-y: auto; border: 1px solid #eee; border-radius: 8px; margin-top: 10px; }
+  .preview-row { padding: 6px 11px; font-size: 12.5px; border-bottom: 1px solid #f4f4f5; display: flex; gap: 10px; align-items: center; }
+  .preview-row:last-child { border-bottom: none; }
+  .preview-summary { font-size: 12.5px; color: #555; margin-top: 10px; }
+  .tag { font-size: 10.5px; padding: 2px 7px; border-radius: 999px; background: #eef0ff; color: #4650c4; }
+  .tag-new { background: #eaf6ef; color: #16794c; }
+  .tag-have { background: #f2f2f4; color: #888; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .chip { font-size: 11.5px; padding: 5px 10px; border: 1px solid #ddd; border-radius: 999px; background: #fff; cursor: pointer; user-select: none; }
+  .chip.on { background: #5865F2; color: #fff; border-color: #5865F2; }
+
+  [data-theme="dark"] body { background: #17171b; color: #e8e8ea; }
+  [data-theme="dark"] .header { background: #1e1e24; border-bottom-color: #2c2c34; }
+  [data-theme="dark"] .header-title, [data-theme="dark"] .card-title, [data-theme="dark"] .stat-value { color: #e8e8ea; }
+  [data-theme="dark"] .card, [data-theme="dark"] .stat-card { background: #1e1e24; border-color: #2c2c34; }
+  [data-theme="dark"] .nav a, [data-theme="dark"] .nav-group-btn, [data-theme="dark"] .btn,
+  [data-theme="dark"] .theme-toggle, [data-theme="dark"] .chip { background: #24242b; border-color: #33333c; color: #c9c9d1; }
+  [data-theme="dark"] .nav-menu { background: #24242b; border-color: #33333c; }
+  [data-theme="dark"] .nav-menu a { color: #c9c9d1; }
+  [data-theme="dark"] input, [data-theme="dark"] select { background: #24242b; border-color: #33333c; color: #e8e8ea; }
+  [data-theme="dark"] .search-results, [data-theme="dark"] .preview-list { border-color: #2c2c34; }
+  [data-theme="dark"] .search-row, [data-theme="dark"] .preview-row { border-bottom-color: #26262d; }
+  [data-theme="dark"] .search-row:hover { background: #2a2a44; }
+  [data-theme="dark"] .chip.on { background: #5865F2; color: #fff; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="header-title">Tracker Management</div>
+    <div class="header-sub">Stock the shared card catalogue and sealed product list</div>
+  </div>
+  <div class="nav">
+    <a href="/">Dashboard</a>
+    <a href="/map">Map</a>
+    <a href="/status">Status</a>
+    <a href="/tips">Tips, Tricks, and Guide</a>
+    {% set can_view_network = is_admin or request.session.get('mod', False) or request.session.get('all_mods', False) %}
+    {% if can_view_network %}
+    <div class="nav-group">
+      <button class="nav-group-btn active" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        {% if is_admin %}<a href="/admin">Visitor Log</a>{% endif %}
+        {% if is_admin %}<a href="/contributors">Contributors</a>{% endif %}
+        <a href="/invite-network">Network</a>
+        <a href="/tracker-admin" class="active">Tracker Management</a>
+      </div>
+    </div>
+    {% endif %}
+    {% if is_admin %}<a href="/raffle-wheel">Raffle</a>{% endif %}
+    <div class="nav-group">
+      <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Nexus Playground<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        <a href="/portfolios">Portfolios</a>
+        <a href="/card-tracker">Tracker</a>
+        <a href="/grading-calculator">Grading Calculator</a>
+        <a href="/catalog">Card Catalog</a>
+        {% if request.session.get('inventory_access', False) %}<a href="/inventory">Inventory</a>{% endif %}
+      </div>
+    </div>
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
+    <a href="/logout">Log out</a>
+  </div>
+</div>
+
+<div class="main">
+
+  <div class="stat-grid" id="stats"></div>
+
+  <!-- 1. Single card -->
+  <div class="card">
+    <div class="card-title">Add or re-seed a single card</div>
+    <div class="card-desc">
+      Search for an exact printing and add it to the shared catalogue, so it starts
+      getting a daily price. Already there? You can pull its price history again.
+    </div>
+    <div class="field" style="max-width:460px;">
+      <label for="cardSearch">Search cards</label>
+      <input type="text" id="cardSearch" placeholder="Charizard" autocomplete="off">
+    </div>
+    <div class="hint">Pokémon only — that's what the price API covers.</div>
+    <div class="search-results" id="cardResults" style="display:none;"></div>
+
+    <div id="cardChosen" style="display:none;margin-top:12px;">
+      <div class="row">
+        <div class="field" style="flex:2 1 260px;">
+          <label>Selected</label>
+          <div style="font-size:13px;font-weight:600;" id="cardChosenName"></div>
+          <div class="hint" id="cardChosenBits"></div>
+        </div>
+        <div class="field" style="flex:0 0 150px;">
+          <label for="seedDays">History to pull</label>
+          <select id="seedDays">
+            {% for d in backdate_days %}<option value="{{ d }}">{{ d }} days</option>{% endfor %}
+          </select>
+        </div>
+        <div>
+          <button class="btn btn-primary" id="seedCardBtn" onclick="seedCard()">Add to catalogue</button>
+        </div>
+        <div>
+          <button class="btn" id="reseedBtn" onclick="reseedCard()" disabled>Re-pull history</button>
+        </div>
+      </div>
+      <div class="hint">
+        Pulling history costs 2 price-API credits per card. Re-pull only when a card's
+        chart looks wrong.
+      </div>
+    </div>
+    <div class="msg" id="cardMsg" role="status" aria-live="polite"></div>
+  </div>
+
+  <!-- 2. Whole set -->
+  <div class="card">
+    <div class="card-title">Import a whole set</div>
+    <div class="card-desc">
+      Pulls a set's card list from the free catalogue APIs, shows you what's new, and
+      adds the ones you pick. No price-API credits are spent until the nightly run.
+    </div>
+    <div class="row">
+      <div class="field" style="flex:0 0 150px;">
+        <label for="impGame">Game</label>
+        <select id="impGame" onchange="onImportGameChange()">
+          <option value="pokemon">Pokémon</option>
+          <option value="one_piece">One Piece</option>
+        </select>
+      </div>
+      <div class="field" style="flex:2 1 240px;">
+        <label for="impSet">Set</label>
+        <select id="impSet"><option value="">Loading sets…</option></select>
+      </div>
+      <div class="field" style="flex:1 1 170px;">
+        <label for="impRarity">Rarity</label>
+        <select id="impRarity"><option value="">All rarities</option></select>
+      </div>
+      <div><button class="btn btn-primary" id="impPreviewBtn" onclick="importPreview()">Preview</button></div>
+    </div>
+    <div class="preview-summary" id="impSummary"></div>
+    <div class="preview-list" id="impList" style="display:none;"></div>
+    <div class="row" id="impActions" style="display:none;margin-top:12px;">
+      <div><button class="btn btn-primary" id="impRunBtn" onclick="importRun()" disabled>Import selected</button></div>
+      <div style="font-size:12px;color:#666;padding-bottom:8px;">
+        <label style="display:inline;"><input type="checkbox" id="impSelectAll" checked onchange="impToggleAll(this.checked)"> Select all new</label>
+      </div>
+    </div>
+    <div class="msg" id="impMsg" role="status" aria-live="polite"></div>
+  </div>
+
+  <!-- 3. Sealed product -->
+  <div class="card">
+    <div class="card-title">Sealed product</div>
+    <div class="card-desc">
+      Creates the standard sealed items for a set so members can add them to a
+      portfolio. Safe to run again after new sets are stocked — it only adds what's
+      missing.
+    </div>
+    <div class="row">
+      <div class="field" style="flex:2 1 260px;">
+        <label for="sealedSet">Set name (leave blank for every set in the catalog)</label>
+        <input type="text" id="sealedSet" placeholder="Prismatic Evolutions" list="knownSets">
+        <datalist id="knownSets"></datalist>
+      </div>
+      <div><button class="btn btn-primary" id="sealedBtn" onclick="seedSealed()">Seed sealed product</button></div>
+    </div>
+    <div style="margin-top:12px;">
+      <label>Which products</label>
+      <div class="chips" id="sealedTypes">
+        {% for t in sealed_types %}
+          <div class="chip{% if t.key in default_sealed_types %} on{% endif %}" data-type="{{ t.key }}">{{ t.label }}</div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="hint">
+      Sealed product has no price source yet, so members will see "no price yet" next to
+      it. They can still record what they paid.
+    </div>
+    <div class="msg" id="sealedMsg" role="status" aria-live="polite"></div>
+  </div>
+
+</div>
+
+<script src="/static/csrf.js"></script>
+<script>
+const BACKDATE_MAX = {{ backdate_max }};
+let chosenCard = null;
+let chosenCardId = null;
+let impRows = [];
+
+function toggleNavGroup(e) {
+  const group = e.currentTarget.closest(".nav-group");
+  document.querySelectorAll(".nav-group").forEach(g => { if (g !== group) g.classList.remove("open"); });
+  group.classList.toggle("open");
+  e.stopPropagation();
+}
+document.addEventListener("click", () => {
+  document.querySelectorAll(".nav-group").forEach(g => g.classList.remove("open"));
+});
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+  const next = cur === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem("theme", next); } catch (e) {}
+  document.getElementById("themeToggle").textContent = next === "dark" ? "☀️" : "🌙";
+}
+function esc(s) {
+  return String(s === null || s === undefined ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function say(id, text, cls) {
+  document.getElementById(id).innerHTML = '<span class="' + (cls || "") + '">' + esc(text) + '</span>';
+}
+async function api(url, opts) {
+  const resp = await fetch(url, opts);
+  let data = {};
+  try { data = await resp.json(); } catch (e) {}
+  if (!resp.ok) throw new Error(data.detail || "Something went wrong.");
+  return data;
+}
+
+// ── Stats ───────────────────────────────────────────────────────────────
+async function loadStats() {
+  try {
+    const s = await api("/api/card-tracker/catalog-stats");
+    document.getElementById("stats").innerHTML =
+      stat("Cards tracked", s.tracked_cards.toLocaleString(), "cap " + s.max_tracked.toLocaleString()) +
+      stat("Held by someone", s.referenced_cards.toLocaleString(), "these get daily prices") +
+      stat("Priced today", s.priced_today.toLocaleString(), "so far") +
+      stat("Sealed products", s.sealed_products.toLocaleString(), s.sealed_sets + " sets");
+  } catch (e) {
+    document.getElementById("stats").innerHTML =
+      '<div class="stat-card"><div class="stat-label">Catalogue</div>' +
+      '<div class="stat-sub">' + esc(e.message) + '</div></div>';
+  }
+}
+function stat(label, value, sub) {
+  return '<div class="stat-card"><div class="stat-label">' + esc(label) + '</div>' +
+    '<div class="stat-value">' + esc(value) + '</div>' +
+    '<div class="stat-sub">' + esc(sub) + '</div></div>';
+}
+
+// ── Single card ─────────────────────────────────────────────────────────
+let searchTimer = null;
+document.getElementById("cardSearch").addEventListener("input", (e) => {
+  clearTimeout(searchTimer);
+  const q = e.target.value.trim();
+  if (q.length < 2) { document.getElementById("cardResults").style.display = "none"; return; }
+  searchTimer = setTimeout(() => searchCards(q), 250);
+});
+
+async function searchCards(q) {
+  const box = document.getElementById("cardResults");
+  try {
+    const rows = await api("/api/card-tracker/portfolio/search", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ game: "pokemon", query: q })
+    });
+    box.innerHTML = rows.length ? "" : '<div class="search-row muted">No cards matched.</div>';
+    rows.forEach(r => {
+      const div = document.createElement("div");
+      div.className = "search-row";
+      const bits = [r.set_name, r.card_number, r.variant].filter(Boolean).join(" · ");
+      div.innerHTML = '<span>' + esc(r.name) + '</span><span class="muted">' + esc(bits) + '</span>';
+      div.onclick = () => {
+        chosenCard = r;
+        chosenCardId = null;
+        document.getElementById("cardChosenName").textContent = r.name;
+        document.getElementById("cardChosenBits").textContent = bits;
+        document.getElementById("cardChosen").style.display = "block";
+        document.getElementById("reseedBtn").disabled = true;
+        box.style.display = "none";
+        say("cardMsg", "");
+      };
+      box.appendChild(div);
+    });
+    box.style.display = "block";
+  } catch (e) {
+    box.innerHTML = '<div class="search-row muted">' + esc(e.message) + '</div>';
+    box.style.display = "block";
+  }
+}
+
+async function seedCard() {
+  if (!chosenCard) return;
+  const btn = document.getElementById("seedCardBtn");
+  btn.disabled = true;
+  say("cardMsg", "Adding…", "busy");
+  try {
+    const data = await api("/api/card-tracker/seed-card", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(chosenCard)
+    });
+    chosenCardId = data.card_id;
+    document.getElementById("reseedBtn").disabled = false;
+    say("cardMsg", data.added
+      ? "Added to the catalogue. It'll pick up a price on the next nightly run — or pull its history now."
+      : "That card was already in the catalogue. You can re-pull its history.", "ok");
+    loadStats();
+  } catch (e) {
+    say("cardMsg", e.message, "err");
+  }
+  btn.disabled = false;
+}
+
+async function reseedCard() {
+  if (!chosenCardId) return;
+  const days = parseInt(document.getElementById("seedDays").value, 10);
+  if (!confirm("Pull " + days + " days of history for this card? Costs 2 price-API credits.")) return;
+  const btn = document.getElementById("reseedBtn");
+  btn.disabled = true;
+  say("cardMsg", "Pulling history…", "busy");
+  try {
+    await api("/api/card-tracker/backdate", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ card_ids: [chosenCardId], days: days })
+    });
+    pollBackdate();
+  } catch (e) {
+    say("cardMsg", e.message, "err");
+    btn.disabled = false;
+  }
+}
+
+async function pollBackdate() {
+  try {
+    const st = await api("/api/card-tracker/backdate/status");
+    if (st.running) { setTimeout(pollBackdate, 2000); return; }
+    if (st.error) say("cardMsg", "History pull failed: " + st.error, "err");
+    else say("cardMsg", "History pulled. The card's chart is up to date.", "ok");
+  } catch (e) {
+    say("cardMsg", e.message, "err");
+  }
+  document.getElementById("reseedBtn").disabled = false;
+  loadStats();
+}
+
+// ── Set import ──────────────────────────────────────────────────────────
+async function onImportGameChange() {
+  const game = document.getElementById("impGame").value;
+  const sel = document.getElementById("impSet");
+  sel.innerHTML = '<option value="">Loading sets…</option>';
+  try {
+    const sets = await api("/api/card-tracker/import/sets?game=" + encodeURIComponent(game));
+    sel.innerHTML = '<option value="">Pick a set…</option>';
+    (sets.sets || sets || []).forEach(s => {
+      const name = s.name || s;
+      const o = document.createElement("option");
+      o.value = name; o.textContent = name;
+      sel.appendChild(o);
+    });
+  } catch (e) {
+    sel.innerHTML = '<option value="">' + esc(e.message) + '</option>';
+  }
+}
+
+async function importPreview() {
+  const game = document.getElementById("impGame").value;
+  const setName = document.getElementById("impSet").value;
+  const rarity = document.getElementById("impRarity").value;
+  if (!setName) { say("impMsg", "Pick a set first.", "err"); return; }
+  const btn = document.getElementById("impPreviewBtn");
+  btn.disabled = true;
+  say("impMsg", "Looking up the set…", "busy");
+  try {
+    const data = await api("/api/card-tracker/import/preview", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ game: game, set_name: setName, rarity: rarity || null })
+    });
+    impRows = data.cards || [];
+    renderPreview(data);
+    say("impMsg", "");
+  } catch (e) {
+    say("impMsg", e.message, "err");
+  }
+  btn.disabled = false;
+}
+
+function renderPreview(data) {
+  const list = document.getElementById("impList");
+  const nNew = impRows.filter(c => !c.already).length;
+  document.getElementById("impSummary").textContent =
+    impRows.length + " cards in this set · " + nNew + " not in the catalogue yet";
+  list.innerHTML = "";
+  impRows.forEach((c, i) => {
+    const row = document.createElement("div");
+    row.className = "preview-row";
+    row.innerHTML =
+      '<input type="checkbox" data-i="' + i + '"' +
+        (c.already ? " disabled" : " checked") + '>' +
+      '<span style="flex:1;">' + esc(c.name) + '</span>' +
+      '<span class="muted">' + esc(c.card_number || "") + "</span>" +
+      '<span class="tag ' + (c.already ? "tag-have" : "tag-new") + '">' +
+        (c.already ? "already in" : "new") + "</span>";
+    list.appendChild(row);
+  });
+  list.style.display = impRows.length ? "block" : "none";
+  document.getElementById("impActions").style.display = impRows.length ? "flex" : "none";
+  document.getElementById("impRunBtn").disabled = nNew === 0;
+}
+
+function impToggleAll(on) {
+  document.querySelectorAll('#impList input[type=checkbox]:not([disabled])')
+    .forEach(cb => { cb.checked = on; });
+}
+
+async function importRun() {
+  const picked = [];
+  document.querySelectorAll('#impList input[type=checkbox]:not([disabled])')
+    .forEach(cb => { if (cb.checked) picked.push(impRows[parseInt(cb.dataset.i, 10)]); });
+  if (!picked.length) { say("impMsg", "Nothing selected.", "err"); return; }
+  if (!confirm("Add " + picked.length + " card(s) to the shared catalogue?")) return;
+  const btn = document.getElementById("impRunBtn");
+  btn.disabled = true;
+  say("impMsg", "Importing…", "busy");
+  try {
+    const data = await api("/api/card-tracker/import/run", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        game: document.getElementById("impGame").value,
+        set_name: document.getElementById("impSet").value,
+        cards: picked
+      })
+    });
+    say("impMsg", "Added " + (data.added !== undefined ? data.added : picked.length) +
+      " card(s). They'll be priced on the next nightly run.", "ok");
+    loadStats();
+  } catch (e) {
+    say("impMsg", e.message, "err");
+  }
+  btn.disabled = false;
+}
+
+// ── Sealed ──────────────────────────────────────────────────────────────
+document.getElementById("sealedTypes").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip");
+  if (chip) chip.classList.toggle("on");
+});
+
+async function seedSealed() {
+  const setName = document.getElementById("sealedSet").value.trim();
+  const types = Array.from(document.querySelectorAll("#sealedTypes .chip.on"))
+    .map(c => c.dataset.type);
+  if (!types.length) { say("sealedMsg", "Pick at least one product type.", "err"); return; }
+  if (!setName && !confirm("Seed sealed product for EVERY set in the catalog? This is safe to re-run, but it can add a lot of rows.")) return;
+  const btn = document.getElementById("sealedBtn");
+  btn.disabled = true;
+  say("sealedMsg", "Seeding…", "busy");
+  try {
+    const data = await api("/api/portfolios/sealed/seed", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ set_name: setName, product_types: types })
+    });
+    say("sealedMsg", data.added === 0
+      ? "Nothing new — those products were already there."
+      : "Added " + data.added + " product(s) across " + data.sets + " set(s).", "ok");
+    loadStats();
+    loadSealedSets();
+  } catch (e) {
+    say("sealedMsg", e.message, "err");
+  }
+  btn.disabled = false;
+}
+
+async function loadSealedSets() {
+  try {
+    const rows = await api("/api/portfolios/sealed/sets");
+    const dl = document.getElementById("knownSets");
+    dl.innerHTML = "";
+    rows.forEach(r => {
+      const o = document.createElement("option");
+      o.value = r.set_name;
+      dl.appendChild(o);
+    });
+  } catch (e) { /* the datalist is a convenience; a failure here isn't worth shouting about */ }
+}
+
+(function init() {
+  if (document.documentElement.getAttribute("data-theme") === "dark") {
+    document.getElementById("themeToggle").textContent = "☀️";
+  }
+  loadStats();
+  onImportGameChange();
+  loadSealedSets();
+})();
+</script>
+</body>
+</html>
