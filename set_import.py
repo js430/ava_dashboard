@@ -12,6 +12,7 @@ attempts fail the UI shows a clear error rather than importing garbage.
 
 import os
 import re
+import asyncio
 import logging
 from datetime import datetime
 
@@ -45,13 +46,48 @@ def _parse_date(raw):
     return None
 
 
+# pokemontcg.io is free and frequently unwell: measured 8 failures in 10
+# identical requests during one outage, with 500s and Cloudflare 502s
+# returning instantly and successes taking 7-17 seconds. A single attempt
+# means the set list rarely loads, so every read retries.
+POKEMONTCG_ATTEMPTS = int(os.getenv("POKEMONTCG_ATTEMPTS", "4"))
+POKEMONTCG_BACKOFF_S = float(os.getenv("POKEMONTCG_BACKOFF_S", "1.5"))
+# Retry only what a retry can fix: 5xx and transport errors. A 4xx means the
+# request itself is wrong and will fail again just as fast.
+_RETRY_STATUS = (500, 502, 503, 504, 520, 521, 522, 524)
+
+
+async def _pokemon_get(client: httpx.AsyncClient, path: str, params: dict):
+    """GET pokemontcg.io with retries. Raises the last error if all fail."""
+    last = None
+    for attempt in range(1, POKEMONTCG_ATTEMPTS + 1):
+        try:
+            resp = await client.get(f"{POKEMONTCG_BASE}{path}", params=params,
+                                    headers=_pokemon_headers())
+            if resp.status_code in _RETRY_STATUS:
+                last = httpx.HTTPStatusError(
+                    f"HTTP {resp.status_code}", request=resp.request, response=resp)
+                logger.info("pokemontcg.io %s attempt %d/%d: HTTP %s",
+                            path, attempt, POKEMONTCG_ATTEMPTS, resp.status_code)
+            else:
+                resp.raise_for_status()
+                return resp
+        except httpx.HTTPStatusError:
+            raise
+        except Exception as exc:
+            last = exc
+            logger.info("pokemontcg.io %s attempt %d/%d: %s",
+                        path, attempt, POKEMONTCG_ATTEMPTS, type(exc).__name__)
+        if attempt < POKEMONTCG_ATTEMPTS:
+            await asyncio.sleep(POKEMONTCG_BACKOFF_S * attempt)
+    raise last or RuntimeError("pokemontcg.io request failed")
+
+
 async def fetch_pokemon_sets(client: httpx.AsyncClient) -> list:
     """All Pokémon sets, newest first: [{id, name, release_date, total}]."""
-    resp = await client.get(f"{POKEMONTCG_BASE}/sets",
-                            params={"pageSize": 250, "orderBy": "-releaseDate",
-                                    "select": "id,name,releaseDate,total"},
-                            headers=_pokemon_headers())
-    resp.raise_for_status()
+    resp = await _pokemon_get(client, "/sets",
+                              {"pageSize": 250, "orderBy": "-releaseDate",
+                               "select": "id,name,releaseDate,total"})
     out = []
     for s in resp.json().get("data", []):
         out.append({

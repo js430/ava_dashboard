@@ -426,36 +426,47 @@ async function pollBackdate() {
 }
 
 // ── Set import ──────────────────────────────────────────────────────────
+// The API takes a set ID (e.g. "sv8"), a rarity, and a list of card NUMBERS
+// to leave out — it re-fetches the cards server-side. It does not accept a
+// list of card rows from the browser, which is what stops anyone injecting
+// arbitrary cards into the shared catalogue.
+let impRows = [];
+
 async function onImportGameChange() {
   const game = document.getElementById("impGame").value;
   const sel = document.getElementById("impSet");
   sel.innerHTML = '<option value="">Loading sets…</option>';
+  document.getElementById("impRarity").innerHTML = '<option value="">All rarities</option>';
   try {
-    const sets = await api("/api/card-tracker/import/sets?game=" + encodeURIComponent(game));
+    const data = await api("/api/card-tracker/import/sets?game=" + encodeURIComponent(game));
+    const sets = data.sets || [];
     sel.innerHTML = '<option value="">Pick a set…</option>';
-    (sets.sets || sets || []).forEach(s => {
-      const name = s.name || s;
+    sets.forEach(s => {
       const o = document.createElement("option");
-      o.value = name; o.textContent = name;
+      // The VALUE is the set id — that's what the preview and import take.
+      o.value = s.id;
+      o.textContent = s.name + (s.release_date ? " (" + s.release_date.slice(0, 4) + ")" : "");
       sel.appendChild(o);
     });
+    say("impMsg", data.stale ? data.detail : "", data.stale ? "busy" : "");
   } catch (e) {
-    sel.innerHTML = '<option value="">' + esc(e.message) + '</option>';
+    sel.innerHTML = '<option value="">Couldn\'t load sets</option>';
+    say("impMsg", e.message, "err");
   }
 }
 
 async function importPreview() {
   const game = document.getElementById("impGame").value;
-  const setName = document.getElementById("impSet").value;
+  const setId = document.getElementById("impSet").value;
   const rarity = document.getElementById("impRarity").value;
-  if (!setName) { say("impMsg", "Pick a set first.", "err"); return; }
+  if (!setId) { say("impMsg", "Pick a set first.", "err"); return; }
   const btn = document.getElementById("impPreviewBtn");
   btn.disabled = true;
   say("impMsg", "Looking up the set…", "busy");
   try {
     const data = await api("/api/card-tracker/import/preview", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ game: game, set_name: setName, rarity: rarity || null })
+      body: JSON.stringify({ game: game, set_id: setId, rarity: rarity })
     });
     impRows = data.cards || [];
     renderPreview(data);
@@ -468,20 +479,36 @@ async function importPreview() {
 
 function renderPreview(data) {
   const list = document.getElementById("impList");
-  const nNew = impRows.filter(c => !c.already).length;
+  const nNew = impRows.filter(c => !c.already_tracked).length;
   document.getElementById("impSummary").textContent =
-    impRows.length + " cards in this set · " + nNew + " not in the catalogue yet";
+    data.set_name + ": " + impRows.length + " card(s), " + nNew +
+    " not tracked yet · catalogue holds " + data.tracked_count +
+    " of " + data.max_tracked;
+
+  // Rarities come back with the preview, so the filter is populated from
+  // what this set actually has rather than a fixed list.
+  const rSel = document.getElementById("impRarity");
+  const current = rSel.value;
+  rSel.innerHTML = '<option value="">All rarities</option>';
+  (data.rarities || []).forEach(r => {
+    const o = document.createElement("option");
+    o.value = r; o.textContent = r;
+    if (r === current) o.selected = true;
+    rSel.appendChild(o);
+  });
+
   list.innerHTML = "";
   impRows.forEach((c, i) => {
     const row = document.createElement("div");
     row.className = "preview-row";
     row.innerHTML =
       '<input type="checkbox" data-i="' + i + '"' +
-        (c.already ? " disabled" : " checked") + '>' +
+        (c.already_tracked ? " disabled" : " checked") + '>' +
       '<span style="flex:1;">' + esc(c.name) + '</span>' +
-      '<span class="muted">' + esc(c.card_number || "") + "</span>" +
-      '<span class="tag ' + (c.already ? "tag-have" : "tag-new") + '">' +
-        (c.already ? "already in" : "new") + "</span>";
+      '<span class="muted">' + esc(c.card_number || "") + '</span>' +
+      '<span class="muted">' + esc(c.variant || "") + '</span>' +
+      '<span class="tag ' + (c.already_tracked ? "tag-have" : "tag-new") + '">' +
+        (c.already_tracked ? "already in" : "new") + '</span>';
     list.appendChild(row);
   });
   list.style.display = impRows.length ? "block" : "none";
@@ -495,11 +522,21 @@ function impToggleAll(on) {
 }
 
 async function importRun() {
-  const picked = [];
-  document.querySelectorAll('#impList input[type=checkbox]:not([disabled])')
-    .forEach(cb => { if (cb.checked) picked.push(impRows[parseInt(cb.dataset.i, 10)]); });
-  if (!picked.length) { say("impMsg", "Nothing selected.", "err"); return; }
-  if (!confirm("Add " + picked.length + " card(s) to the shared catalogue?")) return;
+  // The API re-fetches the set and imports everything EXCEPT the numbers we
+  // list, so send the unticked ones rather than the ticked ones.
+  const exclude = [];
+  let picked = 0;
+  document.querySelectorAll('#impList input[type=checkbox]')
+    .forEach(cb => {
+      const card = impRows[parseInt(cb.dataset.i, 10)];
+      if (!card) return;
+      if (cb.disabled) return;              // already tracked; the API skips it
+      if (cb.checked) picked += 1;
+      else if (card.card_number) exclude.push(card.card_number);
+    });
+  if (!picked) { say("impMsg", "Nothing selected.", "err"); return; }
+  if (!confirm("Add " + picked + " card(s) to the shared catalogue?")) return;
+
   const btn = document.getElementById("impRunBtn");
   btn.disabled = true;
   say("impMsg", "Importing…", "busy");
@@ -508,13 +545,16 @@ async function importRun() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         game: document.getElementById("impGame").value,
-        set_name: document.getElementById("impSet").value,
-        cards: picked
+        set_id: document.getElementById("impSet").value,
+        rarity: document.getElementById("impRarity").value,
+        exclude_numbers: exclude
       })
     });
-    say("impMsg", "Added " + (data.added !== undefined ? data.added : picked.length) +
-      " card(s). They'll be priced on the next nightly run.", "ok");
+    const added = (data.added !== undefined) ? data.added : picked;
+    say("impMsg", "Added " + added + " card(s). They'll be priced on the next " +
+      "nightly run.", "ok");
     loadStats();
+    importPreview();
   } catch (e) {
     say("impMsg", e.message, "err");
   }

@@ -3604,22 +3604,52 @@ def _validate_import_params(game: str, set_id: str, rarity: str) -> None:
     if len(rarity) > 60:
         raise HTTPException(status_code=400, detail="Invalid rarity")
 
+# Set lists change a handful of times a year, but the free APIs behind them
+# go down for hours at a time. One good fetch is cached and then served
+# through an outage — without this the Import panel is unusable whenever
+# pokemontcg.io is unwell, which is often.
+_SET_LIST_CACHE = {}          # game -> {"sets": [...], "at": epoch}
+_SET_LIST_TTL = 6 * 3600
+
+
 @app.get("/api/card-tracker/import/sets")
 @limiter.limit("30/hour")
 async def api_import_sets(request: Request, game: str = "pokemon"):
     _require_tracker_admin(request)
     if game not in ("pokemon", "one_piece"):
         raise HTTPException(status_code=400, detail="Invalid game")
+
+    cached = _SET_LIST_CACHE.get(game)
+    if cached and time.time() - cached["at"] < _SET_LIST_TTL:
+        return JSONResponse({"sets": cached["sets"], "stale": False},
+                            headers={"Cache-Control": "no-store"})
+
     try:
         async with httpx.AsyncClient(timeout=_CATALOG_TIMEOUT) as client:
             if game == "pokemon":
                 sets = await set_import.fetch_pokemon_sets(client)
             else:
                 sets = await set_import.fetch_onepiece_sets(client)
-    except Exception as e:
-        logger.exception("Set list fetch failed")
-        raise HTTPException(status_code=502, detail=f"Couldn't fetch the set list: {e}")
-    return JSONResponse(sets, headers={"Cache-Control": "no-store"})
+        _SET_LIST_CACHE[game] = {"sets": sets, "at": time.time()}
+        return JSONResponse({"sets": sets, "stale": False},
+                            headers={"Cache-Control": "no-store"})
+    except Exception:
+        logger.exception("Set list fetch failed for %s", game)
+
+    # Serve an expired cache rather than nothing: a set list from this morning
+    # is far more useful than an error, and the page says it's out of date.
+    if cached:
+        age_h = int((time.time() - cached["at"]) / 3600)
+        return JSONResponse({
+            "sets": cached["sets"], "stale": True,
+            "detail": ("The card database isn't responding, so this list is "
+                       "about %d hour(s) old." % age_h),
+        }, headers={"Cache-Control": "no-store"})
+
+    raise HTTPException(
+        status_code=502,
+        detail=("The public card database isn't responding right now. It's a free "
+                "service and goes down periodically — try again in a few minutes."))
 
 @app.post("/api/card-tracker/import/preview")
 @limiter.limit("20/hour")

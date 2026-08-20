@@ -1174,3 +1174,37 @@ shape (hence preview-first); keeping the generic generator as a fallback
 (a button that creates known-wrong data is a foot-gun, not a safety net).
 
 ---
+
+## 2026-08-19 — pokemontcg.io flakiness, and a broken import panel
+
+**Diagnosis:** the "Couldn't fetch the set list: 500" error was NOT our
+bug. Measured from this machine: **8 of 10 identical requests to
+api.pokemontcg.io failed** (instant 500s and Cloudflare 502s), while the 2
+that succeeded took 7-17 seconds. It is a free service and goes down for
+stretches. Isolating individual query params was a red herring — the same
+request both succeeded and failed minutes apart.
+
+**Fixes for the outage:** `set_import._pokemon_get()` retries 4 times with
+linear backoff, retrying only 5xx/transport errors (a 4xx means the request
+itself is wrong). `api_import_sets` caches a successful set list for 6h and
+serves the EXPIRED cache during an outage, flagged `stale` with its age, so
+the panel keeps working. Only a cold cache produces an error, and that
+message now explains it's an upstream outage instead of printing a raw
+exception and URL at the user.
+
+**A bug of mine, found while investigating:** when the set-import panel was
+moved to /tracker-admin its JS was REWRITTEN rather than moved, and it did
+not match the API at all — it sent `set_name` where the route reads
+`set_id`, sent a list of card rows where the route takes
+`exclude_numbers` (card numbers to leave OUT), read `c.already` where the
+response has `already_tracked`, and never populated the rarity filter from
+`data.rarities`. The panel could not have worked.
+
+**Why nothing caught it:** no test compared the page's payload to the keys
+the route reads. `test_importpanel.py` now extracts the body keys each
+route reads via AST and asserts the page sends them.
+
+**Rule going forward:** when moving UI between pages, move the JS verbatim
+first and refactor after — a rewrite silently drops the contract.
+
+---
