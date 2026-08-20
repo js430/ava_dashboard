@@ -3464,21 +3464,61 @@ async def api_portfolio_sealed_import(request: Request,
 
 @app.get("/api/portfolios/sealed/candidate-sets")
 async def api_portfolio_sealed_candidate_sets(request: Request,
+                                              min_year: int = 0,
                                               user=Depends(require_server_mod)):
-    """Sets in the card catalog, with how much sealed product each already
-    has — so it's obvious which ones still need importing."""
+    """Sets to consider for sealed import, NEWEST FIRST.
+
+    The list comes from the price API's own /sets — the same source the card
+    catalog uses. That matters twice over: the names are exactly what its
+    sealed lookups expect (no translation, no near-misses), and the rows
+    carry release dates.
+
+    Ordering by release date is the whole point. The previous version listed
+    DISTINCT set_name from catalog_cards alphabetically, so a bulk run spent
+    its budget on ADV-era and promo sets — which have no sealed product —
+    and never reached the modern sets that do.
+
+    One cached call to /sets, so building this list is effectively free.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            ppt_sets = await price_sources.fetch_ppt_sets(client)
+    except Exception:
+        logger.exception("Sealed: could not fetch the set list")
+        ppt_sets = []
+
+    if not ppt_sets:
+        # Fall back to what we have stocked rather than showing nothing.
+        async with request.app.state.db.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT DISTINCT set_name FROM catalog_cards "
+                "WHERE game = 'pokemon' AND set_name <> '' ORDER BY set_name")
+        ppt_sets = [{"name": r["set_name"], "year": "", "released": ""} for r in rows]
+
+    names = [s["name"] for s in ppt_sets]
     async with request.app.state.db.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT c.set_name,
-                   COALESCE((SELECT COUNT(*) FROM sealed_products s
-                              WHERE s.set_name = c.set_name), 0) AS sealed_count
-            FROM (SELECT DISTINCT set_name FROM catalog_cards
-                   WHERE game = 'pokemon' AND set_name <> '') c
-            ORDER BY c.set_name
-            """)
-    return JSONResponse([{"set_name": r["set_name"], "sealed_count": r["sealed_count"]}
-                         for r in rows], headers={"Cache-Control": "no-store"})
+        counts = {r["set_name"]: r["n"] for r in await conn.fetch(
+            "SELECT set_name, COUNT(*) AS n FROM sealed_products "
+            "WHERE set_name = ANY($1::text[]) GROUP BY set_name", names)}
+        checked = {r["set_name"]: r["found"] for r in await conn.fetch(
+            "SELECT set_name, found FROM sealed_set_checks "
+            "WHERE set_name = ANY($1::text[])", names)}
+
+    out = []
+    for entry in ppt_sets:
+        year = entry.get("year") or ""
+        if min_year and year.isdigit() and int(year) < min_year:
+            continue
+        name = entry["name"]
+        out.append({
+            "set_name": name,
+            "year": year,
+            "released": entry.get("released") or "",
+            "sealed_count": counts.get(name, 0),
+            # None = never asked. 0 = asked, nothing there.
+            "checked_found": checked.get(name),
+        })
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/portfolios/sealed/purge")

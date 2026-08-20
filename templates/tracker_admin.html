@@ -238,11 +238,18 @@
       <summary style="font-size:12.5px;color:#666;cursor:pointer;">Bulk and clean-up</summary>
       <div style="margin-top:12px;">
         <div class="row">
-          <div><button class="btn" onclick="importAllSealed()">Look up every set in the catalog</button></div>
+          <div class="field" style="flex:0 0 150px;">
+            <label for="sealedMinYear">Sets from year</label>
+            <input type="text" id="sealedMinYear" value="2020" placeholder="2020">
+          </div>
+          <div><button class="btn" onclick="importAllSealed()">Look up sets, newest first</button></div>
         </div>
         <div class="hint">
-          Goes set by set through the price API. Sets it has nothing for are skipped and
-          listed. Safe to re-run &mdash; existing products are updated, not duplicated.
+          Works newest first, because that's where sealed product exists &mdash; older
+          and promo sets mostly have none, and each look-up costs a call from an
+          allowance shared with the card catalog and the nightly price run. Sets already
+          checked and found empty are skipped. Safe to re-run: existing products are
+          updated, not duplicated.
         </div>
 
         {% if is_admin %}
@@ -633,11 +640,27 @@ async function importSealed() {
 }
 
 async function importAllSealed() {
-  if (!confirm("Look up every set in the catalog? This makes one price-API call per set.")) return;
-  say("sealedMsg", "Working through the catalog — this can take a while…", "busy");
+  const fromYear = document.getElementById("sealedMinYear").value.trim();
+  say("sealedMsg", "Fetching the set list…", "busy");
   try {
-    const sets = await api("/api/portfolios/sealed/candidate-sets");
-    const names = sets.map(s => s.set_name);
+    const url = "/api/portfolios/sealed/candidate-sets" +
+      (fromYear ? "?min_year=" + encodeURIComponent(fromYear) : "");
+    const sets = await api(url);
+    // Newest first, and skip sets we already asked about and found nothing
+    // for — the budget is shared with the catalog and the nightly price run.
+    const todo = sets.filter(s => s.checked_found === null || s.checked_found > 0);
+    if (!todo.length) {
+      say("sealedMsg", "Nothing left to look up with those settings.", "busy");
+      return;
+    }
+    if (!confirm("Look up " + todo.length + " set(s), newest first?
+
+" +
+                 "That's up to one price-API call each, from a daily allowance " +
+                 "shared with the card catalog and the nightly price run. " +
+                 "It stops early to leave some.")) return;
+    say("sealedMsg", "Working through " + todo.length + " set(s), newest first…", "busy");
+    const names = todo.map(s => s.set_name);
     const data = await api("/api/portfolios/sealed/import", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ set_names: names })
@@ -724,7 +747,11 @@ async function loadSealedSets() {
     rows.forEach(r => {
       const o = document.createElement("option");
       o.value = r.set_name;
-      o.label = r.sealed_count ? r.sealed_count + " already" : "none yet";
+      const bits = [];
+      if (r.year) bits.push(r.year);
+      if (r.sealed_count) bits.push(r.sealed_count + " saved");
+      else if (r.checked_found === 0) bits.push("none found");
+      o.label = bits.join(" · ");
       dl.appendChild(o);
     });
   } catch (e) { /* the datalist is a convenience; a failure isn't worth shouting about */ }

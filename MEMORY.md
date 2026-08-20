@@ -1241,3 +1241,30 @@ Bulk operations must respect the reserve and be resumable, not
 fire-and-forget.
 
 ---
+
+## 2026-08-20 — Sealed candidate sets come from the price API, newest first
+
+**Why the bulk import found almost nothing:** the candidate list was
+`SELECT DISTINCT set_name FROM catalog_cards ... ORDER BY set_name` —
+alphabetical. A run therefore started on ADV Expansion Pack, ADV-P
+Promotional cards, Alternate Art Promos, Aqua Deck Kit… vintage, promo and
+Japanese-only sets that have no sealed product at all. The daily allowance
+was spent before reaching the modern sets (Prismatic Evolutions and
+friends) where product actually exists. 60 sets checked, 1 product found.
+
+**Fix (the user's suggestion, and it was right):** use the same source the
+card catalog uses — `price_sources.fetch_ppt_sets()`. One call, cached a
+day, and it gives PPT's OWN set names, so there is no name-matching
+guesswork between what we ask and what it knows. Critically it also carries
+**release dates**, and `fetch_ppt_sets` already sorts newest first.
+
+**Bulk runs now:** newest first, with a **year floor** (default 2020) so
+vintage sets are excluded outright, and sets previously checked and found
+empty are skipped. Falls back to stocked catalog sets if /sets is
+unreachable, rather than showing an empty dropdown.
+
+**Lesson:** when two features talk to the same API, they should share the
+same identifiers from the same source. The catalog had the right set list
+all along; the sealed import invented its own from a derived table.
+
+---
