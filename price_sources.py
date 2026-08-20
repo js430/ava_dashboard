@@ -1489,48 +1489,100 @@ def configured_sources() -> dict:
 #   * candidate paths are tried in order and the one that answers is logged;
 #   * the caller previews the RAW rows before anything is written, so a
 #     mis-parse is seen by a human instead of landing in the catalogue.
+# CONFIRMED FROM PRODUCTION LOGS (2026-08-20): the sealed endpoint is
+# /sealed-products. /sealed returns 404 every time, so it is listed last —
+# trying it first doubled the call count for every set, and calls are the
+# scarce resource here.
 SEALED_PATH_CANDIDATES = tuple(
     p.strip() for p in os.getenv(
         "POKEMONPRICETRACKER_SEALED_PATH",
-        "/sealed,/sealed-products,/products").split(",") if p.strip())
+        "/sealed-products,/products,/sealed").split(",") if p.strip())
+
+# Once a path answers, remember it for the life of the process. A bulk import
+# of 60 sets was spending 60 wasted 404s discovering the same thing each time.
+_sealed_working_path = None
+
+# Their rate-limit tip: "Add limit=1 ... costs 1 minute call". A bigger limit
+# costs more, so this is deliberately modest. Most sets have a handful of
+# sealed products, not a hundred.
+PPT_SEALED_LIMIT = int(os.getenv("POKEMONPRICETRACKER_SEALED_LIMIT", "25"))
+
+# THE DAILY BUDGET IS SHARED with the catalog backfill, the grading
+# calculator and the nightly tracker ingest — one key, one allowance. A bulk
+# sealed import must not drain it, so it stops while this many calls remain
+# and leaves them for the features members actually use.
+PPT_DAILY_RESERVE = int(os.getenv("POKEMONPRICETRACKER_DAILY_RESERVE", "50"))
 
 
-async def fetch_ppt_sealed(set_name: str, limit: int = 100) -> tuple:
-    """Sealed product for one set. Returns (rows, status).
+def _daily_remaining(resp):
+    """The API's own count of calls left today, or None if it didn't say."""
+    if resp is None:
+        return None
+    raw = resp.headers.get("X-RateLimit-Daily-Remaining")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
 
-    status is one of: "ok", "empty", "no_key", "rate_limited", "not_found",
-    "error" — the same vocabulary the card fetchers use, so callers can tell
-    "this set genuinely has none" from "the endpoint isn't there".
 
-    `rows` are RAW API records, deliberately unparsed: the caller shows them
-    to a human before anything is stored.
+async def fetch_ppt_sealed(set_name: str, limit: int = None) -> tuple:
+    """Sealed product for one set. Returns (rows, status, meta).
+
+    status: "ok", "empty", "no_key", "rate_limited", "daily_exhausted",
+            "not_found", "error"
+
+    "daily_exhausted" is separated from "rate_limited" on purpose: a minute
+    limit clears in seconds, a spent daily budget does not clear until it
+    resets, and it also means the tracker and catalog have nothing left.
+
+    `rows` are RAW API records — the caller shows them to a human before
+    anything is stored.
     """
+    global _sealed_working_path
     if not os.getenv("POKEMONPRICETRACKER_API_KEY"):
-        return [], "no_key"
+        return [], "no_key", {}
 
-    last_status = "not_found"
+    limit = PPT_SEALED_LIMIT if limit is None else limit
+    # A known-good path first, then the candidates; never re-probe a path we
+    # have already seen answer.
+    paths = ([_sealed_working_path] if _sealed_working_path else []) +             [p for p in SEALED_PATH_CANDIDATES if p != _sealed_working_path]
+
+    last_status, meta = "not_found", {}
     async with httpx.AsyncClient(timeout=30.0) as client:
-        for path in SEALED_PATH_CANDIDATES:
+        for path in paths:
             rows, resp = await _ppt_get(
                 client, path, {"set": set_name, "limit": limit},
                 f"sealed({set_name})")
+            remaining = _daily_remaining(resp)
+            if remaining is not None:
+                meta["daily_remaining"] = remaining
+
             if resp is None:
                 last_status = "error"
                 continue
             if resp.status_code == 429:
-                return [], "rate_limited"
+                try:
+                    meta["retry_after"] = int(resp.headers.get("Retry-After") or 0)
+                except (TypeError, ValueError):
+                    meta["retry_after"] = 0
+                # A spent daily allowance is a different problem from a minute
+                # window, and the caller must react differently.
+                if remaining == 0:
+                    return [], "daily_exhausted", meta
+                return [], "rate_limited", meta
             if resp.status_code == 404:
-                # Wrong path for this account/version — try the next candidate.
                 logger.info("PokemonPriceTracker: no sealed endpoint at %s", path)
                 last_status = "not_found"
                 continue
             if resp.status_code != 200:
                 last_status = "error"
                 continue
-            logger.info("PokemonPriceTracker: sealed endpoint %s answered with "
-                        "%d row(s) for %s", path, len(rows), set_name)
-            return rows, ("ok" if rows else "empty")
-    return [], last_status
+
+            if _sealed_working_path != path:
+                _sealed_working_path = path
+                logger.info("PokemonPriceTracker: using sealed endpoint %s", path)
+            return rows, ("ok" if rows else "empty"), meta
+    return [], last_status, meta
 
 
 def ppt_sealed_available() -> bool:

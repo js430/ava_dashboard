@@ -1208,3 +1208,36 @@ route reads via AST and asserts the page sends them.
 first and refactor after — a rewrite silently drops the contract.
 
 ---
+
+## 2026-08-20 — Sealed import: real endpoint, and the SHARED API budget
+
+**Confirmed from production logs:** the sealed endpoint is
+**`/sealed-products`**. `/sealed` 404s every time. Candidate order was
+wrong, so every set cost two calls — a bulk run of 60 sets spent 60 calls
+discovering the same 404. `/sealed-products` is now first, and a working
+path is cached for the process so it is never re-probed.
+
+**THE BIG ONE — one key, one budget.** `POKEMONPRICETRACKER_API_KEY` is
+shared with the catalog backfill, the grading calculator and the nightly
+tracker ingest. A bulk sealed import drove `daily-remaining` to **0**,
+which starves all of them. Guards added:
+  * `PPT_DAILY_RESERVE` (50) — bulk import stops while that many calls
+    remain, leaving them for the features members use.
+  * `daily_exhausted` is now a distinct status from `rate_limited`: a
+    minute window clears in seconds, a daily allowance does not.
+  * `Retry-After` is read and surfaced.
+  * `PPT_SEALED_LIMIT` dropped to 25 — their own tip says a bigger limit
+    costs more calls per request.
+
+**Most sets have no sealed product** (old sets, promos, Japanese-only), and
+each empty answer costs a call. New `sealed_set_checks` table records what
+was asked and what was found; a bulk run skips sets found EMPTY within
+`SEALED_EMPTY_CHECK_TTL_DAYS` (30). Sets that DID have product are always
+re-checked, since that is how prices refresh. The skip list fails OPEN — an
+unreadable log means check everything, never skip everything.
+
+**Rule:** any new feature that calls PokemonPriceTracker shares this budget.
+Bulk operations must respect the reserve and be resumable, not
+fire-and-forget.
+
+---

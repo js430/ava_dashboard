@@ -138,6 +138,17 @@ PORTFOLIO_SCHEMA = [
     "ALTER TABLE sealed_products ADD COLUMN IF NOT EXISTS market_price NUMERIC(12,2)",
     "ALTER TABLE sealed_products ADD COLUMN IF NOT EXISTS price_updated_at TIMESTAMPTZ",
     "CREATE INDEX IF NOT EXISTS idx_sealed_set ON sealed_products (set_name)",
+    # What we have already asked the price API about. Most sets — old ones,
+    # promo sets, Japanese-only ones — have no sealed product at all, and the
+    # daily call budget is SHARED with the catalog and the nightly price run.
+    # Re-asking about them on every bulk run spends that budget for nothing.
+    """
+    CREATE TABLE IF NOT EXISTS sealed_set_checks (
+        set_name    TEXT PRIMARY KEY,
+        checked_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        found       INTEGER NOT NULL DEFAULT 0
+    )
+    """,
     # A lot is one purchase. card_id XOR sealed_id — enforced by the DB rather
     # than by application code, because a lot pointing at both (or neither)
     # would silently produce wrong portfolio totals rather than an error.
@@ -1220,6 +1231,46 @@ def parse_sealed_rows(rows, fallback_set: str = "") -> tuple:
         seen.add(key)
         parsed.append(item)
     return parsed, skipped
+
+
+
+# How long a "this set has no sealed product" answer is trusted. Long, because
+# a set that shipped no sealed product never will — but not forever, since the
+# API's coverage improves over time.
+EMPTY_CHECK_TTL_DAYS = int(os.getenv("SEALED_EMPTY_CHECK_TTL_DAYS", "30"))
+
+
+async def recently_checked_sets(pool) -> set:
+    """Sets we recently asked about and found NOTHING for.
+
+    Sets that DID have product are not skipped — re-running is how prices and
+    newly-added products get refreshed.
+    """
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT set_name FROM sealed_set_checks "
+                "WHERE found = 0 AND checked_at > NOW() - ($1 || ' days')::interval",
+                str(EMPTY_CHECK_TTL_DAYS))
+        return {r["set_name"] for r in rows}
+    except Exception:
+        # If the log is unreadable, check everything — slower, never wrong.
+        logger.exception("Sealed: could not read the check log")
+        return set()
+
+
+async def record_sealed_check(pool, set_name: str, found: int) -> None:
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO sealed_set_checks (set_name, checked_at, found)
+                VALUES ($1, NOW(), $2)
+                ON CONFLICT (set_name)
+                DO UPDATE SET checked_at = NOW(), found = EXCLUDED.found
+                """, set_name, int(found))
+    except Exception:
+        logger.exception("Sealed: could not record the check for %s", set_name)
 
 
 async def import_sealed_products(pool, items, language: str = "english",

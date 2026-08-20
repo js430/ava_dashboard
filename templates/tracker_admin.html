@@ -642,18 +642,29 @@ async function importAllSealed() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ set_names: names })
     });
-    let note = "Checked " + data.sets + " set(s): " + data.added + " added, " +
-      data.updated + " updated.";
-    if ((data.failures || []).length) {
-      const nothing = data.failures.filter(f => f.status === "empty").length;
-      const limited = data.failures.filter(f => f.status === "rate_limited").length;
-      const broken = data.failures.length - nothing - limited;
-      note += " " + nothing + " set(s) had none listed";
-      if (limited) note += ", stopped early on a rate limit";
-      if (broken) note += ", " + broken + " failed";
-      note += ".";
+    let note = "Looked up " + data.checked + " set(s): " + data.added +
+      " added, " + data.updated + " updated.";
+    if (data.skipped_known_empty > 0) {
+      note += " Skipped " + data.skipped_known_empty +
+        " already known to have none.";
     }
-    say("sealedMsg", note, "ok");
+    let tone = "ok";
+    if (data.stopped === "daily_exhausted") {
+      note += " Stopped: the price API's daily allowance is used up. It's shared " +
+        "with the card catalog and the nightly price run, so leave it until it resets.";
+      tone = "err";
+    } else if (data.stopped === "rate_limited") {
+      note += " Paused on a per-minute limit — run it again in a minute to carry on.";
+      tone = "busy";
+    } else if (data.stopped === "reserve") {
+      note += " Stopped early to leave calls for the catalog and the nightly " +
+        "price run. Run it again tomorrow to continue.";
+      tone = "busy";
+    }
+    if (data.daily_remaining !== null && data.daily_remaining !== undefined) {
+      note += " (" + data.daily_remaining + " API calls left today.)";
+    }
+    say("sealedMsg", note, tone);
     loadStats();
     loadSealedSets();
   } catch (e) {

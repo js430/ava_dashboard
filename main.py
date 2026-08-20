@@ -3346,14 +3346,20 @@ async def api_portfolio_sealed_preview(request: Request,
     if not set_name:
         raise HTTPException(status_code=400, detail="Pick a set first.")
 
-    rows, status = await price_sources.fetch_ppt_sealed(set_name)
+    rows, status, meta = await price_sources.fetch_ppt_sealed(set_name)
     parsed, skipped = portfolios.parse_sealed_rows(rows, set_name)
 
+    wait = meta.get("retry_after") or 0
     detail = {
         "ok": "Found %d product(s)." % len(parsed),
         "empty": "The price API has no sealed product listed for that set.",
         "no_key": "No price API key is configured.",
-        "rate_limited": "The price API is rate limiting us. Try again shortly.",
+        "rate_limited": ("Too many requests in the last minute. Try again in "
+                         "about %d seconds." % (wait or 30)),
+        "daily_exhausted": ("The price API's daily allowance is used up. That "
+                            "budget is shared with the card catalog and the "
+                            "nightly price run, so nothing more can be fetched "
+                            "until it resets."),
         "not_found": ("The price API didn't answer on any known sealed address. "
                       "It may not offer sealed product, or the address may have "
                       "changed — see POKEMONPRICETRACKER_SEALED_PATH."),
@@ -3374,6 +3380,7 @@ async def api_portfolio_sealed_preview(request: Request,
             "ppt_product_id": p.get("ppt_product_id") or "",
         } for p in parsed],
         "skipped": skipped,
+        "daily_remaining": meta.get("daily_remaining"),
         # One raw record, so a wrong parse is diagnosable without the logs.
         "sample_raw": rows[0] if rows else None,
         "raw_count": len(rows),
@@ -3402,28 +3409,56 @@ async def api_portfolio_sealed_import(request: Request,
         raise HTTPException(status_code=400, detail="Pick at least one set.")
 
     pool = request.app.state.db
-    added = updated = skipped = 0
+    added = updated = skipped = checked = 0
     failures = []
+    stopped = None
+    daily_remaining = None
+
+    # Skip sets we already looked up and found nothing for. The daily budget
+    # is shared with the catalog and the nightly price run, and re-asking about
+    # a set with no sealed product spends it for no gain.
+    recent = await portfolios.recently_checked_sets(pool)
+
     for set_name in set_names:
-        rows, status = await price_sources.fetch_ppt_sealed(set_name)
-        if status == "rate_limited":
-            # Stop rather than hammer: the rest can be imported after a wait.
-            failures.append({"set_name": set_name, "status": status})
+        if set_name in recent:
+            continue
+        rows, status, meta = await price_sources.fetch_ppt_sealed(set_name)
+        checked += 1
+        if meta.get("daily_remaining") is not None:
+            daily_remaining = meta["daily_remaining"]
+
+        if status in ("rate_limited", "daily_exhausted"):
+            stopped = status
+            failures.append({"set_name": set_name, "status": status,
+                             "retry_after": meta.get("retry_after")})
             break
+        # Leave headroom for the features members actually use rather than
+        # spending the last of the allowance on a bulk backfill.
+        if daily_remaining is not None and                 daily_remaining <= price_sources.PPT_DAILY_RESERVE:
+            stopped = "reserve"
+            break
+
         if status != "ok":
             failures.append({"set_name": set_name, "status": status})
+            await portfolios.record_sealed_check(pool, set_name, 0)
             continue
         parsed, n_skipped = portfolios.parse_sealed_rows(rows, set_name)
         skipped += n_skipped
         result = await portfolios.import_sealed_products(pool, parsed)
+        await portfolios.record_sealed_check(pool, set_name, len(parsed))
         added += result["added"]
         updated += result["updated"]
 
-    logger.info("Sealed import by %s: %d set(s), %d added, %d updated, %d failed",
-                user["id"], len(set_names), added, updated, len(failures))
+    logger.info("Sealed import by %s: %d requested, %d checked, %d added, "
+                "%d updated, %d failed, stopped=%s, daily_remaining=%s",
+                user["id"], len(set_names), checked, added, updated,
+                len(failures), stopped, daily_remaining)
     return JSONResponse({
-        "sets": len(set_names), "added": added, "updated": updated,
-        "skipped": skipped, "failures": failures,
+        "sets": len(set_names), "checked": checked, "skipped_known_empty":
+            len(set_names) - checked - (1 if stopped else 0),
+        "added": added, "updated": updated, "skipped": skipped,
+        "failures": failures, "stopped": stopped,
+        "daily_remaining": daily_remaining,
     }, headers={"Cache-Control": "no-store"})
 
 
