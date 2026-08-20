@@ -557,7 +557,15 @@ function fillConditions(kind) {
   });
 }
 
+// Type-ahead. Two things matter here beyond "call the API":
+//   1. Debounce, so a fast typist doesn't fire a request per character.
+//   2. A sequence number, so a SLOW early response can't land after a fast
+//      later one and repaint the list with results for text the user has
+//      already changed. Without it, typing "pri" then "prismatic" can leave
+//      the "pri" results on screen.
 let searchTimer = null;
+let searchSeq = 0;
+
 document.getElementById("cardSearch").addEventListener("input", (e) => {
   clearTimeout(searchTimer);
   const q = e.target.value.trim();
@@ -565,21 +573,33 @@ document.getElementById("cardSearch").addEventListener("input", (e) => {
     document.getElementById("cardResults").style.display = "none";
     return;
   }
-  searchTimer = setTimeout(() => searchCards(q), 250);
+  searchTimer = setTimeout(() => searchCards(q, ++searchSeq), 200);
 });
+
 document.getElementById("sealedSearch").addEventListener("input", (e) => {
   clearTimeout(searchTimer);
   const q = e.target.value.trim();
-  searchTimer = setTimeout(() => searchSealed(q), 250);
+  // Sealed starts from the first character: the list is small and the whole
+  // point is seeing matches as you type.
+  searchTimer = setTimeout(() => searchSealed(q, ++searchSeq), 180);
 });
 
-async function searchCards(q) {
+// Show the first few the moment the field is focused, so an empty box isn't
+// a dead end for someone who doesn't know what's been added.
+document.getElementById("sealedSearch").addEventListener("focus", () => {
+  if (!document.getElementById("sealedSearch").value.trim()) {
+    searchSealed("", ++searchSeq);
+  }
+});
+
+async function searchCards(q, seq) {
   const box = document.getElementById("cardResults");
   try {
     const rows = await api("/api/card-tracker/portfolio/search", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ game: "pokemon", query: q })
     });
+    if (seq !== searchSeq) return;   // a newer keystroke already won
     box.innerHTML = "";
     if (!rows.length) {
       box.innerHTML = '<div class="search-row muted">No cards matched.</div>';
@@ -594,19 +614,23 @@ async function searchCards(q) {
     });
     box.style.display = "block";
   } catch (e) {
+    if (seq !== searchSeq) return;
     box.innerHTML = '<div class="search-row muted">' + esc(e.message) + '</div>';
     box.style.display = "block";
   }
 }
 
-async function searchSealed(q) {
+async function searchSealed(q, seq) {
   const box = document.getElementById("sealedResults");
   try {
-    const rows = await api("/api/portfolios/sealed?q=" + encodeURIComponent(q));
+    const rows = await api("/api/portfolios/sealed?limit=10&q=" + encodeURIComponent(q));
+    if (seq !== searchSeq) return;   // a newer keystroke already won
     box.innerHTML = "";
     if (!rows.length) {
-      box.innerHTML = '<div class="search-row muted">No sealed product matched. ' +
-        'Sealed product is added by an admin per set.</div>';
+      box.innerHTML = '<div class="search-row muted">' + (q
+        ? 'Nothing matches "' + esc(q) + '".'
+        : "No sealed product has been added yet.") +
+        ' Sealed product is added per set by an admin or server mod.</div>';
     }
     rows.forEach(r => {
       const div = document.createElement("div");
@@ -621,6 +645,7 @@ async function searchSealed(q) {
     });
     box.style.display = "block";
   } catch (e) {
+    if (seq !== searchSeq) return;
     box.innerHTML = '<div class="search-row muted">' + esc(e.message) + '</div>';
     box.style.display = "block";
   }

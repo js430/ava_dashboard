@@ -3206,21 +3206,34 @@ async def api_portfolio_resolve_card(request: Request,
 
 @app.get("/api/portfolios/sealed")
 async def api_portfolio_sealed(request: Request, set_name: str = "", q: str = "",
+                               limit: int = 10,
                                user=Depends(get_member_or_subscriber)):
-    """Sealed product, optionally filtered by set or name."""
+    """Sealed product, filtered by set and/or free text. Type-ahead: this is
+    called on every keystroke, so it returns a short list by default.
+
+    `q` matches the product name OR its set name, because someone typing
+    "prismatic" is looking for that set's boxes and shouldn't have to know
+    how each product happens to be named.
+    """
+    try:
+        limit = max(1, min(int(limit), 50))
+    except (TypeError, ValueError):
+        limit = 10
     clauses, params = [], []
     if set_name:
         params.append(set_name[:120])
         clauses.append("set_name ILIKE $" + str(len(params)))
     if q:
         params.append("%" + q.strip()[:80] + "%")
-        clauses.append("name ILIKE $" + str(len(params)))
+        n = str(len(params))
+        clauses.append("(name ILIKE $" + n + " OR set_name ILIKE $" + n + ")")
+    params.append(limit)
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     async with request.app.state.db.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, name, set_name, product_type, language, image_url "
             "FROM sealed_products " + where +
-            " ORDER BY set_name, name LIMIT 200", *params)
+            " ORDER BY set_name, name LIMIT $" + str(len(params)), *params)
     return JSONResponse([
         {"id": r["id"], "name": r["name"], "set_name": r["set_name"],
          "product_type": r["product_type"], "language": r["language"],

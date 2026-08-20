@@ -307,21 +307,25 @@ function stat(label, value, sub) {
 }
 
 // ── Single card ─────────────────────────────────────────────────────────
+// Sequence number so a slow early response can't repaint the list after a
+// faster later one — see the same guard on the portfolios page.
 let searchTimer = null;
+let searchSeq = 0;
 document.getElementById("cardSearch").addEventListener("input", (e) => {
   clearTimeout(searchTimer);
   const q = e.target.value.trim();
   if (q.length < 2) { document.getElementById("cardResults").style.display = "none"; return; }
-  searchTimer = setTimeout(() => searchCards(q), 250);
+  searchTimer = setTimeout(() => searchCards(q, ++searchSeq), 200);
 });
 
-async function searchCards(q) {
+async function searchCards(q, seq) {
   const box = document.getElementById("cardResults");
   try {
     const rows = await api("/api/card-tracker/portfolio/search", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ game: "pokemon", query: q })
     });
+    if (seq !== searchSeq) return;   // a newer keystroke already won
     box.innerHTML = rows.length ? "" : '<div class="search-row muted">No cards matched.</div>';
     rows.forEach(r => {
       const div = document.createElement("div");
@@ -342,6 +346,7 @@ async function searchCards(q) {
     });
     box.style.display = "block";
   } catch (e) {
+    if (seq !== searchSeq) return;
     box.innerHTML = '<div class="search-row muted">' + esc(e.message) + '</div>';
     box.style.display = "block";
   }
