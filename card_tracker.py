@@ -26,6 +26,7 @@ import httpx
 
 import justtcg
 import price_sources
+import portfolios
 from watchlist import WATCHLIST
 
 logger = logging.getLogger("dashboard.card_tracker")
@@ -234,10 +235,17 @@ DEFAULT_VISIBLE_COLUMNS = [k for k in TRACKER_COLUMN_KEYS if k not in ("age", "l
 
 
 async def ensure_card_tracker_schema(pool) -> None:
-    """Create the tracker tables if they don't exist (idempotent)."""
+    """Create the tracker tables if they don't exist (idempotent).
+
+    Also ensures the portfolio tables, because the ingest queries below now
+    reference portfolio_lots. Both standalone scripts (ingest_prices,
+    compute_scores) call only this function, so creating the portfolio tables
+    here is what stops a cron run failing on a missing relation.
+    """
     async with pool.acquire() as conn:
         for ddl in CARD_TRACKER_SCHEMA:
             await conn.execute(ddl)
+    await portfolios.ensure_portfolio_schema(pool)
     logger.info("Card tracker schema ensured")
 
 
@@ -432,13 +440,18 @@ async def resolve_tcgplayer_ids(pool, client: httpx.AsyncClient, backdate_budget
 # watchlist.py seed nobody actually added, or the last member dropped it)
 # from costing a credit every day forever. A card only gets priced while at
 # least one member is actually tracking it.
+# "Anyone references this card" now means a watchlist row OR a portfolio lot.
+# That union is what keeps the cost flat: a card sitting in the tracker and in
+# five members' portfolios is still fetched ONCE per day, because this query
+# returns it once. Adding portfolios did not add per-portfolio API cost.
 _MISSING_TODAY_SQL = """
     SELECT t.id, t.name, t.set_name, t.card_number, t.variant, t.tcgplayer_id, t.language,
            (SELECT MAX(p.captured_at) FROM price_snapshots p WHERE p.card_id = t.id)
                AS last_priced
     FROM tracked_cards t
     WHERE t.game = 'pokemon'
-      AND EXISTS (SELECT 1 FROM user_tracked_cards u WHERE u.card_id = t.id)
+      AND (EXISTS (SELECT 1 FROM user_tracked_cards u WHERE u.card_id = t.id)
+           OR EXISTS (SELECT 1 FROM portfolio_lots l WHERE l.card_id = t.id))
       AND NOT EXISTS (
           SELECT 1 FROM price_snapshots p
           WHERE p.card_id = t.id
@@ -458,7 +471,8 @@ _COVERAGE_SQL = """
            )) AS priced_today
     FROM tracked_cards t
     WHERE t.game = 'pokemon'
-      AND EXISTS (SELECT 1 FROM user_tracked_cards u WHERE u.card_id = t.id)
+      AND (EXISTS (SELECT 1 FROM user_tracked_cards u WHERE u.card_id = t.id)
+           OR EXISTS (SELECT 1 FROM portfolio_lots l WHERE l.card_id = t.id))
 """
 
 

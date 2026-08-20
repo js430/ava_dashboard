@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/brand/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/brand/icon-180.png">
+<script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Portfolios — Nexus Card Co</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .header-title { font-size: 16px; font-weight: 600; color: #111; }
+  .header-sub { font-size: 12px; color: #999; margin-top: 1px; }
+  .nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; }
+  .nav a:hover { background: #f4f4f5; }
+  .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-group { position: relative; display: inline-flex; }
+  .nav-group-btn { font-family: inherit; font-size: 12px; color: #555; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+  .nav-group-btn:hover { background: #f4f4f5; }
+  .nav-group-btn.active, .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-caret { font-size: 9px; line-height: 1; }
+  .nav-menu { display: none; position: absolute; top: calc(100% + 4px); right: 0; min-width: 150px; padding: 4px; background: #fff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.10); z-index: 400; }
+  .nav-group.open .nav-menu { display: block; }
+  .nav-menu a { display: block; padding: 6px 10px; border: none; border-radius: 5px; background: none; font-size: 12px; color: #555; text-decoration: none; white-space: nowrap; }
+  .nav-menu a:hover { background: #f4f4f5; }
+  .nav-menu a.active { background: #5865F2; color: #fff; }
+  .theme-toggle { font-family: inherit; font-size: 13px; padding: 3px 8px; border: 1px solid #ddd; border-radius: 6px; background: #fff; cursor: pointer; line-height: 1.4; }
+  .main { padding: 24px; max-width: 1500px; margin: 0 auto; }
+
+  .card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .card-title { font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+
+  .tabs { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+  .tab { font-size: 13px; padding: 7px 14px; border: 1px solid #ddd; border-radius: 8px; background: #fff; cursor: pointer; font-family: inherit; color: #444; }
+  .tab:hover { background: #f4f4f5; }
+  .tab.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .tab-add { border-style: dashed; color: #5865F2; }
+
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .stat-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 14px 16px; }
+  .stat-label { font-size: 11px; color: #888; margin-bottom: 5px; text-transform: uppercase; letter-spacing: .04em; }
+  .stat-value { font-size: 20px; font-weight: 600; color: #111; }
+  .stat-sub { font-size: 11px; color: #999; margin-top: 3px; }
+  .up { color: #16794c; }
+  .down { color: #b42318; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #888; padding: 8px 10px; border-bottom: 1px solid #e4e4e7; white-space: nowrap; }
+  td { padding: 9px 10px; border-bottom: 1px solid #f1f1f4; vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .muted { color: #999; }
+  .pill { display: inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 999px; background: #eef0ff; color: #4650c4; white-space: nowrap; }
+  .pill-sealed { background: #fdf1dc; color: #8a5a10; }
+  .pill-sold { background: #eaf6ef; color: #16794c; }
+  .pill-none { background: #f2f2f4; color: #888; }
+
+  .btn { font-family: inherit; font-size: 12.5px; padding: 7px 13px; border-radius: 8px; border: 1px solid #ddd; background: #fff; color: #444; cursor: pointer; }
+  .btn:hover { background: #f4f4f5; }
+  .btn-primary { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .btn-primary:hover { background: #4752d4; }
+  .btn-danger { color: #b42318; border-color: #f0c9c4; }
+  .btn-sm { font-size: 11.5px; padding: 4px 9px; }
+  .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+
+  label { display: block; font-size: 11.5px; color: #666; margin-bottom: 4px; }
+  input[type=text], input[type=number], input[type=date], select, textarea {
+    width: 100%; font-family: inherit; font-size: 13px; padding: 8px 10px;
+    border: 1px solid #ddd; border-radius: 8px; background: #fff; color: #111;
+  }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: #5865F2; }
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 12px; }
+  .hint { font-size: 11.5px; color: #999; margin-top: 4px; line-height: 1.5; }
+  .msg { font-size: 12.5px; margin-top: 10px; line-height: 1.5; }
+  .msg.err { color: #b42318; }
+  .msg.ok { color: #16794c; }
+  .empty { text-align: center; padding: 40px 20px; color: #999; font-size: 13px; line-height: 1.7; }
+
+  .search-results { max-height: 260px; overflow-y: auto; border: 1px solid #eee; border-radius: 8px; margin-top: 8px; }
+  .search-row { padding: 8px 11px; font-size: 12.5px; cursor: pointer; border-bottom: 1px solid #f4f4f5; display: flex; justify-content: space-between; gap: 10px; }
+  .search-row:last-child { border-bottom: none; }
+  .search-row:hover { background: #f6f6ff; }
+  .search-row.sel { background: #eef0ff; }
+  .chosen { font-size: 12.5px; padding: 8px 11px; background: #eef0ff; border-radius: 8px; margin-top: 8px; }
+
+  .seg { display: inline-flex; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; }
+  .seg button { font-family: inherit; font-size: 12.5px; padding: 7px 14px; border: none; background: #fff; color: #555; cursor: pointer; }
+  .seg button.on { background: #5865F2; color: #fff; }
+
+  [data-theme="dark"] body, html[data-theme="dark"] body { background: #17171b; color: #e8e8ea; }
+  [data-theme="dark"] .header { background: #1e1e24; border-bottom-color: #2c2c34; }
+  [data-theme="dark"] .header-title { color: #e8e8ea; }
+  [data-theme="dark"] .card, [data-theme="dark"] .stat-card { background: #1e1e24; border-color: #2c2c34; }
+  [data-theme="dark"] .stat-value, [data-theme="dark"] .card-title { color: #e8e8ea; }
+  [data-theme="dark"] th { color: #8a8a95; border-bottom-color: #2c2c34; }
+  [data-theme="dark"] td { border-bottom-color: #26262d; }
+  [data-theme="dark"] .nav a, [data-theme="dark"] .nav-group-btn, [data-theme="dark"] .btn,
+  [data-theme="dark"] .theme-toggle { background: #24242b; border-color: #33333c; color: #c9c9d1; }
+  [data-theme="dark"] .nav-menu { background: #24242b; border-color: #33333c; }
+  [data-theme="dark"] .nav-menu a { color: #c9c9d1; }
+  [data-theme="dark"] .tab { background: #24242b; border-color: #33333c; color: #c9c9d1; }
+  [data-theme="dark"] input, [data-theme="dark"] select, [data-theme="dark"] textarea { background: #24242b; border-color: #33333c; color: #e8e8ea; }
+  [data-theme="dark"] .search-results { border-color: #2c2c34; }
+  [data-theme="dark"] .search-row { border-bottom-color: #26262d; }
+  [data-theme="dark"] .search-row:hover, [data-theme="dark"] .chosen, [data-theme="dark"] .search-row.sel { background: #2a2a44; }
+  [data-theme="dark"] .up { color: #6ee7a8; }
+  [data-theme="dark"] .down { color: #ff9b91; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="header-title">Portfolios</div>
+    <div class="header-sub">What you own, what it cost, and what it's worth now</div>
+  </div>
+  <div class="nav">
+    <a href="/">Dashboard</a>
+    <a href="/map">Map</a>
+    <a href="/status">Status</a>
+    <a href="/tips">Tips, Tricks, and Guide</a>
+    {% set can_view_network = is_admin or request.session.get('mod', False) or request.session.get('all_mods', False) %}
+    {% if can_view_network %}
+    <div class="nav-group">
+      <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        {% if is_admin %}<a href="/admin">Visitor Log</a>{% endif %}
+        {% if is_admin %}<a href="/contributors">Contributors</a>{% endif %}
+        <a href="/invite-network">Network</a>
+      </div>
+    </div>
+    {% endif %}
+    {% if is_admin %}<a href="/raffle-wheel">Raffle</a>{% endif %}
+    <div class="nav-group">
+      <button class="nav-group-btn active" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Nexus Playground<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        <a href="/portfolios" class="active">Portfolios</a>
+        <a href="/card-tracker">Tracker</a>
+        <a href="/grading-calculator">Grading Calculator</a>
+        <a href="/catalog">Card Catalog</a>
+        {% if request.session.get('inventory_access', False) %}<a href="/inventory">Inventory</a>{% endif %}
+      </div>
+    </div>
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
+    <a href="/logout">Log out</a>
+  </div>
+</div>
+
+<div class="main">
+
+  <div class="tabs" id="tabs"></div>
+
+  <div id="summary" class="stat-grid" style="display:none;"></div>
+
+  <div class="card" id="holdingsCard" style="display:none;">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+      <div class="card-title" style="margin:0;">Holdings</div>
+      <div style="display:flex;gap:6px;">
+        <button class="btn btn-primary btn-sm" onclick="showAdd()">Add an item</button>
+        <button class="btn btn-sm" onclick="renamePortfolio()">Rename</button>
+        <button class="btn btn-sm btn-danger" onclick="deletePortfolio()">Delete portfolio</button>
+      </div>
+    </div>
+    <div style="overflow-x:auto;">
+      <table id="lots">
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>Condition</th>
+            <th class="num">Qty</th>
+            <th class="num">Paid ea.</th>
+            <th class="num">Cost</th>
+            <th class="num">Now ea.</th>
+            <th class="num">Value</th>
+            <th class="num">Gain</th>
+            <th>Bought</th>
+            <th>From</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="lotRows"></tbody>
+      </table>
+    </div>
+    <div id="emptyLots" class="empty" style="display:none;">
+      Nothing in this portfolio yet.<br>Add a card or a sealed product to start tracking what it's doing.
+    </div>
+  </div>
+
+  <!-- Add / edit an item -->
+  <div class="card" id="addCard" style="display:none;">
+    <div class="card-title" id="addTitle">Add an item</div>
+
+    <div id="pickStep">
+      <div class="seg" style="margin-bottom:12px;">
+        <button id="segCard" class="on" onclick="setKind('card')">Card</button>
+        <button id="segSealed" onclick="setKind('sealed')">Sealed product</button>
+      </div>
+
+      <div id="cardPick">
+        <label for="cardSearch">Search for a card</label>
+        <input type="text" id="cardSearch" placeholder="Charizard" autocomplete="off">
+        <div class="hint">Type at least 2 characters. Pick the exact printing you own.</div>
+        <div class="search-results" id="cardResults" style="display:none;"></div>
+      </div>
+
+      <div id="sealedPick" style="display:none;">
+        <label for="sealedSearch">Search sealed product</label>
+        <input type="text" id="sealedSearch" placeholder="Prismatic Evolutions" autocomplete="off">
+        <div class="hint">Booster boxes, ETBs, bundles and tins.</div>
+        <div class="search-results" id="sealedResults" style="display:none;"></div>
+      </div>
+
+      <div id="chosen" class="chosen" style="display:none;"></div>
+    </div>
+
+    <div id="detailStep" style="display:none;margin-top:14px;">
+      <div class="form-grid">
+        <div>
+          <label for="fQty">How many</label>
+          <input type="number" id="fQty" min="1" step="1" value="1">
+        </div>
+        <div>
+          <label for="fCondition">Condition</label>
+          <select id="fCondition"></select>
+        </div>
+        <div>
+          <label for="fUnitCost">Price paid, each</label>
+          <input type="number" id="fUnitCost" min="0" step="0.01" placeholder="0.00">
+        </div>
+        <div>
+          <label for="fFees">Shipping &amp; fees, total</label>
+          <input type="number" id="fFees" min="0" step="0.01" placeholder="0.00">
+        </div>
+        <div>
+          <label for="fPurchased">Date bought</label>
+          <input type="date" id="fPurchased">
+        </div>
+        <div>
+          <label for="fFrom">Bought from</label>
+          <input type="text" id="fFrom" list="sourceList" placeholder="eBay">
+          <datalist id="sourceList">
+            {% for s in common_sources %}<option value="{{ s }}"></option>{% endfor %}
+          </datalist>
+        </div>
+      </div>
+
+      <div class="card-title" style="font-size:12.5px;margin-top:6px;">If you've sold it</div>
+      <div class="form-grid">
+        <div>
+          <label for="fSoldOn">Date sold</label>
+          <input type="date" id="fSoldOn">
+        </div>
+        <div>
+          <label for="fSalePrice">Sold for, each</label>
+          <input type="number" id="fSalePrice" min="0" step="0.01" placeholder="0.00">
+        </div>
+        <div>
+          <label for="fSaleFees">Selling fees, total</label>
+          <input type="number" id="fSaleFees" min="0" step="0.01" placeholder="0.00">
+        </div>
+      </div>
+      <div class="hint" style="margin-bottom:12px;">
+        Leave these blank while you still own it. Once you fill in a sale price, the
+        gain becomes a locked-in figure and stops moving with the market.
+      </div>
+
+      <div>
+        <label for="fNotes">Notes</label>
+        <input type="text" id="fNotes" placeholder="Submission number, trade details, anything worth remembering">
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:14px;">
+        <button class="btn btn-primary" id="saveBtn" onclick="saveLot()">Save</button>
+        <button class="btn" onclick="cancelAdd()">Cancel</button>
+      </div>
+    </div>
+
+    <div class="msg" id="addMsg" role="status" aria-live="polite"></div>
+  </div>
+
+  <div id="noPortfolios" class="card empty" style="display:none;">
+    You don't have any portfolios yet.<br>
+    Create one to start tracking what you paid and what it's worth.
+    <div style="margin-top:14px;"><button class="btn btn-primary" onclick="createPortfolio()">Create a portfolio</button></div>
+  </div>
+
+  <div class="hint" id="capNote" style="text-align:center;margin-top:6px;"></div>
+</div>
+
+<script src="/static/csrf.js"></script>
+<script>
+const MAX_PORTFOLIOS = {{ max_portfolios }};
+const MAX_ITEMS = {{ max_items }};
+const CARD_CONDITIONS = {{ card_conditions | tojson }};
+const SEALED_CONDITIONS = {{ sealed_conditions | tojson }};
+
+let portfolios = [];
+let activeId = null;
+let addKind = "card";
+let chosenItem = null;     // {kind, id, label}
+let editingLotId = null;
+
+function toggleNavGroup(e) {
+  const group = e.currentTarget.closest(".nav-group");
+  document.querySelectorAll(".nav-group").forEach(g => { if (g !== group) g.classList.remove("open"); });
+  group.classList.toggle("open");
+  e.stopPropagation();
+}
+document.addEventListener("click", () => {
+  document.querySelectorAll(".nav-group").forEach(g => g.classList.remove("open"));
+});
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+  const next = cur === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem("theme", next); } catch (e) {}
+  document.getElementById("themeToggle").textContent = next === "dark" ? "☀️" : "🌙";
+}
+
+function money(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  if (!isFinite(n)) return null;
+  return "$" + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function esc(s) {
+  return String(s === null || s === undefined ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+function gainCell(lot) {
+  if (lot.gain === null || lot.gain === undefined) {
+    return '<span class="muted">—</span>';
+  }
+  const n = Number(lot.gain);
+  const cls = n >= 0 ? "up" : "down";
+  const sign = n >= 0 ? "+" : "−";
+  const pct = (lot.gain_pct === null || lot.gain_pct === undefined)
+    ? "" : ' <span style="font-size:11px;">(' + sign + Math.abs(lot.gain_pct).toFixed(1) + '%)</span>';
+  return '<span class="' + cls + '">' + sign + money(Math.abs(n)).replace("$", "$") + pct + '</span>';
+}
+
+async function api(url, opts) {
+  const resp = await fetch(url, opts);
+  let data = {};
+  try { data = await resp.json(); } catch (e) {}
+  if (!resp.ok) throw new Error(data.detail || "Something went wrong.");
+  return data;
+}
+
+async function loadPortfolios() {
+  const data = await api("/api/portfolios");
+  portfolios = data.portfolios || [];
+  renderTabs(data);
+  if (!portfolios.length) {
+    document.getElementById("noPortfolios").style.display = "block";
+    document.getElementById("holdingsCard").style.display = "none";
+    document.getElementById("summary").style.display = "none";
+    return;
+  }
+  document.getElementById("noPortfolios").style.display = "none";
+  if (!activeId || !portfolios.some(p => p.id === activeId)) activeId = portfolios[0].id;
+  await selectPortfolio(activeId);
+}
+
+function renderTabs(data) {
+  const el = document.getElementById("tabs");
+  el.innerHTML = "";
+  portfolios.forEach(p => {
+    const b = document.createElement("button");
+    b.className = "tab" + (p.id === activeId ? " active" : "");
+    b.textContent = p.name;
+    b.onclick = () => selectPortfolio(p.id);
+    el.appendChild(b);
+  });
+  if (portfolios.length < MAX_PORTFOLIOS) {
+    const add = document.createElement("button");
+    add.className = "tab tab-add";
+    add.textContent = "+ New portfolio";
+    add.onclick = createPortfolio;
+    el.appendChild(add);
+  }
+  const used = data && data.items_used !== undefined ? data.items_used : 0;
+  document.getElementById("capNote").textContent =
+    portfolios.length + " of " + MAX_PORTFOLIOS + " portfolios · " +
+    used + " of " + MAX_ITEMS.toLocaleString() + " different items";
+}
+
+async function selectPortfolio(id) {
+  activeId = id;
+  cancelAdd();
+  renderTabs({ items_used: undefined });
+  const data = await api("/api/portfolios/" + id + "/lots");
+  renderSummary(data.summary);
+  renderLots(data.lots);
+  document.getElementById("holdingsCard").style.display = "block";
+  // Refresh the cap note with a real count.
+  const all = await api("/api/portfolios");
+  portfolios = all.portfolios || [];
+  renderTabs(all);
+}
+
+function renderSummary(s) {
+  const box = document.getElementById("summary");
+  box.style.display = "grid";
+  const unreal = Number(s.unrealized);
+  const real = Number(s.realized);
+  const total = Number(s.total_gain);
+  const pctText = (s.unrealized_pct === null || s.unrealized_pct === undefined)
+    ? "no priced items yet" : (s.unrealized_pct >= 0 ? "+" : "") + s.unrealized_pct + "% on what's priced";
+  box.innerHTML =
+    card("Cost basis", money(s.cost_basis) || "$0.00", s.open_lots + " open " + (s.open_lots === 1 ? "purchase" : "purchases")) +
+    card("Market value", money(s.market_value) || "$0.00",
+         s.unpriced_lots > 0 ? (s.unpriced_lots + " item" + (s.unpriced_lots === 1 ? "" : "s") + " with no price yet") : "all items priced") +
+    card("Unrealized", (unreal >= 0 ? "+" : "−") + money(Math.abs(unreal)), pctText, unreal >= 0 ? "up" : "down") +
+    card("Realized", (real >= 0 ? "+" : "−") + money(Math.abs(real)),
+         s.closed_lots + " sold", real >= 0 ? "up" : "down") +
+    card("Total gain", (total >= 0 ? "+" : "−") + money(Math.abs(total)),
+         "realized + unrealized", total >= 0 ? "up" : "down");
+}
+function card(label, value, sub, cls) {
+  return '<div class="stat-card"><div class="stat-label">' + esc(label) + '</div>' +
+    '<div class="stat-value ' + (cls || "") + '">' + esc(value) + '</div>' +
+    '<div class="stat-sub">' + esc(sub) + '</div></div>';
+}
+
+function renderLots(lots) {
+  const body = document.getElementById("lotRows");
+  body.innerHTML = "";
+  document.getElementById("emptyLots").style.display = lots.length ? "none" : "block";
+  document.getElementById("lots").style.display = lots.length ? "table" : "none";
+  lots.forEach(l => {
+    const tr = document.createElement("tr");
+    const kindPill = l.kind === "sealed"
+      ? '<span class="pill pill-sealed">Sealed</span>'
+      : '<span class="pill">Card</span>';
+    const soldPill = l.closed ? ' <span class="pill pill-sold">Sold</span>' : "";
+    const nowEach = l.unpriced
+      ? '<span class="pill pill-none">no price yet</span>'
+      : (money(l.unit_price) || '<span class="muted">—</span>');
+    const sub = [l.set_name, l.card_number, l.variant].filter(Boolean).join(" · ");
+    tr.innerHTML =
+      '<td><div style="font-weight:600;">' + esc(l.name) + soldPill + '</div>' +
+        '<div class="muted" style="font-size:11.5px;margin-top:2px;">' + kindPill + " " + esc(sub) + '</div></td>' +
+      '<td>' + esc(conditionLabel(l.condition, l.kind)) + '</td>' +
+      '<td class="num">' + l.quantity + '</td>' +
+      '<td class="num">' + (money(l.unit_cost) || "—") + '</td>' +
+      '<td class="num">' + (money(l.cost_basis) || "—") + '</td>' +
+      '<td class="num">' + nowEach + '</td>' +
+      '<td class="num">' + (l.closed ? '<span class="muted">sold</span>' : (money(l.market_value) || '<span class="muted">—</span>')) + '</td>' +
+      '<td class="num">' + gainCell(l) + '</td>' +
+      '<td>' + esc(l.purchased_on || "—") + '</td>' +
+      '<td>' + esc(l.acquired_from || "—") + '</td>' +
+      '<td><div class="row-actions">' +
+        '<button class="btn btn-sm" data-edit="' + l.id + '">Edit</button>' +
+        '<button class="btn btn-sm btn-danger" data-del="' + l.id + '">Remove</button>' +
+      '</div></td>';
+    body.appendChild(tr);
+    tr.querySelector("[data-edit]").onclick = () => editLot(l);
+    tr.querySelector("[data-del]").onclick = () => removeLot(l.id);
+  });
+}
+
+function conditionLabel(key, kind) {
+  const list = kind === "sealed" ? SEALED_CONDITIONS : CARD_CONDITIONS;
+  const hit = list.find(c => c.key === key);
+  return hit ? hit.label : key;
+}
+
+async function createPortfolio() {
+  const name = prompt("Name this portfolio (e.g. Vintage holds, Flip inventory):");
+  if (!name) return;
+  try {
+    await api("/api/portfolios", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name })
+    });
+    activeId = null;
+    await loadPortfolios();
+  } catch (e) { alert(e.message); }
+}
+
+async function renamePortfolio() {
+  const current = portfolios.find(p => p.id === activeId);
+  const name = prompt("Rename this portfolio:", current ? current.name : "");
+  if (!name) return;
+  try {
+    await api("/api/portfolios/" + activeId + "/rename", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name })
+    });
+    await loadPortfolios();
+  } catch (e) { alert(e.message); }
+}
+
+async function deletePortfolio() {
+  const current = portfolios.find(p => p.id === activeId);
+  if (!current) return;
+  if (!confirm('Delete "' + current.name + '" and everything in it? This cannot be undone.')) return;
+  try {
+    await api("/api/portfolios/" + activeId + "/delete", { method: "POST" });
+    activeId = null;
+    await loadPortfolios();
+  } catch (e) { alert(e.message); }
+}
+
+function showAdd() {
+  editingLotId = null;
+  chosenItem = null;
+  document.getElementById("addTitle").textContent = "Add an item";
+  document.getElementById("addCard").style.display = "block";
+  document.getElementById("pickStep").style.display = "block";
+  document.getElementById("detailStep").style.display = "none";
+  document.getElementById("chosen").style.display = "none";
+  document.getElementById("addMsg").innerHTML = "";
+  ["cardSearch", "sealedSearch"].forEach(id => { document.getElementById(id).value = ""; });
+  ["cardResults", "sealedResults"].forEach(id => {
+    const el = document.getElementById(id); el.innerHTML = ""; el.style.display = "none";
+  });
+  clearForm();
+  setKind("card");
+}
+
+function cancelAdd() {
+  document.getElementById("addCard").style.display = "none";
+  editingLotId = null;
+  chosenItem = null;
+}
+
+function clearForm() {
+  document.getElementById("fQty").value = 1;
+  ["fUnitCost", "fFees", "fPurchased", "fFrom", "fSoldOn", "fSalePrice", "fSaleFees", "fNotes"]
+    .forEach(id => { document.getElementById(id).value = ""; });
+}
+
+function setKind(kind) {
+  addKind = kind;
+  document.getElementById("segCard").classList.toggle("on", kind === "card");
+  document.getElementById("segSealed").classList.toggle("on", kind === "sealed");
+  document.getElementById("cardPick").style.display = kind === "card" ? "block" : "none";
+  document.getElementById("sealedPick").style.display = kind === "sealed" ? "block" : "none";
+  fillConditions(kind);
+}
+
+function fillConditions(kind) {
+  const list = kind === "sealed" ? SEALED_CONDITIONS : CARD_CONDITIONS;
+  const sel = document.getElementById("fCondition");
+  sel.innerHTML = "";
+  list.forEach(c => {
+    const o = document.createElement("option");
+    o.value = c.key; o.textContent = c.label;
+    sel.appendChild(o);
+  });
+}
+
+let searchTimer = null;
+document.getElementById("cardSearch").addEventListener("input", (e) => {
+  clearTimeout(searchTimer);
+  const q = e.target.value.trim();
+  if (q.length < 2) {
+    document.getElementById("cardResults").style.display = "none";
+    return;
+  }
+  searchTimer = setTimeout(() => searchCards(q), 250);
+});
+document.getElementById("sealedSearch").addEventListener("input", (e) => {
+  clearTimeout(searchTimer);
+  const q = e.target.value.trim();
+  searchTimer = setTimeout(() => searchSealed(q), 250);
+});
+
+async function searchCards(q) {
+  const box = document.getElementById("cardResults");
+  try {
+    const rows = await api("/api/card-tracker/portfolio/search", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ game: "pokemon", query: q })
+    });
+    box.innerHTML = "";
+    if (!rows.length) {
+      box.innerHTML = '<div class="search-row muted">No cards matched.</div>';
+    }
+    rows.forEach(r => {
+      const div = document.createElement("div");
+      div.className = "search-row";
+      const bits = [r.set_name, r.card_number, r.variant].filter(Boolean).join(" · ");
+      div.innerHTML = '<span>' + esc(r.name) + '</span><span class="muted">' + esc(bits) + '</span>';
+      div.onclick = () => chooseCard(r, div);
+      box.appendChild(div);
+    });
+    box.style.display = "block";
+  } catch (e) {
+    box.innerHTML = '<div class="search-row muted">' + esc(e.message) + '</div>';
+    box.style.display = "block";
+  }
+}
+
+async function searchSealed(q) {
+  const box = document.getElementById("sealedResults");
+  try {
+    const rows = await api("/api/portfolios/sealed?q=" + encodeURIComponent(q));
+    box.innerHTML = "";
+    if (!rows.length) {
+      box.innerHTML = '<div class="search-row muted">No sealed product matched. ' +
+        'Sealed product is added by an admin per set.</div>';
+    }
+    rows.forEach(r => {
+      const div = document.createElement("div");
+      div.className = "search-row";
+      div.innerHTML = '<span>' + esc(r.name) + '</span><span class="muted">' +
+        esc([r.set_name, r.type_label].filter(Boolean).join(" · ")) + '</span>';
+      div.onclick = () => {
+        chosenItem = { kind: "sealed", id: r.id, label: r.name };
+        showChosen();
+      };
+      box.appendChild(div);
+    });
+    box.style.display = "block";
+  } catch (e) {
+    box.innerHTML = '<div class="search-row muted">' + esc(e.message) + '</div>';
+    box.style.display = "block";
+  }
+}
+
+async function chooseCard(row) {
+  const msg = document.getElementById("addMsg");
+  msg.innerHTML = "";
+  try {
+    // Land the card in the shared catalog first — a lot references that
+    // table, which is also what the nightly price ingest reads.
+    const data = await api("/api/portfolios/resolve-card", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(row)
+    });
+    const bits = [row.set_name, row.card_number, row.variant].filter(Boolean).join(" · ");
+    chosenItem = { kind: "card", id: data.card_id, label: row.name + (bits ? " (" + bits + ")" : "") };
+    showChosen();
+  } catch (e) {
+    msg.innerHTML = '<span class="err">' + esc(e.message) + '</span>';
+  }
+}
+
+function showChosen() {
+  const el = document.getElementById("chosen");
+  el.style.display = "block";
+  el.textContent = "Adding: " + chosenItem.label;
+  document.getElementById("detailStep").style.display = "block";
+  fillConditions(chosenItem.kind);
+}
+
+function formPayload() {
+  return {
+    quantity: document.getElementById("fQty").value,
+    condition: document.getElementById("fCondition").value,
+    unit_cost: document.getElementById("fUnitCost").value || 0,
+    fees: document.getElementById("fFees").value || 0,
+    purchased_on: document.getElementById("fPurchased").value || null,
+    acquired_from: document.getElementById("fFrom").value,
+    sold_on: document.getElementById("fSoldOn").value || null,
+    sale_unit_price: document.getElementById("fSalePrice").value || null,
+    sale_fees: document.getElementById("fSaleFees").value || 0,
+    notes: document.getElementById("fNotes").value
+  };
+}
+
+async function saveLot() {
+  const msg = document.getElementById("addMsg");
+  const btn = document.getElementById("saveBtn");
+  msg.innerHTML = "";
+  btn.disabled = true;
+  try {
+    const payload = formPayload();
+    if (editingLotId) {
+      await api("/api/portfolios/lots/" + editingLotId, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+    } else {
+      if (!chosenItem) throw new Error("Pick an item first.");
+      payload.kind = chosenItem.kind;
+      payload.item_id = chosenItem.id;
+      await api("/api/portfolios/" + activeId + "/lots", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+    }
+    cancelAdd();
+    await selectPortfolio(activeId);
+  } catch (e) {
+    msg.innerHTML = '<span class="err">' + esc(e.message) + '</span>';
+  }
+  btn.disabled = false;
+}
+
+function editLot(lot) {
+  editingLotId = lot.id;
+  chosenItem = { kind: lot.kind, id: lot.card_id || lot.sealed_id, label: lot.name };
+  document.getElementById("addTitle").textContent = "Edit: " + lot.name;
+  document.getElementById("addCard").style.display = "block";
+  document.getElementById("pickStep").style.display = "none";
+  document.getElementById("detailStep").style.display = "block";
+  document.getElementById("addMsg").innerHTML = "";
+  fillConditions(lot.kind);
+  document.getElementById("fQty").value = lot.quantity;
+  document.getElementById("fCondition").value = lot.condition;
+  document.getElementById("fUnitCost").value = lot.unit_cost;
+  document.getElementById("fFees").value = lot.fees;
+  document.getElementById("fPurchased").value = lot.purchased_on || "";
+  document.getElementById("fFrom").value = lot.acquired_from || "";
+  document.getElementById("fSoldOn").value = lot.sold_on || "";
+  document.getElementById("fSalePrice").value = lot.sale_unit_price || "";
+  document.getElementById("fSaleFees").value = lot.sale_fees || "";
+  document.getElementById("fNotes").value = lot.notes || "";
+  document.getElementById("addCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function removeLot(id) {
+  if (!confirm("Remove this item from the portfolio?")) return;
+  try {
+    await api("/api/portfolios/lots/" + id + "/delete", { method: "POST" });
+    await selectPortfolio(activeId);
+  } catch (e) { alert(e.message); }
+}
+
+(function init() {
+  if (document.documentElement.getAttribute("data-theme") === "dark") {
+    document.getElementById("themeToggle").textContent = "☀️";
+  }
+  fillConditions("card");
+  loadPortfolios().catch(e => {
+    document.getElementById("noPortfolios").style.display = "block";
+    document.getElementById("noPortfolios").textContent = e.message;
+  });
+})();
+</script>
+</body>
+</html>

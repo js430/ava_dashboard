@@ -13,6 +13,7 @@ import asyncpg
 import re
 import json
 import base64
+from decimal import Decimal
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from zoneinfo import ZoneInfo
@@ -47,6 +48,7 @@ import card_eras
 import population
 import inventory
 import billing
+import portfolios
 import tips
 
 load_dotenv()
@@ -2780,6 +2782,377 @@ async def api_card_tracker_backdate(request: Request, user=Depends(require_admin
 async def api_card_tracker_backdate_status(request: Request, user=Depends(require_admin)):
     return JSONResponse(dict(_tracker_backdate_state(request.app)),
                         headers={"Cache-Control": "no-store"})
+
+# ── Custom portfolios ────────────────────────────────────────────────────
+# The Card Tracker watchlist (above) answers "what am I watching". A
+# portfolio answers "what do I own, what did it cost, what's it worth now" —
+# see portfolios.py for why that needs per-purchase lots rather than one row
+# per card.
+#
+# Everything here is per-member data reached by an id from the browser, so
+# EVERY route checks ownership before touching a row. Open to full Discord
+# members and paid accounts (get_member_or_subscriber), never guests: a
+# portfolio needs an owner.
+
+def _portfolio_json(value):
+    """Decimal -> string for JSON. str() not float(): the whole point of
+    holding money as Decimal is lost if it's rounded through a float on the
+    way out."""
+    if isinstance(value, Decimal):
+        return str(value)
+    return value
+
+
+def _serialize_lot(lot, prices) -> dict:
+    key = portfolios.item_key(lot)
+    gain, pct, kind = portfolios.lot_gain(lot, prices.get(key))
+    unit_price = portfolios.to_money(prices.get(key))
+    return {
+        "id": lot["id"],
+        "kind": lot.get("kind") or ("card" if lot.get("card_id") else "sealed"),
+        "card_id": lot.get("card_id"),
+        "sealed_id": lot.get("sealed_id"),
+        "name": lot.get("item_name") or "",
+        "set_name": lot.get("set_name") or "",
+        "language": lot.get("language") or "",
+        "card_number": lot.get("card_number") or "",
+        "variant": lot.get("variant") or "",
+        "product_type": lot.get("product_type") or "",
+        "quantity": lot["quantity"],
+        "condition": lot["condition"],
+        "unit_cost": _portfolio_json(lot["unit_cost"]),
+        "fees": _portfolio_json(lot["fees"]),
+        "purchased_on": lot["purchased_on"].isoformat() if lot.get("purchased_on") else None,
+        "acquired_from": lot.get("acquired_from") or "",
+        "sold_on": lot["sold_on"].isoformat() if lot.get("sold_on") else None,
+        "sale_unit_price": _portfolio_json(lot.get("sale_unit_price")),
+        "sale_fees": _portfolio_json(lot.get("sale_fees")),
+        "notes": lot.get("notes") or "",
+        "cost_basis": _portfolio_json(portfolios.cost_basis(lot)),
+        "unit_price": _portfolio_json(unit_price),
+        "market_value": _portfolio_json(portfolios.market_value(lot, prices.get(key))),
+        "gain": _portfolio_json(gain),
+        "gain_pct": pct,
+        "gain_kind": kind,
+        "closed": portfolios.is_closed(lot),
+        # True when there's no price for this item at all — the UI says
+        # "no price yet" rather than showing a misleading $0.
+        "unpriced": unit_price is None and not portfolios.is_closed(lot),
+    }
+
+
+def _serialize_summary(summary: dict) -> dict:
+    return {k: _portfolio_json(v) for k, v in summary.items()}
+
+
+async def _require_own_portfolio(request: Request, user, portfolio_id: int):
+    """403 unless this portfolio belongs to the caller. The id comes from the
+    URL, so without this any member could read another's holdings by
+    incrementing a number."""
+    if not await portfolios.owns_portfolio(
+            request.app.state.db, int(user["id"]), portfolio_id):
+        raise HTTPException(status_code=403, detail="That isn't one of your portfolios.")
+
+
+@app.get("/portfolios", response_class=HTMLResponse)
+async def portfolios_page(request: Request):
+    user = request.session.get("user")
+    subscriber = None
+    if not user:
+        if await account_has_access(request):
+            subscriber = {"id": current_account_id(request),
+                          "username": request.session.get("account_email", "Member")}
+        else:
+            return login_redirect_or_preview(
+                request, title="Portfolios — Nexus Card Co",
+                description="Track what you paid, what it's worth now, and how your "
+                            "cards and sealed product are performing over time.")
+    if user and is_demo(request):
+        return RedirectResponse("/sample-card-tracker")
+    return templates.TemplateResponse("portfolios.html", {
+        "request": request,
+        "username": (user or subscriber)["username"],
+        "avatar": user.get("avatar") if user else None,
+        "user_id": (user or subscriber)["id"],
+        "is_admin": bool(user) and int(user["id"]) in ADMIN_USER_IDS,
+        "is_mod": bool(user) and request.session.get("mod", False),
+        "max_portfolios": portfolios.MAX_PORTFOLIOS_PER_USER,
+        "max_items": portfolios.MAX_ITEMS_PER_USER,
+        "card_conditions": [{"key": k, "label": price_sources.GRADE_LABELS.get(k, k)}
+                            for k in portfolios.CARD_CONDITIONS],
+        "sealed_conditions": [{"key": k, "label": portfolios.CONDITION_LABELS.get(k, k)}
+                              for k in portfolios.SEALED_CONDITIONS],
+        "common_sources": list(portfolios.COMMON_SOURCES),
+    })
+
+
+@app.get("/api/portfolios")
+async def api_portfolios_list(request: Request, user=Depends(get_member_or_subscriber)):
+    """Every portfolio the caller owns, each with its roll-up."""
+    pool = request.app.state.db
+    user_id = int(user["id"])
+    rows = await portfolios.list_portfolios(pool, user_id)
+    out = []
+    for row in rows:
+        lots = await portfolios.list_lots(pool, row["id"])
+        prices = await portfolios.current_prices(pool, lots)
+        out.append({
+            "id": row["id"],
+            "name": row["name"],
+            "note": row["note"],
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            "summary": _serialize_summary(portfolios.summarize(lots, prices)),
+        })
+    return JSONResponse({
+        "portfolios": out,
+        "items_used": await portfolios.distinct_item_count(pool, user_id),
+        "max_items": portfolios.MAX_ITEMS_PER_USER,
+        "max_portfolios": portfolios.MAX_PORTFOLIOS_PER_USER,
+    }, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/portfolios")
+@limiter.limit("30/hour")
+async def api_portfolios_create(request: Request, user=Depends(get_member_or_subscriber)):
+    body = await request.json()
+    portfolio, error = await portfolios.create_portfolio(
+        request.app.state.db, int(user["id"]),
+        body.get("name"), body.get("note") or "")
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    return JSONResponse({"id": portfolio["id"], "name": portfolio["name"]},
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/portfolios/{portfolio_id}/rename")
+@limiter.limit("30/hour")
+async def api_portfolios_rename(request: Request, portfolio_id: int,
+                                user=Depends(get_member_or_subscriber)):
+    await _require_own_portfolio(request, user, portfolio_id)
+    body = await request.json()
+    portfolio, error = await portfolios.rename_portfolio(
+        request.app.state.db, int(user["id"]), portfolio_id,
+        body.get("name"), body.get("note"))
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    return JSONResponse({"id": portfolio["id"], "name": portfolio["name"]},
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/portfolios/{portfolio_id}/delete")
+@limiter.limit("30/hour")
+async def api_portfolios_delete(request: Request, portfolio_id: int,
+                                user=Depends(get_member_or_subscriber)):
+    await _require_own_portfolio(request, user, portfolio_id)
+    ok = await portfolios.delete_portfolio(
+        request.app.state.db, int(user["id"]), portfolio_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="That portfolio doesn't exist.")
+    logger.info("Portfolio %s deleted by %s", portfolio_id, user["id"])
+    return JSONResponse({"deleted": True}, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/portfolios/{portfolio_id}/lots")
+async def api_portfolio_lots(request: Request, portfolio_id: int,
+                             user=Depends(get_member_or_subscriber)):
+    await _require_own_portfolio(request, user, portfolio_id)
+    pool = request.app.state.db
+    lots = await portfolios.list_lots(pool, portfolio_id)
+    prices = await portfolios.current_prices(pool, lots)
+    return JSONResponse({
+        "lots": [_serialize_lot(l, prices) for l in lots],
+        "summary": _serialize_summary(portfolios.summarize(lots, prices)),
+    }, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/portfolios/{portfolio_id}/lots")
+@limiter.limit("120/hour")
+async def api_portfolio_lot_add(request: Request, portfolio_id: int,
+                                user=Depends(get_member_or_subscriber)):
+    """Record a purchase. The item must already exist in the shared catalog
+    (cards) or in sealed_products — the client sends an id, never free-text
+    card details, so a lot can't point at an item nothing prices."""
+    await _require_own_portfolio(request, user, portfolio_id)
+    body = await request.json()
+    kind = (body.get("kind") or "card").strip().lower()
+    if kind not in ("card", "sealed"):
+        raise HTTPException(status_code=400, detail="Unknown item type.")
+    try:
+        item_id = int(body.get("item_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Pick an item to add.")
+
+    pool = request.app.state.db
+    # `kind` is checked against a two-value allowlist above, so the table name
+    # is never attacker-controlled — same rule as the raffle wheel's
+    # _find_table. The id itself stays parameterized.
+    table = "tracked_cards" if kind == "card" else "sealed_products"
+    async with pool.acquire() as conn:
+        exists = await conn.fetchval("SELECT 1 FROM " + table + " WHERE id = $1", item_id)
+    if not exists:
+        raise HTTPException(status_code=404, detail="That item no longer exists.")
+
+    lot, error = await portfolios.add_lot(
+        pool, int(user["id"]), portfolio_id, kind, item_id, body)
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    return JSONResponse({"id": lot["id"]}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/portfolios/lots/{lot_id}")
+@limiter.limit("120/hour")
+async def api_portfolio_lot_update(request: Request, lot_id: int,
+                                   user=Depends(get_member_or_subscriber)):
+    body = await request.json()
+    lot, error = await portfolios.update_lot(
+        request.app.state.db, int(user["id"]), lot_id, body)
+    if error:
+        # update_lot returns the same message for "not yours" and "doesn't
+        # exist", deliberately: it never confirms whether a lot id belongs to
+        # somebody else.
+        raise HTTPException(status_code=400, detail=error)
+    return JSONResponse({"id": lot["id"]}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/portfolios/lots/{lot_id}/delete")
+@limiter.limit("120/hour")
+async def api_portfolio_lot_delete(request: Request, lot_id: int,
+                                   user=Depends(get_member_or_subscriber)):
+    ok = await portfolios.delete_lot(request.app.state.db, int(user["id"]), lot_id)
+    if not ok:
+        raise HTTPException(status_code=404,
+                            detail="That item isn't in one of your portfolios.")
+    return JSONResponse({"deleted": True}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/portfolios/resolve-card")
+@limiter.limit("120/hour")
+async def api_portfolio_resolve_card(request: Request,
+                                     user=Depends(get_member_or_subscriber)):
+    """Turn a card-search result into a shared-catalog id.
+
+    The catalog search returns rows from catalog_cards, but a lot references
+    tracked_cards — the SHARED table the nightly price ingest reads. This
+    upserts the card there and hands back its id, so the browser only ever
+    sends an id when it adds a lot.
+
+    Adding a card here makes it eligible for pricing (see card_tracker's
+    _MISSING_TODAY_SQL, which now counts portfolio lots as well as
+    watchlists). It is priced once a day no matter how many members hold it.
+    """
+    body = await request.json()
+    game = body.get("game", "")
+    name = (body.get("name") or "").strip()[:200]
+    set_name = (body.get("set_name") or "").strip()[:200]
+    card_number = (body.get("card_number") or "").strip()[:40]
+    variant = (body.get("variant") or "").strip()[:200] or None
+    tcgplayer_id = (body.get("tcgplayer_id") or "").strip()[:40] or None
+    language = price_sources.ppt_language(body.get("language"))
+    if game not in VALID_GAMES or not name:
+        raise HTTPException(status_code=400, detail="Pick a card first.")
+
+    pool = request.app.state.db
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            inserted = await conn.fetchrow(
+                "INSERT INTO tracked_cards (name, game, set_name, card_number, variant, "
+                "tcgplayer_id, language) VALUES ($1, $2, $3, $4, $5, $6, $7) "
+                "ON CONFLICT (game, name, set_name, card_number, language) "
+                "DO NOTHING RETURNING id",
+                name, game, set_name, card_number, variant,
+                tcgplayer_id if game == "pokemon" else None, language)
+            if inserted:
+                card_id = inserted["id"]
+                total = await conn.fetchval("SELECT COUNT(*) FROM tracked_cards")
+                if total > MAX_TRACKED_CARDS:
+                    # Same shared-catalog ceiling the tracker enforces. Raising
+                    # it is an admin decision because every row costs credits.
+                    raise HTTPException(
+                        status_code=400,
+                        detail="The shared card catalog is full, so this card can't "
+                               "be added right now. Let an admin know.")
+            else:
+                existing = await conn.fetchrow(
+                    "SELECT id FROM tracked_cards WHERE game=$1 AND name=$2 "
+                    "AND set_name=$3 AND card_number=$4 AND language=$5",
+                    game, name, set_name, card_number, language)
+                card_id = existing["id"]
+    return JSONResponse({"card_id": card_id}, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/portfolios/sealed")
+async def api_portfolio_sealed(request: Request, set_name: str = "", q: str = "",
+                               user=Depends(get_member_or_subscriber)):
+    """Sealed product, optionally filtered by set or name."""
+    clauses, params = [], []
+    if set_name:
+        params.append(set_name[:120])
+        clauses.append("set_name ILIKE $" + str(len(params)))
+    if q:
+        params.append("%" + q.strip()[:80] + "%")
+        clauses.append("name ILIKE $" + str(len(params)))
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    async with request.app.state.db.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, name, set_name, product_type, language, image_url "
+            "FROM sealed_products " + where +
+            " ORDER BY set_name, name LIMIT 200", *params)
+    return JSONResponse([
+        {"id": r["id"], "name": r["name"], "set_name": r["set_name"],
+         "product_type": r["product_type"], "language": r["language"],
+         "type_label": portfolios.SEALED_TYPE_LABELS.get(r["product_type"], "Sealed"),
+         "image_url": r["image_url"]}
+        for r in rows
+    ], headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/portfolios/sealed/seed")
+@limiter.limit("20/hour")
+async def api_portfolio_sealed_seed(request: Request, user=Depends(require_admin)):
+    """Admin: create the standard sealed SKUs for one set, or for every set in
+    the catalog.
+
+    Admin-only because it writes to a catalog every member picks from — a
+    member adding a typo'd "Prismatick Evolutions Booster Box" would be there
+    for everyone. Idempotent, so re-running after new sets are stocked only
+    adds what's missing.
+    """
+    body = await request.json()
+    set_name = (body.get("set_name") or "").strip()
+    language = price_sources.ppt_language(body.get("language") or "english")
+    types = body.get("product_types") or None
+
+    pool = request.app.state.db
+    if set_name:
+        added = await portfolios.seed_sealed_for_set(pool, set_name, language, types)
+        return JSONResponse({"sets": 1, "added": added},
+                            headers={"Cache-Control": "no-store"})
+
+    # No set given: seed every set the catalog knows about. Bounded by the
+    # catalog's own size, and idempotent, so this is safe to re-run.
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT DISTINCT set_name, language FROM catalog_cards "
+            "WHERE game = 'pokemon' AND set_name <> '' ORDER BY set_name")
+    added = 0
+    for row in rows:
+        added += await portfolios.seed_sealed_for_set(
+            pool, row["set_name"], row["language"], types)
+    logger.info("Sealed: seeded %d product(s) across %d set(s)", added, len(rows))
+    return JSONResponse({"sets": len(rows), "added": added},
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/portfolios/sealed/sets")
+async def api_portfolio_sealed_sets(request: Request,
+                                    user=Depends(get_member_or_subscriber)):
+    async with request.app.state.db.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT set_name, COUNT(*) AS n FROM sealed_products "
+            "WHERE set_name <> '' GROUP BY set_name ORDER BY set_name")
+    return JSONResponse([{"set_name": r["set_name"], "count": r["n"]} for r in rows],
+                        headers={"Cache-Control": "no-store"})
+
 
 # ── Set import (admin-only): enumerate a set from the free catalog APIs,
 #    preview, then import into tracked_cards. The import re-fetches from the

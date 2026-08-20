@@ -985,3 +985,60 @@ hole); checking eligibility against Stripe's API per checkout (a network
 round-trip for something our own mirror already answers).
 
 ---
+
+## 2026-08-19 — Custom portfolios with cost basis, plus sealed product
+
+**Decided:** New `portfolios.py` module owning `portfolios`,
+`portfolio_lots` and `sealed_products`. Up to 5 portfolios per person and
+500 distinct items across all of them. The Card Tracker watchlist is
+unchanged and still works exactly as before.
+
+**Why lots, not one row per card:** `user_tracked_cards` is
+`PRIMARY KEY (user_id, card_id)` — a watchlist with no quantity and no
+price. Cost basis needs per-purchase rows, because buying the same card
+twice at different prices on different dates is two facts, and averaging
+them destroys the information a return is computed from.
+
+**Data captured per lot:** quantity, condition/grade, price paid each,
+fees+shipping, purchase date, bought-from, plus sale date / sale price /
+selling fees for closed positions, and notes. Fees are included in cost
+basis deliberately — a return that ignores shipping flatters every eBay
+purchase. Grade matters because raw vs PSA 10 is a different asset.
+
+**Money is Decimal end to end**, NUMERIC in the DB, serialized with str()
+not float(). Floats would put rounding error into someone's ROI.
+
+**Unpriced is not zero.** Sealed product has no price source today, so
+those lots report as unpriced and are excluded from market value; the
+unrealized percent divides by the basis of PRICED lots only. Counting an
+unpriced item's cost with no value would show a loss that isn't real.
+
+**THE COST PROPERTY (explicitly requested):** a lot references the SHARED
+`tracked_cards` catalog, never a private copy, and card_tracker's
+`_MISSING_TODAY_SQL` / `_COVERAGE_SQL` now match "on any watchlist OR in
+any portfolio". A card in the tracker and in five members' portfolios is
+priced ONCE per day. The 500-item cap counts distinct items, not lots, for
+the same reason. `ensure_card_tracker_schema` now also creates the
+portfolio tables, because the cron scripts call only that function and the
+ingest query would otherwise hit a missing relation.
+
+**Sealed product — UNRESOLVED:** PokemonPriceTracker's documented v2
+endpoints are `/cards` and `/sets` only. Whether it serves sealed product
+is **unconfirmed** — the API key lives only on Railway, so it could not be
+probed. Rather than write speculative client code, sealed SKUs are seeded
+per set from the existing set list (Booster Box / ETB / Booster Bundle),
+admin-triggered and idempotent. Prices stay blank, per the decision to
+build it and leave prices blank. If a sealed endpoint exists, the upgrade
+is filling `ppt_product_id` and adding a sealed branch to
+`current_prices()`.
+
+**Rejected:** extending `tracked_cards` with a `kind` column (its UNIQUE
+key includes card_number, so sealed rows collide on empty string, and the
+scoring formulas assume single cards); a generic `assets` table (rewrites
+the shared catalog every existing tracker query depends on); 250 items per
+portfolio (would multiply nightly ingest cost fivefold).
+
+**Cross-repo note:** additive only — three new tables, no bot-owned table
+touched. `card_tracker.py`'s two cost-control queries were widened.
+
+---
