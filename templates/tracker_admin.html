@@ -218,31 +218,50 @@
   <div class="card">
     <div class="card-title">Sealed product</div>
     <div class="card-desc">
-      Creates the standard sealed items for a set so members can add them to a
-      portfolio. Safe to run again after new sets are stocked — it only adds what's
-      missing.
+      Pulls the sealed items the price API actually lists for a set &mdash; each set
+      has its own mix, so nothing is assumed. You see what came back before anything
+      is saved.
     </div>
     <div class="row">
       <div class="field" style="flex:2 1 260px;">
-        <label for="sealedSet">Set name (leave blank for every set in the catalog)</label>
+        <label for="sealedSet">Set</label>
         <input type="text" id="sealedSet" placeholder="Prismatic Evolutions" list="knownSets">
         <datalist id="knownSets"></datalist>
       </div>
-      <div><button class="btn btn-primary" id="sealedBtn" onclick="seedSealed()">Seed sealed product</button></div>
+      <div><button class="btn btn-primary" id="sealedPreviewBtn" onclick="previewSealed()">Look up</button></div>
+      <div><button class="btn" id="sealedImportBtn" onclick="importSealed()" disabled>Save these</button></div>
     </div>
-    <div style="margin-top:12px;">
-      <label>Which products</label>
-      <div class="chips" id="sealedTypes">
-        {% for t in sealed_types %}
-          <div class="chip{% if t.key in default_sealed_types %} on{% endif %}" data-type="{{ t.key }}">{{ t.label }}</div>
-        {% endfor %}
-      </div>
-    </div>
-    <div class="hint">
-      Sealed product has no price source yet, so members will see "no price yet" next to
-      it. They can still record what they paid.
-    </div>
+    <div class="preview-list" id="sealedList" style="display:none;"></div>
     <div class="msg" id="sealedMsg" role="status" aria-live="polite"></div>
+
+    <details style="margin-top:14px;">
+      <summary style="font-size:12.5px;color:#666;cursor:pointer;">Bulk and clean-up</summary>
+      <div style="margin-top:12px;">
+        <div class="row">
+          <div><button class="btn" onclick="importAllSealed()">Look up every set in the catalog</button></div>
+        </div>
+        <div class="hint">
+          Goes set by set through the price API. Sets it has nothing for are skipped and
+          listed. Safe to re-run &mdash; existing products are updated, not duplicated.
+        </div>
+
+        {% if is_admin %}
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid #eee;">
+          <div style="font-size:12.5px;font-weight:600;margin-bottom:4px;">Delete sealed product</div>
+          <div class="hint" style="margin-top:0;">
+            Removing a product that someone holds also removes it from their portfolio.
+            There is no undo. Check first.
+          </div>
+          <div class="row" style="margin-top:10px;">
+            <div><button class="btn" onclick="purgeSealed('unused', true)">Check what would go</button></div>
+            <div><button class="btn" onclick="purgeSealed('unused', false)">Delete unused only</button></div>
+            <div><button class="btn btn-danger" onclick="purgeSealed('all', false)">Delete everything</button></div>
+          </div>
+          <div class="msg" id="purgeMsg" role="status" aria-live="polite"></div>
+        </div>
+        {% endif %}
+      </div>
+    </details>
   </div>
 
 </div>
@@ -503,47 +522,161 @@ async function importRun() {
 }
 
 // ── Sealed ──────────────────────────────────────────────────────────────
-document.getElementById("sealedTypes").addEventListener("click", (e) => {
-  const chip = e.target.closest(".chip");
-  if (chip) chip.classList.toggle("on");
-});
+let sealedPreviewed = null;
 
-async function seedSealed() {
+async function previewSealed() {
   const setName = document.getElementById("sealedSet").value.trim();
-  const types = Array.from(document.querySelectorAll("#sealedTypes .chip.on"))
-    .map(c => c.dataset.type);
-  if (!types.length) { say("sealedMsg", "Pick at least one product type.", "err"); return; }
-  if (!setName && !confirm("Seed sealed product for EVERY set in the catalog? This is safe to re-run, but it can add a lot of rows.")) return;
-  const btn = document.getElementById("sealedBtn");
+  if (!setName) { say("sealedMsg", "Pick a set first.", "err"); return; }
+  const btn = document.getElementById("sealedPreviewBtn");
+  const list = document.getElementById("sealedList");
   btn.disabled = true;
-  say("sealedMsg", "Seeding…", "busy");
+  document.getElementById("sealedImportBtn").disabled = true;
+  sealedPreviewed = null;
+  say("sealedMsg", "Asking the price API…", "busy");
   try {
-    const data = await api("/api/portfolios/sealed/seed", {
+    const data = await api("/api/portfolios/sealed/preview", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ set_name: setName, product_types: types })
+      body: JSON.stringify({ set_name: setName })
     });
-    say("sealedMsg", data.added === 0
-      ? "Nothing new — those products were already there."
-      : "Added " + data.added + " product(s) across " + data.sets + " set(s).", "ok");
-    loadStats();
-    loadSealedSets();
+    list.innerHTML = "";
+    (data.products || []).forEach(p => {
+      const row = document.createElement("div");
+      row.className = "preview-row";
+      row.innerHTML =
+        '<span style="flex:1;">' + esc(p.name) + '</span>' +
+        '<span class="tag">' + esc(p.type_label) + '</span>' +
+        '<span class="muted">' + (p.market_price ? "$" + esc(p.market_price) : "no price") + '</span>';
+      list.appendChild(row);
+    });
+    list.style.display = (data.products || []).length ? "block" : "none";
+
+    if (data.status === "ok") {
+      sealedPreviewed = setName;
+      document.getElementById("sealedImportBtn").disabled = false;
+      let note = data.detail;
+      if (data.skipped) note += " " + data.skipped + " record(s) couldn't be read.";
+      say("sealedMsg", note, "ok");
+    } else {
+      say("sealedMsg", data.detail, data.status === "empty" ? "busy" : "err");
+      // A shape we can't parse is worth showing, not just logging.
+      if (data.raw_count && !(data.products || []).length && data.sample_raw) {
+        list.innerHTML = '<div class="preview-row muted" style="display:block;">' +
+          "The API returned " + data.raw_count + " record(s) but none could be read. " +
+          "First record:<br><code style='font-size:11px;'>" +
+          esc(JSON.stringify(data.sample_raw).slice(0, 400)) + "</code></div>";
+        list.style.display = "block";
+      }
+    }
   } catch (e) {
     say("sealedMsg", e.message, "err");
   }
   btn.disabled = false;
 }
 
+async function importSealed() {
+  if (!sealedPreviewed) return;
+  const btn = document.getElementById("sealedImportBtn");
+  btn.disabled = true;
+  say("sealedMsg", "Saving…", "busy");
+  try {
+    const data = await api("/api/portfolios/sealed/import", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ set_name: sealedPreviewed })
+    });
+    say("sealedMsg", "Saved " + data.added + " new, updated " + data.updated + ".", "ok");
+    loadStats();
+    loadSealedSets();
+  } catch (e) {
+    say("sealedMsg", e.message, "err");
+    btn.disabled = false;
+  }
+}
+
+async function importAllSealed() {
+  if (!confirm("Look up every set in the catalog? This makes one price-API call per set.")) return;
+  say("sealedMsg", "Working through the catalog — this can take a while…", "busy");
+  try {
+    const sets = await api("/api/portfolios/sealed/candidate-sets");
+    const names = sets.map(s => s.set_name);
+    const data = await api("/api/portfolios/sealed/import", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ set_names: names })
+    });
+    let note = "Checked " + data.sets + " set(s): " + data.added + " added, " +
+      data.updated + " updated.";
+    if ((data.failures || []).length) {
+      const nothing = data.failures.filter(f => f.status === "empty").length;
+      const limited = data.failures.filter(f => f.status === "rate_limited").length;
+      const broken = data.failures.length - nothing - limited;
+      note += " " + nothing + " set(s) had none listed";
+      if (limited) note += ", stopped early on a rate limit";
+      if (broken) note += ", " + broken + " failed";
+      note += ".";
+    }
+    say("sealedMsg", note, "ok");
+    loadStats();
+    loadSealedSets();
+  } catch (e) {
+    say("sealedMsg", e.message, "err");
+  }
+}
+
+async function purgeSealed(mode, dryRun) {
+  const payload = { mode: mode, dry_run: !!dryRun };
+  if (!dryRun) {
+    // Always show the damage first, then ask.
+    let impact;
+    try {
+      impact = await api("/api/portfolios/sealed/purge", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: mode, dry_run: true })
+      });
+    } catch (e) { say("purgeMsg", e.message, "err"); return; }
+
+    let warn = "Delete " + impact.would_delete + " of " + impact.total_products +
+      " sealed product(s)?";
+    if (mode === "all" && impact.member_lots_affected) {
+      warn += "\n\nThis also deletes " + impact.member_lots_affected +
+        " holding(s) from members' portfolios. There is no undo.";
+    }
+    if (!confirm(warn)) return;
+    if (mode === "all") {
+      const typed = prompt("Type DELETE ALL SEALED to confirm:");
+      if (typed !== "DELETE ALL SEALED") { say("purgeMsg", "Cancelled.", "busy"); return; }
+      payload.confirm = typed;
+    }
+  }
+  try {
+    const data = await api("/api/portfolios/sealed/purge", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (data.dry_run) {
+      say("purgeMsg", data.total_products + " product(s) total, " +
+        data.products_held_by_someone + " held by a member. " +
+        "Deleting unused only would remove " + data.would_delete + ".", "busy");
+    } else {
+      say("purgeMsg", "Deleted " + data.deleted + ", kept " + data.kept + ".", "ok");
+      loadStats();
+      loadSealedSets();
+    }
+  } catch (e) {
+    say("purgeMsg", e.message, "err");
+  }
+}
+
 async function loadSealedSets() {
   try {
-    const rows = await api("/api/portfolios/sealed/sets");
+    const rows = await api("/api/portfolios/sealed/candidate-sets");
     const dl = document.getElementById("knownSets");
     dl.innerHTML = "";
     rows.forEach(r => {
       const o = document.createElement("option");
       o.value = r.set_name;
+      o.label = r.sealed_count ? r.sealed_count + " already" : "none yet";
       dl.appendChild(o);
     });
-  } catch (e) { /* the datalist is a convenience; a failure here isn't worth shouting about */ }
+  } catch (e) { /* the datalist is a convenience; a failure isn't worth shouting about */ }
 }
 
 (function init() {

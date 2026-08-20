@@ -2820,9 +2820,6 @@ async def tracker_admin_page(request: Request, user=Depends(require_server_mod))
         "is_mod": request.session.get("mod", False),
         "backdate_days": list(BACKDATE_DAY_CHOICES),
         "backdate_max": BACKDATE_MAX_CARDS,
-        "sealed_types": [{"key": k, "label": portfolios.SEALED_TYPE_LABELS[k]}
-                         for k in portfolios.SEALED_PRODUCT_TYPES],
-        "default_sealed_types": list(portfolios.DEFAULT_SEALED_TYPES),
     })
 
 
@@ -3333,40 +3330,186 @@ async def api_portfolio_sealed(request: Request, set_name: str = "", q: str = ""
     ], headers={"Cache-Control": "no-store"})
 
 
-@app.post("/api/portfolios/sealed/seed")
-@limiter.limit("20/hour")
-async def api_portfolio_sealed_seed(request: Request, user=Depends(require_server_mod)):
-    """Create the standard sealed SKUs for one set, or for every set in the
-    catalog. Admins and server mods (Tracker Management page).
+@app.post("/api/portfolios/sealed/preview")
+@limiter.limit("60/hour")
+async def api_portfolio_sealed_preview(request: Request,
+                                       user=Depends(require_server_mod)):
+    """Ask the price API what sealed product a set actually has.
 
-    Not open to members because it writes to a catalogue everyone picks
-    from — one typo'd "Prismatick Evolutions Booster Box" would be there for
-    the whole community. Idempotent, so re-running after new sets are stocked
-    only adds what's missing.
+    Writes NOTHING. Returns what was parsed alongside a sample of the raw
+    record, because the sealed endpoint's shape is unverified — if the parser
+    reads it wrongly, that has to be visible to a person before any of it
+    reaches a catalogue members pick from.
     """
     body = await request.json()
     set_name = (body.get("set_name") or "").strip()
-    language = price_sources.ppt_language(body.get("language") or "english")
-    types = body.get("product_types") or None
+    if not set_name:
+        raise HTTPException(status_code=400, detail="Pick a set first.")
+
+    rows, status = await price_sources.fetch_ppt_sealed(set_name)
+    parsed, skipped = portfolios.parse_sealed_rows(rows, set_name)
+
+    detail = {
+        "ok": "Found %d product(s)." % len(parsed),
+        "empty": "The price API has no sealed product listed for that set.",
+        "no_key": "No price API key is configured.",
+        "rate_limited": "The price API is rate limiting us. Try again shortly.",
+        "not_found": ("The price API didn't answer on any known sealed address. "
+                      "It may not offer sealed product, or the address may have "
+                      "changed — see POKEMONPRICETRACKER_SEALED_PATH."),
+        "error": "The price API returned an error. Check the logs.",
+    }.get(status, "Unexpected response.")
+
+    return JSONResponse({
+        "status": status,
+        "detail": detail,
+        "set_name": set_name,
+        "products": [{
+            "name": p["name"],
+            "set_name": p["set_name"],
+            "product_type": p["product_type"],
+            "type_label": portfolios.SEALED_TYPE_LABELS.get(p["product_type"], "Other"),
+            "market_price": _portfolio_json(p.get("market_price")),
+            "image_url": p.get("image_url") or "",
+            "ppt_product_id": p.get("ppt_product_id") or "",
+        } for p in parsed],
+        "skipped": skipped,
+        # One raw record, so a wrong parse is diagnosable without the logs.
+        "sample_raw": rows[0] if rows else None,
+        "raw_count": len(rows),
+    }, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/portfolios/sealed/import")
+@limiter.limit("30/hour")
+async def api_portfolio_sealed_import(request: Request,
+                                      user=Depends(require_server_mod)):
+    """Write the previewed products into the catalogue.
+
+    Re-fetches from the API rather than trusting a product list posted by the
+    browser: this writes to a shared catalogue, and a hand-edited payload
+    would put arbitrary names in front of every member.
+    """
+    body = await request.json()
+    set_names = body.get("set_names") or []
+    if isinstance(set_names, str):
+        set_names = [set_names]
+    single = (body.get("set_name") or "").strip()
+    if single:
+        set_names = [single]
+    set_names = [str(s).strip() for s in set_names if str(s).strip()][:60]
+    if not set_names:
+        raise HTTPException(status_code=400, detail="Pick at least one set.")
 
     pool = request.app.state.db
-    if set_name:
-        added = await portfolios.seed_sealed_for_set(pool, set_name, language, types)
-        return JSONResponse({"sets": 1, "added": added},
+    added = updated = skipped = 0
+    failures = []
+    for set_name in set_names:
+        rows, status = await price_sources.fetch_ppt_sealed(set_name)
+        if status == "rate_limited":
+            # Stop rather than hammer: the rest can be imported after a wait.
+            failures.append({"set_name": set_name, "status": status})
+            break
+        if status != "ok":
+            failures.append({"set_name": set_name, "status": status})
+            continue
+        parsed, n_skipped = portfolios.parse_sealed_rows(rows, set_name)
+        skipped += n_skipped
+        result = await portfolios.import_sealed_products(pool, parsed)
+        added += result["added"]
+        updated += result["updated"]
+
+    logger.info("Sealed import by %s: %d set(s), %d added, %d updated, %d failed",
+                user["id"], len(set_names), added, updated, len(failures))
+    return JSONResponse({
+        "sets": len(set_names), "added": added, "updated": updated,
+        "skipped": skipped, "failures": failures,
+    }, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/portfolios/sealed/candidate-sets")
+async def api_portfolio_sealed_candidate_sets(request: Request,
+                                              user=Depends(require_server_mod)):
+    """Sets in the card catalog, with how much sealed product each already
+    has — so it's obvious which ones still need importing."""
+    async with request.app.state.db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT c.set_name,
+                   COALESCE((SELECT COUNT(*) FROM sealed_products s
+                              WHERE s.set_name = c.set_name), 0) AS sealed_count
+            FROM (SELECT DISTINCT set_name FROM catalog_cards
+                   WHERE game = 'pokemon' AND set_name <> '') c
+            ORDER BY c.set_name
+            """)
+    return JSONResponse([{"set_name": r["set_name"], "sealed_count": r["sealed_count"]}
+                         for r in rows], headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/portfolios/sealed/purge")
+@limiter.limit("10/hour")
+async def api_portfolio_sealed_purge(request: Request, user=Depends(require_admin)):
+    """Clear sealed product from the catalogue.
+
+    ADMIN-ONLY, unlike the rest of the sealed tools, because
+    portfolio_lots.sealed_id is ON DELETE CASCADE: deleting a product that
+    somebody holds DELETES THEIR HOLDING with it, and no undo exists.
+
+    Two modes:
+      "unused" (default) — remove only products nobody has in a portfolio.
+                           This is what clears mis-seeded rows safely.
+      "all"              — remove everything, destroying the lots that
+                           reference them. Requires an explicit confirmation
+                           phrase, and reports the damage first via ?dry_run.
+    """
+    body = await request.json()
+    mode = (body.get("mode") or "unused").strip().lower()
+    if mode not in ("unused", "all"):
+        raise HTTPException(status_code=400, detail="Unknown mode.")
+
+    pool = request.app.state.db
+    async with pool.acquire() as conn:
+        total = await conn.fetchval("SELECT COUNT(*) FROM sealed_products") or 0
+        held = await conn.fetchval(
+            "SELECT COUNT(DISTINCT s.id) FROM sealed_products s "
+            "JOIN portfolio_lots l ON l.sealed_id = s.id") or 0
+        lots_at_risk = await conn.fetchval(
+            "SELECT COUNT(*) FROM portfolio_lots WHERE sealed_id IS NOT NULL") or 0
+
+    impact = {
+        "total_products": total,
+        "products_held_by_someone": held,
+        "member_lots_affected": lots_at_risk if mode == "all" else 0,
+        "would_delete": total if mode == "all" else total - held,
+    }
+
+    # A dry run is the default answer to anything destructive: say what would
+    # happen, and make the caller come back to actually do it.
+    if body.get("dry_run"):
+        return JSONResponse({"dry_run": True, **impact},
                             headers={"Cache-Control": "no-store"})
 
-    # No set given: seed every set the catalog knows about. Bounded by the
-    # catalog's own size, and idempotent, so this is safe to re-run.
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT DISTINCT set_name, language FROM catalog_cards "
-            "WHERE game = 'pokemon' AND set_name <> '' ORDER BY set_name")
-    added = 0
-    for row in rows:
-        added += await portfolios.seed_sealed_for_set(
-            pool, row["set_name"], row["language"], types)
-    logger.info("Sealed: seeded %d product(s) across %d set(s)", added, len(rows))
-    return JSONResponse({"sets": len(rows), "added": added},
+    if mode == "all":
+        if (body.get("confirm") or "") != "DELETE ALL SEALED":
+            raise HTTPException(
+                status_code=400,
+                detail=("This would delete %d product(s) and %d member holding(s). "
+                        "Type DELETE ALL SEALED to confirm." % (total, lots_at_risk)))
+        async with pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM sealed_products")
+        logger.warning("Sealed: ALL products purged by admin %s "
+                       "(%d products, %d member lots destroyed)",
+                       user["id"], total, lots_at_risk)
+    else:
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM sealed_products s WHERE NOT EXISTS "
+                "(SELECT 1 FROM portfolio_lots l WHERE l.sealed_id = s.id)")
+        logger.info("Sealed: purged unused products by admin %s (%s)",
+                    user["id"], result)
+
+    deleted = int(result.rsplit(" ", 1)[-1]) if result else 0
+    return JSONResponse({"deleted": deleted, "kept": total - deleted, **impact},
                         headers={"Cache-Control": "no-store"})
 
 

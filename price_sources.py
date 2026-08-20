@@ -1476,3 +1476,62 @@ def configured_sources() -> dict:
         "pokemonpricetracker": pokemonpricetracker_available(),
         "ebay_browse": ebay_available(),
     }
+
+
+# ───────────────────── PokemonPriceTracker: sealed product ─────────────────
+# The v2 endpoints this module has confirmed are /cards and /sets. A sealed
+# endpoint is NOT confirmed — its path and record shape were never verified
+# against the live API, because the key lives only on Railway.
+#
+# So this is written to FAIL LOUDLY AND VISIBLY rather than guess:
+#   * the path is configurable (POKEMONPRICETRACKER_SEALED_PATH), so a wrong
+#     default is a one-variable fix rather than a redeploy;
+#   * candidate paths are tried in order and the one that answers is logged;
+#   * the caller previews the RAW rows before anything is written, so a
+#     mis-parse is seen by a human instead of landing in the catalogue.
+SEALED_PATH_CANDIDATES = tuple(
+    p.strip() for p in os.getenv(
+        "POKEMONPRICETRACKER_SEALED_PATH",
+        "/sealed,/sealed-products,/products").split(",") if p.strip())
+
+
+async def fetch_ppt_sealed(set_name: str, limit: int = 100) -> tuple:
+    """Sealed product for one set. Returns (rows, status).
+
+    status is one of: "ok", "empty", "no_key", "rate_limited", "not_found",
+    "error" — the same vocabulary the card fetchers use, so callers can tell
+    "this set genuinely has none" from "the endpoint isn't there".
+
+    `rows` are RAW API records, deliberately unparsed: the caller shows them
+    to a human before anything is stored.
+    """
+    if not os.getenv("POKEMONPRICETRACKER_API_KEY"):
+        return [], "no_key"
+
+    last_status = "not_found"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for path in SEALED_PATH_CANDIDATES:
+            rows, resp = await _ppt_get(
+                client, path, {"set": set_name, "limit": limit},
+                f"sealed({set_name})")
+            if resp is None:
+                last_status = "error"
+                continue
+            if resp.status_code == 429:
+                return [], "rate_limited"
+            if resp.status_code == 404:
+                # Wrong path for this account/version — try the next candidate.
+                logger.info("PokemonPriceTracker: no sealed endpoint at %s", path)
+                last_status = "not_found"
+                continue
+            if resp.status_code != 200:
+                last_status = "error"
+                continue
+            logger.info("PokemonPriceTracker: sealed endpoint %s answered with "
+                        "%d row(s) for %s", path, len(rows), set_name)
+            return rows, ("ok" if rows else "empty")
+    return [], last_status
+
+
+def ppt_sealed_available() -> bool:
+    return bool(os.getenv("POKEMONPRICETRACKER_API_KEY"))

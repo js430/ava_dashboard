@@ -1135,3 +1135,42 @@ by jurisdiction; the user was told to ask someone qualified rather than
 given a recommendation.
 
 ---
+
+## 2026-08-19 — Sealed product comes from the price API, per set
+
+**Decided:** Removed the generator that created the same three SKUs
+(Booster Box / ETB / Bundle) for every set. It invented products that were
+never printed and missed ones that were. Sealed product is now imported
+from PokemonPriceTracker's own per-set listing.
+
+**The endpoint is still UNVERIFIED**, so the design fails loudly rather
+than guessing: the path is env-configurable
+(`POKEMONPRICETRACKER_SEALED_PATH`, default `/sealed,/sealed-products,
+/products`), candidates are tried in order with a 404 moving to the next,
+and the parser reads several candidate key names per field. Nothing is
+written without a human seeing it — Look up returns the parsed products
+AND a raw sample, and the Save button stays disabled until a successful
+look-up.
+
+**Import re-fetches server-side** rather than trusting a product list
+posted by the browser: this writes to a catalogue every member picks from.
+
+**Sealed can now carry a price.** `sealed_products.market_price` +
+`price_updated_at`, filled from the API record when it has one.
+`current_prices()` and `latest_unit_price()` both read it, so sealed
+holdings can be valued and a blank "price paid" can default from it. A
+product the API never priced stays None and reports as unpriced, never
+zero.
+
+**Deletion (`/api/portfolios/sealed/purge`) is ADMIN-only**, stricter than
+the rest of the sealed tools, because `portfolio_lots.sealed_id` is
+ON DELETE CASCADE — deleting a product someone holds deletes their
+holding. Default mode is "unused", which spares anything a member holds.
+"all" requires a dry run showing the damage, a confirm dialog, and the
+typed phrase DELETE ALL SEALED, and logs at warning level.
+
+**Rejected:** writing speculative client code against an assumed response
+shape (hence preview-first); keeping the generic generator as a fallback
+(a button that creates known-wrong data is a foot-gun, not a safety net).
+
+---

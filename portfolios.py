@@ -132,6 +132,11 @@ PORTFOLIO_SCHEMA = [
         UNIQUE (game, language, set_name, name, product_type)
     )
     """,
+    # Sealed prices come from the price API's own sealed records, so unlike
+    # cards they don't live in price_snapshots (that table's FK points at
+    # tracked_cards). One current value per product is enough for a portfolio.
+    "ALTER TABLE sealed_products ADD COLUMN IF NOT EXISTS market_price NUMERIC(12,2)",
+    "ALTER TABLE sealed_products ADD COLUMN IF NOT EXISTS price_updated_at TIMESTAMPTZ",
     "CREATE INDEX IF NOT EXISTS idx_sealed_set ON sealed_products (set_name)",
     # A lot is one purchase. card_id XOR sealed_id — enforced by the DB rather
     # than by application code, because a lot pointing at both (or neither)
@@ -607,18 +612,23 @@ async def latest_unit_price(pool, kind: str, item_id):
     price_snapshots history the tracker maintains — no API call, so leaving
     the price blank costs nothing.
 
-    Returns None for sealed product: there is no sealed price source yet (see
-    the note above seed_sealed_for_set), so there is nothing honest to fill
-    in. The caller leaves the cost at zero and does NOT flag it as estimated.
+    Sealed reads sealed_products.market_price. A product the price API never
+    priced returns None, and the caller leaves the cost at zero WITHOUT
+    flagging it as an estimate — there would be nothing behind the label.
     """
-    if kind != "card" or not item_id:
+    if not item_id or kind not in ("card", "sealed"):
         return None
     try:
         async with pool.acquire() as conn:
-            value = await conn.fetchval(
-                "SELECT price_mid FROM price_snapshots WHERE card_id = $1 "
-                "AND price_mid IS NOT NULL ORDER BY captured_at DESC LIMIT 1",
-                int(item_id))
+            if kind == "sealed":
+                value = await conn.fetchval(
+                    "SELECT market_price FROM sealed_products WHERE id = $1",
+                    int(item_id))
+            else:
+                value = await conn.fetchval(
+                    "SELECT price_mid FROM price_snapshots WHERE card_id = $1 "
+                    "AND price_mid IS NOT NULL ORDER BY captured_at DESC LIMIT 1",
+                    int(item_id))
         return to_money(value)
     except Exception:
         # A lookup failure must not block someone recording a purchase.
@@ -740,13 +750,23 @@ async def current_prices(pool, lots) -> dict:
     price_mid is the market price (card_tracker writes PPT's "market" there
     and card_scoring reads it); low/high are the spread around it.
 
-    SEALED PRODUCT HAS NO PRICE SOURCE YET. PokemonPriceTracker's documented
-    v2 endpoints in price_sources.py are /cards and /sets only; whether it
-    serves sealed is unconfirmed. Sealed items therefore return no price and
-    are reported as unpriced rather than assumed to be worth nothing.
+    Sealed reads sealed_products.market_price, filled by the sealed import
+    (see import_sealed_products). A product the API never priced stays None
+    and is reported as unpriced — never as zero.
     """
     card_ids = sorted({int(l["card_id"]) for l in lots if l.get("card_id")})
+    sealed_ids = sorted({int(l["sealed_id"]) for l in lots if l.get("sealed_id")})
     prices = {}
+
+    if sealed_ids:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, market_price FROM sealed_products WHERE id = ANY($1::int[])",
+                sealed_ids)
+        for r in rows:
+            if r["market_price"] is not None:
+                prices[("sealed", int(r["id"]))] = r["market_price"]
+
     if not card_ids:
         return prices
     async with pool.acquire() as conn:
@@ -780,55 +800,25 @@ async def current_prices(pool, lots) -> dict:
 #     If a sealed price endpoint does exist, the upgrade is small: fill
 #     ppt_product_id here and add a sealed branch to current_prices().
 
-# The SKUs a modern English set almost always has. Deliberately conservative:
-# a member can only pick from what's seeded, and a missing box is a smaller
-# problem than a list full of products that were never printed.
-DEFAULT_SEALED_TYPES = ("booster_box", "elite_trainer_box", "booster_bundle")
+# The first version of this module generated the same three SKUs for every
+# set (Booster Box / ETB / Bundle). That was wrong: every set ships a
+# different mix, so it invented products that were never printed and missed
+# ones that were. Sealed product now comes from the price API's own per-set
+# listing — see parse_sealed_rows and import_sealed_products below.
 
 
-def sealed_display_name(set_name: str, product_type: str) -> str:
-    label = SEALED_TYPE_LABELS.get(product_type, "Sealed")
-    return f"{set_name} {label}".strip()
+async def sealed_price_available(pool) -> bool:
+    """Whether ANY sealed product has a price yet.
 
-
-async def seed_sealed_for_set(pool, set_name: str, language: str = "english",
-                              product_types=None, game: str = "pokemon") -> int:
-    """Create the standard sealed SKUs for one set. Returns rows added.
-
-    Idempotent — ON CONFLICT DO NOTHING against the natural key, so running it
-    twice adds nothing and never duplicates a product members already hold.
+    Asked rather than assumed: it depends on whether the price API's sealed
+    records carry prices, which is only knowable after a real import.
     """
-    set_name = (set_name or "").strip()[:200]
-    if not set_name:
-        return 0
-    types = [t for t in (product_types or DEFAULT_SEALED_TYPES)
-             if t in SEALED_PRODUCT_TYPES]
-    if not types:
-        return 0
-    added = 0
-    async with pool.acquire() as conn:
-        for product_type in types:
-            row = await conn.fetchrow(
-                """
-                INSERT INTO sealed_products (game, language, set_name, name, product_type)
-                VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT (game, language, set_name, name, product_type) DO NOTHING
-                RETURNING id
-                """,
-                game, language, set_name,
-                sealed_display_name(set_name, product_type), product_type)
-            if row:
-                added += 1
-    if added:
-        logger.info("Sealed: seeded %d product(s) for %s", added, set_name)
-    return added
-
-
-async def sealed_price_available() -> bool:
-    """Whether sealed product has a price source. False today — see the note
-    above. Exposed as a function so the UI asks rather than hardcoding it, and
-    so turning it on later is a one-line change here."""
-    return False
+    try:
+        async with pool.acquire() as conn:
+            return bool(await conn.fetchval(
+                "SELECT 1 FROM sealed_products WHERE market_price IS NOT NULL LIMIT 1"))
+    except Exception:
+        return False
 
 
 # ── Positions and partial sales ──────────────────────────────────────────
@@ -1109,3 +1099,166 @@ async def sell_from_position(pool, user_id: int, portfolio_id: int, kind: str,
                 portfolio_id, totals["units"], kind, item_id,
                 totals["lots_touched"], totals["splits"], totals["net"])
     return totals, None
+
+
+# ── Importing sealed product from the price API ──────────────────────────
+# Every set ships a different mix — some get an ETB and a bundle, some get
+# three different collection boxes, some get none. Generating the same SKUs
+# for every set (which this module did first) invents products that were
+# never printed and misses ones that were, so the catalogue is now driven by
+# what the API actually lists.
+#
+# The record shape is UNVERIFIED (see price_sources.fetch_ppt_sealed), so the
+# parser below reads several candidate key names rather than one, and returns
+# None for anything it can't make sense of instead of storing a half-row. The
+# caller previews what was parsed before writing.
+
+# Key names to look for, most likely first. Extend rather than replace when
+# the real shape is known.
+_NAME_KEYS = ("name", "productName", "product_name", "title")
+_SET_KEYS = ("setName", "set_name", "set", "expansion")
+_ID_KEYS = ("id", "productId", "product_id", "tcgPlayerId", "tcgplayer_id")
+_IMAGE_KEYS = ("imageCdnUrl", "imageUrl", "image_url", "image", "imageCdnUrlLarge")
+_TYPE_KEYS = ("productType", "product_type", "type", "category")
+_PRICE_PARENTS = ("prices", "price", "marketPrice", "market")
+_PRICE_KEYS = ("market", "marketPrice", "mid", "value", "usd", "amount")
+
+# Name -> product_type. Order matters: "elite trainer box" must be tested
+# before "box", or every ETB would be filed as a booster box.
+_TYPE_PATTERNS = (
+    ("elite_trainer_box", ("elite trainer box", "elite-trainer-box", " etb")),
+    ("premium_collection", ("premium collection", "ultra premium")),
+    ("booster_bundle", ("booster bundle", "bundle")),
+    ("booster_box", ("booster box", "display box", "display case")),
+    ("collection_box", ("collection", "box set", "gift set")),
+    ("tin", ("tin",)),
+    ("blister", ("blister", "sleeved booster", "three pack", "3 pack")),
+    ("booster_pack", ("booster pack", "single pack")),
+)
+
+
+def classify_sealed_type(name: str, hint: str = "") -> str:
+    """Best-effort product type from the product's name.
+
+    Returns "other" rather than guessing when nothing matches — an item filed
+    under the wrong type is harder to notice than one filed under "Other".
+    """
+    text = ((hint or "") + " " + (name or "")).lower()
+    for product_type, needles in _TYPE_PATTERNS:
+        if any(n in text for n in needles):
+            return product_type
+    return "other"
+
+
+def _first(row: dict, keys) -> str:
+    for k in keys:
+        value = row.get(k)
+        if value not in (None, ""):
+            return value
+    return ""
+
+
+def _nested_price(row: dict):
+    """Dig a market price out of whatever shape it arrives in."""
+    for parent in _PRICE_PARENTS:
+        block = row.get(parent)
+        if isinstance(block, dict):
+            for k in _PRICE_KEYS:
+                money = to_money(block.get(k))
+                if money is not None and money > 0:
+                    return money
+        else:
+            money = to_money(block)
+            if money is not None and money > 0:
+                return money
+    for k in _PRICE_KEYS:
+        money = to_money(row.get(k))
+        if money is not None and money > 0:
+            return money
+    return None
+
+
+def parse_sealed_row(row, fallback_set: str = "") -> dict:
+    """One raw API record -> our columns, or None if it isn't usable.
+
+    A row with no name is dropped: a nameless product is one nobody can find
+    in a search, so storing it only pollutes the catalogue.
+    """
+    if not isinstance(row, dict):
+        return None
+    name = str(_first(row, _NAME_KEYS) or "").strip()
+    if not name:
+        return None
+    set_name = str(_first(row, _SET_KEYS) or fallback_set or "").strip()
+    image = str(_first(row, _IMAGE_KEYS) or "").strip()
+    return {
+        "name": name[:200],
+        "set_name": set_name[:200],
+        "product_type": classify_sealed_type(name, str(_first(row, _TYPE_KEYS) or "")),
+        "ppt_product_id": str(_first(row, _ID_KEYS) or "")[:60],
+        "image_url": image[:500] if image.startswith("http") else "",
+        "market_price": _nested_price(row),
+    }
+
+
+def parse_sealed_rows(rows, fallback_set: str = "") -> tuple:
+    """Parse a batch. Returns (parsed, skipped) so the caller can report how
+    many records it could not read, rather than silently importing fewer."""
+    parsed, skipped = [], 0
+    seen = set()
+    for row in rows or []:
+        item = parse_sealed_row(row, fallback_set)
+        if not item:
+            skipped += 1
+            continue
+        # The natural key the table is unique on — dedupe within the batch so
+        # one import can't collide with itself.
+        key = (item["set_name"].lower(), item["name"].lower(), item["product_type"])
+        if key in seen:
+            skipped += 1
+            continue
+        seen.add(key)
+        parsed.append(item)
+    return parsed, skipped
+
+
+async def import_sealed_products(pool, items, language: str = "english",
+                                 game: str = "pokemon") -> dict:
+    """Upsert parsed products. Idempotent on the natural key.
+
+    Refreshes image and price on an existing row — those change — but never
+    touches anything a member owns: lots reference sealed_products by id, and
+    that id is preserved by the upsert.
+    """
+    added = updated = 0
+    async with pool.acquire() as conn:
+        for item in items or []:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO sealed_products
+                    (game, language, set_name, name, product_type, image_url,
+                     ppt_product_id, market_price, price_updated_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
+                        CASE WHEN $8::numeric IS NULL THEN NULL ELSE NOW() END)
+                ON CONFLICT (game, language, set_name, name, product_type)
+                DO UPDATE SET
+                    image_url      = COALESCE(NULLIF(EXCLUDED.image_url, ''),
+                                              sealed_products.image_url),
+                    ppt_product_id = COALESCE(NULLIF(EXCLUDED.ppt_product_id, ''),
+                                              sealed_products.ppt_product_id),
+                    market_price   = COALESCE(EXCLUDED.market_price,
+                                              sealed_products.market_price),
+                    price_updated_at = CASE
+                        WHEN EXCLUDED.market_price IS NOT NULL THEN NOW()
+                        ELSE sealed_products.price_updated_at END
+                RETURNING id, (xmax = 0) AS inserted
+                """,
+                game, language, item["set_name"], item["name"],
+                item["product_type"], item.get("image_url") or "",
+                item.get("ppt_product_id") or "", item.get("market_price"))
+            if row and row["inserted"]:
+                added += 1
+            else:
+                updated += 1
+    logger.info("Sealed: imported %d new, %d updated", added, updated)
+    return {"added": added, "updated": updated}
