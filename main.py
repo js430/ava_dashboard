@@ -1916,22 +1916,20 @@ async def api_raffle_spin(request: Request, user=Depends(get_current_user)):
         "remaining_after": len(remaining) - 1,
     }, headers={"Cache-Control": "no-store"})
 
-# ---- Card Tracker (staff: admins + server/regional mods via MOD_ROLE_IDS) ----
-
-def require_staff(request: Request) -> dict:
-    """Session gate for the card tracker: admins or mods (MOD_ROLE_IDS flag).
-    Deliberately does NOT require the premium member role — a regional mod
-    without premium still gets tracker access, but demo users do not."""
-    user = request.session.get("user")
-    if not user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    if int(user["id"]) not in ADMIN_USER_IDS and not request.session.get("mod", False):
-        raise HTTPException(status_code=403, detail="Not authorized")
-    return user
+# ---- Card Tracker admin tools (ADMIN_USER_IDS only) ----
+# There was a require_staff() here that also admitted MOD_ROLE_IDS mods. Its
+# only caller re-checked ADMIN_USER_IDS immediately afterwards, so the mod
+# branch could never let anyone through — it read more permissive than it
+# behaved. Collapsed into require_admin. Members and subscribers reach their
+# OWN portfolio through get_member_or_subscriber; this gate is for the shared
+# catalog and the destructive tools (refresh, rematch, reset-history, remove,
+# backdate, import).
 
 def require_admin(request: Request) -> dict:
-    """Admin-only session gate (ADMIN_USER_IDS). Used by the card tracker,
-    which is admin-only — mods no longer have tracker access."""
+    """Admin-only session gate (ADMIN_USER_IDS).
+
+    Deliberately does NOT accept the mod flag: these endpoints rewrite or
+    delete shared tracked-card data for every user at once."""
     user = request.session.get("user")
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -2788,7 +2786,11 @@ async def api_card_tracker_backdate_status(request: Request, user=Depends(requir
 #    source API server-side — the client never supplies card data directly. ──
 
 def _require_tracker_admin(request: Request) -> dict:
-    user = require_staff(request)
+    """Set import is admin-only. Kept as a named wrapper so the error message
+    says why, rather than a bare "Not authorized"."""
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     if int(user["id"]) not in ADMIN_USER_IDS:
         raise HTTPException(status_code=403, detail="Importing is admin-only")
     return user
@@ -5397,15 +5399,30 @@ async def map_page(request: Request):
         "google_maps_api_key": GOOGLE_MAPS_API_KEY,
     })
 
+def _may_view_invite_network(request: Request) -> bool:
+    """Who may see the invite network: admins, the all_mods role-management
+    group (ALL_MODS_ROLE_IDS), and regional mods (MOD_ROLE_IDS).
+
+    Single source of truth for this answer — the page and its API both call
+    it, so they cannot drift apart and leave the data reachable through the
+    API after the page has been locked down (or vice versa)."""
+    user = request.session.get("user")
+    if not user:
+        return False
+    return (int(user["id"]) in ADMIN_USER_IDS
+            or request.session.get("all_mods", False)
+            or request.session.get("mod", False))
+
+
 def require_all_mods(request: Request) -> dict:
-    """Session gate for the invite-network page: admins or the all_mods
-    role-management group (ALL_MODS_ROLE_IDS flag). Like require_staff, it
-    deliberately does NOT require the premium member role — a role manager
-    without premium still gets in, but demo users do not."""
+    """Session gate for the invite-network API: admins, role managers, or
+    regional mods. Deliberately does NOT require the premium member role — a
+    role manager or mod without premium still gets in, but demo users do
+    not (they never get a session["user"] with these flags set)."""
     user = request.session.get("user")
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    if int(user["id"]) not in ADMIN_USER_IDS and not request.session.get("all_mods", False):
+    if not _may_view_invite_network(request):
         raise HTTPException(status_code=403, detail="Not authorized")
     return user
 
@@ -5418,7 +5435,7 @@ async def invite_network_page(request: Request):
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
     is_admin = int(user["id"]) in ADMIN_USER_IDS
-    if not is_admin and not request.session.get("all_mods", False):
+    if not _may_view_invite_network(request):
         raise HTTPException(status_code=403, detail="Not authorized")
     return templates.TemplateResponse("invite_network.html", {
         "request": request,

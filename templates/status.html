@@ -167,12 +167,13 @@
     <a href="/map">Map</a>
     <a href="/status" class="active">Status</a>
     <a href="/tips">Tips, Tricks, and Guide</a>
-    {% if is_admin %}
+    {% set can_view_network = is_admin or request.session.get('mod', False) or request.session.get('all_mods', False) %}
+    {% if can_view_network %}
     <div class="nav-group">
       <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
       <div class="nav-menu">
-        <a href="/admin">Visitor Log</a>
-        <a href="/contributors">Contributors</a>
+        {% if is_admin %}<a href="/admin">Visitor Log</a>{% endif %}
+        {% if is_admin %}<a href="/contributors">Contributors</a>{% endif %}
         <a href="/invite-network">Network</a>
       </div>
     </div>
