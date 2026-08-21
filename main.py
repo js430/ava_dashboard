@@ -5434,6 +5434,7 @@ async def catalog_page(request: Request):
             description="Browse every stocked Pokémon and One Piece set with live prices. "
                         "Sign in with Discord or continue as a guest to use it.")
     return templates.TemplateResponse("catalog.html", {
+        "default_costs": {k: str(v) for k, v in portfolios.DEFAULT_SEALED_COST.items()},
         "request": request,
         **await _viewer_context(request, user, allow_account=True),
         # Drives rel="sponsored" and the disclosure line. Both must appear

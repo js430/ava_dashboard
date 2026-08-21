@@ -676,6 +676,7 @@
       <label class="sealed-field">
         <span>Price paid, each</span>
         <input type="number" id="pfCost" min="0" step="0.01" placeholder="market price">
+        <div class="hint" id="pfCostNote" style="display:none;"></div>
       </label>
       <label class="sealed-field">
         <span>Date bought</span>
@@ -1864,6 +1865,7 @@ document.addEventListener('keydown', function(ev){ if (ev.key === 'Escape') clos
 // ── Sealed product tab ──────────────────────────────────────────────────
 // List only for now: sealed boxes photograph much the same as each other,
 // so a grid of near-identical cartons is harder to scan than a list.
+const SEALED_DEFAULT_COSTS = {{ default_costs | tojson }};
 const IS_GUEST_CAT = {{ 'true' if is_guest else 'false' }};
 let sealedRows = [];
 let sealedTotal = 0;
@@ -2013,7 +2015,16 @@ async function openPfPicker(product, ev) {
   const box = document.getElementById('pfPicker');
   document.getElementById('pfPickerTitle').textContent = 'Add: ' + product.name;
   document.getElementById('pfQty').value = 1;
-  document.getElementById('pfCost').value = '';
+  // Prefill with the usual retail price for this kind of product, same as the
+  // portfolios page. A starting point, not a claim — it stays editable.
+  const preset = SEALED_DEFAULT_COSTS[product.product_type];
+  document.getElementById('pfCost').value = preset || '';
+  const note = document.getElementById('pfCostNote');
+  if (note) {
+    note.textContent = preset
+      ? 'Usual retail price — change it if you paid something else.' : '';
+    note.style.display = preset ? 'block' : 'none';
+  }
   document.getElementById('pfDate').value = new Date().toISOString().slice(0, 10);
   document.getElementById('pfMsg').textContent = '';
   document.getElementById('pfPickerList').innerHTML =

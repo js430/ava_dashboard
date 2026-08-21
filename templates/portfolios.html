@@ -799,7 +799,8 @@ function showAdd(pos) {
   setKind("card");
   if (pos) {
     // "Buy more" of something already held: skip the search entirely.
-    chosenItem = { kind: pos.kind, id: pos.item_id, label: pos.name };
+    chosenItem = { kind: pos.kind, id: pos.item_id, label: pos.name,
+                   productType: pos.product_type };
     document.getElementById("pickStep").style.display = "none";
     showChosen();
   }
@@ -976,7 +977,9 @@ async function choosePicked(row) {
   const msg = document.getElementById("addMsg");
   msg.innerHTML = "";
   if (row.kind === "sealed") {
-    chosenItem = { kind: "sealed", id: row.id, label: row.label };
+    // productType carries through so the cost default can be looked up.
+    chosenItem = { kind: "sealed", id: row.id, label: row.label,
+                   productType: row.productType };
     showChosen();
     return;
   }

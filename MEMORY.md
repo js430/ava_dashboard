@@ -1648,3 +1648,30 @@ examples are in the label so the category is obvious. Still a datalist, not a
 locked dropdown: the field is free text and anything can be typed.
 
 ---
+
+## 2026-08-20 — The cost prefill shipped broken: a silent no-op replace
+
+**Symptom:** "I don't see these changes" — the add form still showed a blank
+price for a Booster Box.
+
+**Cause, and it is a process failure not a design one:** the edit that made
+`chosenItem` carry `productType` was applied with a plain string replace and
+NO assertion. The anchor no longer matched (the picker had been rewritten in
+the same session), so it silently did nothing. Every other piece was in
+place — the browse row carried `product_type`, `applyDefaultCost()` existed,
+`showChosen()` called it — but the one link that copied the field across was
+missing, so the lookup was always `undefined`.
+
+**The tests did not catch it** because they asserted the PIECES existed, not
+that they connected. `test_costdefaults.py` now walks the whole chain:
+browse row -> runPick mapping -> choosePicked -> chosenItem -> the lookup ->
+showChosen calling it -> both routes passing `default_costs`.
+
+**Also fixed while here:** "Buy more" from an existing position now prefills
+too, and the Catalog's own add-to-portfolio panel uses the same defaults.
+
+**Standing rule, restated because it keeps biting:** never use a string
+replace on source without asserting the anchor matched, and verify after
+writing. Four separate silent no-ops this session.
+
+---
