@@ -1590,3 +1590,30 @@ is a silent failure. The list looks plausible, the filter looks populated,
 and the missing data is invisible.
 
 ---
+
+## 2026-08-20 — "Add an item" picks a set first, then narrows
+
+**Changed:** the Add panel on /portfolios no longer opens with a bare
+free-text search. For BOTH cards and sealed it now offers a **set dropdown**,
+an **optional second filter** (rarity for cards, product type for sealed),
+and an optional name contains box.
+
+**Why:** searching the whole catalog by name required knowing the exact name
+and hoping. Picking the set you are holding turns it into a list you can
+scan, and the second filter cuts a 400-card set down to something readable.
+
+**Where each list comes from:**
+  * card sets and rarities — `/api/catalog/facets` (guest-readable, already
+    powers the Catalog's own filters)
+  * sealed sets and types — `/api/portfolios/sealed/browse`
+  * card rows — `/api/catalog/cards?sets=&rarities=&search=`
+  * sealed rows — the browse endpoint with the same filters
+
+All filtering is server-side. The stale-response sequence guard from the old
+type-ahead was kept — a slow reply must not repaint a newer selection.
+
+**Removed with it:** the two separate search boxes (`cardSearch`,
+`sealedSearch`), their result panes, and a DUPLICATE `setKind()` that the
+replacement had left behind. `check_js` caught the duplicate immediately.
+
+---

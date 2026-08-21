@@ -206,20 +206,26 @@
         <button id="segSealed" onclick="setKind('sealed')">Sealed product</button>
       </div>
 
-      <div id="cardPick">
-        <label for="cardSearch">Search for a card</label>
-        <input type="text" id="cardSearch" placeholder="Charizard" autocomplete="off">
-        <div class="hint">Type at least 2 characters. Pick the exact printing you own.</div>
-        <div class="search-results" id="cardResults" style="display:none;"></div>
+      <!-- Set first, then narrow. Searching the whole catalog by name meant
+           typing an exact card name and hoping; picking the set you're
+           holding cuts it to a list you can scan. -->
+      <div class="form-grid">
+        <div>
+          <label for="pickSet">Set</label>
+          <select id="pickSet"><option value="">Loading sets…</option></select>
+        </div>
+        <div>
+          <label for="pickType" id="pickTypeLabel">Rarity (optional)</label>
+          <select id="pickType"><option value="">Any</option></select>
+        </div>
+        <div>
+          <label for="pickSearch">Name contains (optional)</label>
+          <input type="text" id="pickSearch" placeholder="Charizard" autocomplete="off">
+        </div>
       </div>
+      <div class="hint" id="pickHint">Pick a set to see what's in it.</div>
 
-      <div id="sealedPick" style="display:none;">
-        <label for="sealedSearch">Search sealed product</label>
-        <input type="text" id="sealedSearch" placeholder="Prismatic Evolutions" autocomplete="off">
-        <div class="hint">Booster boxes, ETBs, bundles and tins.</div>
-        <div class="search-results" id="sealedResults" style="display:none;"></div>
-      </div>
-
+      <div class="search-results" id="pickResults" style="display:none;"></div>
       <div id="chosen" class="chosen" style="display:none;"></div>
     </div>
 
@@ -721,10 +727,7 @@ function showAdd(pos) {
   document.getElementById("detailStep").style.display = "none";
   document.getElementById("chosen").style.display = "none";
   document.getElementById("addMsg").innerHTML = "";
-  ["cardSearch", "sealedSearch"].forEach(id => { document.getElementById(id).value = ""; });
-  ["cardResults", "sealedResults"].forEach(id => {
-    const el = document.getElementById(id); el.innerHTML = ""; el.style.display = "none";
-  });
+  document.getElementById("pickSearch").value = "";
   clearForm();
   setKind("card");
   if (pos) {
@@ -747,15 +750,6 @@ function clearForm() {
     .forEach(id => { document.getElementById(id).value = ""; });
 }
 
-function setKind(kind) {
-  addKind = kind;
-  document.getElementById("segCard").classList.toggle("on", kind === "card");
-  document.getElementById("segSealed").classList.toggle("on", kind === "sealed");
-  document.getElementById("cardPick").style.display = kind === "card" ? "block" : "none";
-  document.getElementById("sealedPick").style.display = kind === "sealed" ? "block" : "none";
-  fillConditions(kind);
-}
-
 function fillConditions(kind) {
   const list = kind === "sealed" ? SEALED_CONDITIONS : CARD_CONDITIONS;
   const sel = document.getElementById("fCondition");
@@ -767,117 +761,187 @@ function fillConditions(kind) {
   });
 }
 
-// Type-ahead. Two things matter here beyond "call the API":
-//   1. Debounce, so a fast typist doesn't fire a request per character.
-//   2. A sequence number, so a SLOW early response can't land after a fast
-//      later one and repaint the list with results for text the user has
-//      already changed. Without it, typing "pri" then "prismatic" can leave
-//      the "pri" results on screen.
-let searchTimer = null;
-let searchSeq = 0;
+// ── Picking an item: set first, then narrow ─────────────────────────────
+// Searching the whole catalog by name meant knowing the exact name and
+// hoping. Choosing the set you're holding turns it into a list you can scan,
+// and the optional second filter (rarity for cards, product type for sealed)
+// cuts a 400-card set down to something readable.
+let pickTimer = null;
+let pickSeq = 0;
+const setCache = { card: null, sealed: null };
 
-document.getElementById("cardSearch").addEventListener("input", (e) => {
-  clearTimeout(searchTimer);
-  const q = e.target.value.trim();
-  if (q.length < 2) {
-    document.getElementById("cardResults").style.display = "none";
+function pickEls() {
+  return {
+    set: document.getElementById("pickSet"),
+    type: document.getElementById("pickType"),
+    typeLabel: document.getElementById("pickTypeLabel"),
+    search: document.getElementById("pickSearch"),
+    hint: document.getElementById("pickHint"),
+    results: document.getElementById("pickResults"),
+  };
+}
+
+function setKind(kind) {
+  addKind = kind;
+  document.getElementById("segCard").classList.toggle("on", kind === "card");
+  document.getElementById("segSealed").classList.toggle("on", kind === "sealed");
+  const el = pickEls();
+  el.typeLabel.textContent = kind === "sealed"
+    ? "Product type (optional)" : "Rarity (optional)";
+  el.search.placeholder = kind === "sealed" ? "Elite Trainer Box" : "Charizard";
+  el.set.value = "";
+  el.type.innerHTML = '<option value="">Any</option>';
+  el.results.style.display = "none";
+  el.results.innerHTML = "";
+  el.hint.textContent = "Pick a set to see what's in it.";
+  fillConditions(kind);
+  loadPickSets(kind);
+}
+
+async function loadPickSets(kind) {
+  const el = pickEls();
+  if (setCache[kind]) { renderPickSets(setCache[kind], kind); return; }
+  el.set.innerHTML = '<option value="">Loading sets…</option>';
+  try {
+    if (kind === "sealed") {
+      const data = await api("/api/portfolios/sealed/browse?limit=1");
+      setCache.sealed = { sets: data.sets || [], types: data.types || [] };
+    } else {
+      const data = await api("/api/catalog/facets");
+      // Facet rows arrive per (set_id, language); collapse to one per set.
+      const bySet = new Map();
+      (data.sets || []).forEach(s => {
+        const prev = bySet.get(s.set_id);
+        if (prev) prev.count += s.cards;
+        else bySet.set(s.set_id, { value: s.set_id, name: s.set_name, count: s.cards });
+      });
+      setCache.card = {
+        sets: [...bySet.values()],
+        types: (data.rarities || []).map(r => ({ key: r.rarity || r, label: r.rarity || r,
+                                                 count: r.count || 0 })),
+      };
+    }
+    renderPickSets(setCache[kind], kind);
+  } catch (e) {
+    el.set.innerHTML = '<option value="">Could not load sets</option>';
+    el.hint.textContent = e.message;
+  }
+}
+
+function renderPickSets(cache, kind) {
+  const el = pickEls();
+  const sets = cache.sets || [];
+  if (!sets.length) {
+    el.set.innerHTML = '<option value="">Nothing stocked yet</option>';
+    el.hint.textContent = kind === "sealed"
+      ? "No sealed product has been added yet."
+      : "No card sets are stocked yet.";
     return;
   }
-  searchTimer = setTimeout(() => searchCards(q, ++searchSeq), 200);
-});
+  const opts = kind === "sealed"
+    ? sets.map(s => ({ value: s.set_name, label: s.set_name, count: s.count }))
+    : sets.map(s => ({ value: s.value, label: s.name, count: s.count }));
+  el.set.innerHTML = '<option value="">Pick a set…</option>' + opts.map(o =>
+    '<option value="' + esc(o.value) + '">' + esc(o.label) +
+    (o.count ? " (" + o.count + ")" : "") + "</option>").join("");
+  el.type.innerHTML = '<option value="">Any</option>' + (cache.types || []).map(t =>
+    '<option value="' + esc(t.key) + '">' + esc(t.label) +
+    (t.count ? " (" + t.count + ")" : "") + "</option>").join("");
+}
 
-document.getElementById("sealedSearch").addEventListener("input", (e) => {
-  clearTimeout(searchTimer);
-  const q = e.target.value.trim();
-  // Sealed starts from the first character: the list is small and the whole
-  // point is seeing matches as you type.
-  searchTimer = setTimeout(() => searchSealed(q, ++searchSeq), 180);
-});
-
-// Show the first few the moment the field is focused, so an empty box isn't
-// a dead end for someone who doesn't know what's been added.
-document.getElementById("sealedSearch").addEventListener("focus", () => {
-  if (!document.getElementById("sealedSearch").value.trim()) {
-    searchSealed("", ++searchSeq);
+async function runPick() {
+  const el = pickEls();
+  const setValue = el.set.value;
+  if (!setValue) {
+    el.results.style.display = "none";
+    el.hint.textContent = "Pick a set to see what's in it.";
+    return;
   }
-});
-
-async function searchCards(q, seq) {
-  const box = document.getElementById("cardResults");
+  const seq = ++pickSeq;
+  el.hint.textContent = "Loading…";
   try {
-    const rows = await api("/api/card-tracker/portfolio/search", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ game: "pokemon", query: q })
-    });
-    if (seq !== searchSeq) return;   // a newer keystroke already won
-    box.innerHTML = "";
-    if (!rows.length) {
-      box.innerHTML = '<div class="search-row muted">No cards matched.</div>';
+    let rows = [];
+    if (addKind === "sealed") {
+      const p = new URLSearchParams({ set_name: setValue, limit: "200" });
+      if (el.type.value) p.set("product_type", el.type.value);
+      if (el.search.value.trim()) p.set("q", el.search.value.trim());
+      const data = await api("/api/portfolios/sealed/browse?" + p.toString());
+      rows = (data.items || []).map(r => ({
+        kind: "sealed", id: r.id, label: r.name,
+        sub: [r.set_name, r.type_label].filter(Boolean).join(" · "),
+      }));
+    } else {
+      const p = new URLSearchParams({ sets: setValue, limit: "200" });
+      if (el.type.value) p.set("rarities", el.type.value);
+      if (el.search.value.trim()) p.set("search", el.search.value.trim());
+      const data = await api("/api/catalog/cards?" + p.toString());
+      rows = (data.cards || data.items || []).map(c => ({
+        kind: "card", card: c, label: c.name,
+        sub: [c.set_name, c.card_number ? "#" + c.card_number : "", c.rarity]
+          .filter(Boolean).join(" · "),
+      }));
     }
-    rows.forEach(r => {
-      const div = document.createElement("div");
-      div.className = "search-row";
-      const bits = [r.set_name, r.card_number, r.variant].filter(Boolean).join(" · ");
-      div.innerHTML = '<span>' + esc(r.name) + '</span><span class="muted">' + esc(bits) + '</span>';
-      div.onclick = () => chooseCard(r, div);
-      box.appendChild(div);
-    });
-    box.style.display = "block";
+    if (seq !== pickSeq) return;      // a newer selection already won
+    renderPickResults(rows);
   } catch (e) {
-    if (seq !== searchSeq) return;
-    box.innerHTML = '<div class="search-row muted">' + esc(e.message) + '</div>';
-    box.style.display = "block";
+    if (seq !== pickSeq) return;
+    el.results.style.display = "none";
+    el.hint.textContent = e.message;
   }
 }
 
-async function searchSealed(q, seq) {
-  const box = document.getElementById("sealedResults");
-  try {
-    const rows = await api("/api/portfolios/sealed?limit=10&q=" + encodeURIComponent(q));
-    if (seq !== searchSeq) return;   // a newer keystroke already won
-    box.innerHTML = "";
-    if (!rows.length) {
-      box.innerHTML = '<div class="search-row muted">' + (q
-        ? 'Nothing matches "' + esc(q) + '".'
-        : "No sealed product has been added yet.") +
-        ' Sealed product is added per set by an admin or server mod.</div>';
-    }
-    rows.forEach(r => {
-      const div = document.createElement("div");
-      div.className = "search-row";
-      div.innerHTML = '<span>' + esc(r.name) + '</span><span class="muted">' +
-        esc([r.set_name, r.type_label].filter(Boolean).join(" · ")) + '</span>';
-      div.onclick = () => {
-        chosenItem = { kind: "sealed", id: r.id, label: r.name };
-        showChosen();
-      };
-      box.appendChild(div);
-    });
-    box.style.display = "block";
-  } catch (e) {
-    if (seq !== searchSeq) return;
-    box.innerHTML = '<div class="search-row muted">' + esc(e.message) + '</div>';
-    box.style.display = "block";
-  }
+function renderPickResults(rows) {
+  const el = pickEls();
+  el.hint.textContent = rows.length
+    ? rows.length + (rows.length === 1 ? " item" : " items") + " — pick one"
+    : "Nothing in that set matches.";
+  el.results.innerHTML = rows.map((r, i) =>
+    '<div class="search-row" data-pick="' + i + '"><span>' + esc(r.label) +
+    '</span><span class="muted">' + esc(r.sub) + "</span></div>").join("");
+  el.results.style.display = rows.length ? "block" : "none";
+  el.results.querySelectorAll("[data-pick]").forEach(div => {
+    div.onclick = () => choosePicked(rows[parseInt(div.dataset.pick, 10)]);
+  });
 }
 
-async function chooseCard(row) {
+async function choosePicked(row) {
+  if (!row) return;
   const msg = document.getElementById("addMsg");
   msg.innerHTML = "";
+  if (row.kind === "sealed") {
+    chosenItem = { kind: "sealed", id: row.id, label: row.label };
+    showChosen();
+    return;
+  }
   try {
     // Land the card in the shared catalog first — a lot references that
     // table, which is also what the nightly price ingest reads.
     const data = await api("/api/portfolios/resolve-card", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(row)
+      body: JSON.stringify({
+        game: "pokemon", name: row.card.name, set_name: row.card.set_name,
+        card_number: row.card.card_number, variant: row.card.rarity,
+        tcgplayer_id: row.card.tcgplayer_id, language: row.card.language,
+      })
     });
-    const bits = [row.set_name, row.card_number, row.variant].filter(Boolean).join(" · ");
-    chosenItem = { kind: "card", id: data.card_id, label: row.name + (bits ? " (" + bits + ")" : "") };
+    chosenItem = { kind: "card", id: data.card_id,
+                   label: row.label + (row.sub ? " (" + row.sub + ")" : "") };
     showChosen();
   } catch (e) {
-    msg.innerHTML = '<span class="err">' + esc(e.message) + '</span>';
+    msg.innerHTML = '<span class="err">' + esc(e.message) + "</span>";
   }
 }
+
+(function initPicker() {
+  const el = pickEls();
+  if (!el.set) return;
+  el.set.addEventListener("change", () => runPick());
+  el.type.addEventListener("change", () => runPick());
+  el.search.addEventListener("input", () => {
+    clearTimeout(pickTimer);
+    pickTimer = setTimeout(runPick, 220);
+  });
+})();
 
 function showChosen() {
   const el = document.getElementById("chosen");
