@@ -1298,3 +1298,37 @@ default stop, explicit opt-in, cost stated before it runs, and a bounded
 resumable loop rather than one long request.
 
 ---
+
+## 2026-08-20 — /tracker-admin loaded but ran nothing: two JS syntax errors
+
+**Symptom:** `GET /tracker-admin 200 OK` followed by no API calls at all,
+while `/inventory` and `/tips` fired theirs normally in the same log. The
+page rendered; its JavaScript never executed.
+
+**Cause — two syntax errors, both mine, both shipped:**
+1. `let impRows` declared TWICE — once in the top state block, once in the
+   import panel JS I added later.
+2. A `\n\n` escape inside a `confirm()` string turned into REAL newlines,
+   leaving the string unterminated. This happened twice in the file.
+
+The newline damage came from writing template code through a **bash
+heredoc**, which collapses `\n` to a literal newline. The same mangling had
+already corrupted two test files earlier in the session; that should have
+been the signal to stop editing JS through heredocs.
+
+**Why nothing caught it:** the existing smoke check counted braces and
+looked for duplicate FUNCTION names. Balanced braces and unique function
+names say nothing about whether the file parses.
+
+**Fix:** `check_js.py` renders every template and runs `node --check` on
+each inline `<script>`. Verified by injecting BOTH real bugs and confirming
+each is caught. The local Node is 12, so `??` and `?.` are rewritten before
+checking — otherwise a genuine error hides behind an old parser's
+limitation. 22 templates, 0 errors.
+
+**Rules going forward:**
+  * Never write JavaScript through a bash heredoc — use the Write tool.
+  * A page returning 200 proves nothing about whether its JS runs. Check for
+    the requests it should make on load.
+
+---

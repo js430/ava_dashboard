@@ -278,7 +278,6 @@
 const BACKDATE_MAX = {{ backdate_max }};
 let chosenCard = null;
 let chosenCardId = null;
-let impRows = [];
 
 function toggleNavGroup(e) {
   const group = e.currentTarget.closest(".nav-group");
@@ -653,12 +652,11 @@ async function importAllSealed() {
       say("sealedMsg", "Nothing left to look up with those settings.", "busy");
       return;
     }
-    if (!confirm("Look up " + todo.length + " set(s), newest first?
-
-" +
-                 "That's up to one price-API call each, from a daily allowance " +
-                 "shared with the card catalog and the nightly price run. " +
-                 "It stops early to leave some.")) return;
+    if (!confirm("Look up " + todo.length + " set(s), newest first?" +
+                 "\n\n" +
+                 "That\'s up to one price-API call each, from a daily " +
+                 "allowance shared with the card catalog and the nightly " +
+                 "price run. It stops early to leave some.")) return;
     say("sealedMsg", "Working through " + todo.length + " set(s), newest first…", "busy");
     const names = todo.map(s => s.set_name);
     let data = await api("/api/portfolios/sealed/import", {
@@ -676,18 +674,12 @@ async function importAllSealed() {
         ? "The included daily allowance is used up."
         : "Stopped to leave calls for the card catalog and the nightly price run.";
       const ok = confirm(
-        reason + "
-
-" +
-        "Checked so far: " + done + " set(s), " + data.added + " product(s) added.
-" +
-        "Still to check: " + left + " set(s), newest first.
-
-" +
-        "Continuing uses your PREPAID CREDITS — roughly one call per set, so up to " +
-        left + " credit(s).
-
-" +
+        reason + "\n\n" +
+        "Checked so far: " + done + " set(s), " + data.added +
+        " product(s) added." + "\n" +
+        "Still to check: " + left + " set(s), newest first." + "\n\n" +
+        "Continuing uses your PREPAID CREDITS - roughly one call per set, " +
+        "so up to " + left + " credit(s)." + "\n\n" +
         "Continue and spend prepaid credits?");
       if (!ok) {
         say("sealedMsg", summariseImport(data, names.length), "busy");
