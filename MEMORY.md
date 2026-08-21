@@ -1462,3 +1462,37 @@ with the earlier `\n` damage in template JS and test files: do not write code
 containing escapes through a heredoc. Use the Write tool.
 
 ---
+
+## 2026-08-20 — Catalog gains a sealed tab; nav renamed to "Catalog"
+
+**Decided:** `/catalog` now has two tabs — Singles (unchanged) and Sealed
+product. Sealed is **list only**, as asked: sealed boxes photograph much the
+same as each other, so a grid of near-identical cartons scans worse than a
+list. Columns: Product, Set, Type, Market price. Filters: free text, set,
+type. The chosen tab is remembered in localStorage.
+
+**Adding to a portfolio from the Catalog:** members and subscribers get an
+"Add to portfolio" control that lists THEIR portfolios and asks for
+quantity, price paid and date. A single portfolio preselects itself; someone
+with none is told to create one rather than shown an empty box. Leaving the
+price blank uses market price flagged as an estimate — the behaviour
+`add_lot` already had.
+
+**Guests browse but cannot add.** `api_portfolio_sealed` moved from
+`get_member_or_subscriber` to `get_current_user_or_guest`, because the
+Catalog page itself is open to guests and they would otherwise get a 401 on
+the new tab. It is read-only catalogue data. Everything that WRITES
+(`api_portfolio_lot_add`) stays members-and-subscribers, and the add control
+is not rendered for guests at all.
+
+**Also:** the sealed endpoint now returns `market_price` (the list needs the
+column) and its limit cap rose from 50 to 500, since it was originally sized
+for a type-ahead.
+
+**Renamed** the nav dropdown entry from "Card Catalog" to "Catalog" across
+18 templates, plus the page's own heading and title — the page is no longer
+cards-only, so the old heading was simply inaccurate. Left alone:
+`account.html` and `guest_home.html` still say "Card Catalog" in marketing
+copy listing the tools; renaming those is a copy decision, not a nav one.
+
+---

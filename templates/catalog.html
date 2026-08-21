@@ -6,7 +6,7 @@
   <link rel="apple-touch-icon" sizes="180x180" href="/static/brand/icon-180.png">
 <script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Card Catalog — Restock Dashboard</title>
+<title>Catalog — Restock Dashboard</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
@@ -47,6 +47,34 @@
   .btn-sm { height: 24px; padding: 0 8px; font-size: 11px; }
 
   .catalog-grid { display: block; }
+  .cat-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+  .cat-tab { font-family: inherit; font-size: 13px; padding: 8px 16px; cursor: pointer;
+             border: 1px solid #ddd; border-radius: 8px; background: #fff; color: #444; }
+  .cat-tab:hover { background: #f4f4f5; }
+  .cat-tab.on { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .sealed-filters { display: flex; gap: 12px; flex-wrap: wrap; padding: 12px 16px 4px; }
+  .sealed-field { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px;
+                  color: #777; flex: 1 1 170px; min-width: 140px; }
+  .sealed-field input, .sealed-field select {
+    font-family: inherit; font-size: 13px; padding: 7px 9px; border: 1px solid #ddd;
+    border-radius: 7px; background: #fff; color: #111; }
+  .sealed-field input:focus, .sealed-field select:focus { outline: none; border-color: #5865F2; }
+  .acts-col { width: 1%; white-space: nowrap; }
+  .pf-head { font-size: 13px; font-weight: 600; padding: 10px 10px 6px; }
+  .pf-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+             gap: 8px; padding: 8px 10px; }
+  .pf-option { display: block; width: 100%; text-align: left; font-family: inherit;
+               font-size: 12.5px; padding: 7px 10px; border: 1px solid transparent;
+               border-radius: 6px; background: none; color: #444; cursor: pointer; }
+  .pf-option:hover { background: #f4f4f5; }
+  .pf-option.on { background: #eef0ff; border-color: #5865F2; color: #333; }
+  html[data-theme="dark"] .cat-tab { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .cat-tab.on { background: #5865F2; color: #fff; }
+  html[data-theme="dark"] .sealed-field input,
+  html[data-theme="dark"] .sealed-field select { background: #252528; border-color: #383838; color: #e8e8ea; }
+  html[data-theme="dark"] .pf-option { color: #bbbbc5; }
+  html[data-theme="dark"] .pf-option:hover { background: #2a2a2e; }
+  html[data-theme="dark"] .pf-option.on { background: #2a2a44; }
   .chk-toggle { font-size: 11px; color: #5865F2; cursor: pointer; background: none; border: none; padding: 0; font-family: inherit; }
   .chk-toggle:hover { text-decoration: underline; }
   .head-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #888; cursor: pointer; white-space: nowrap; }
@@ -287,8 +315,8 @@
 
 <div class="header">
   <div>
-    <div class="header-title">Card Catalog</div>
-    <div class="header-sub">Browse by set, rarity and raw market price</div>
+    <div class="header-title">Catalog</div>
+    <div class="header-sub">Singles and sealed product, by set and market price</div>
   </div>
   <div class="nav">
     {% if not is_guest %}
@@ -317,7 +345,7 @@
         <a href="/portfolios">Portfolios</a>
         <a href="/card-tracker">Tracker</a>
         <a href="/grading-calculator">Grading Calculator</a>
-        <a href="/catalog" class="active">Card Catalog</a>
+        <a href="/catalog" class="active">Catalog</a>
         {% if request.session.get('inventory_access', False) %}<a href="/inventory">Inventory</a>{% endif %}
       </div>
     </div>
@@ -331,7 +359,15 @@
 </div>
 
 <div class="main">
-  <div class="catalog-grid">
+
+  <div class="cat-tabs" role="tablist" aria-label="Catalog sections">
+    <button type="button" id="tabSingles" class="cat-tab on" role="tab"
+            aria-selected="true" onclick="setSection('singles')">Singles</button>
+    <button type="button" id="tabSealed" class="cat-tab" role="tab"
+            aria-selected="false" onclick="setSection('sealed')">Sealed product</button>
+  </div>
+
+  <div class="catalog-grid" id="singlesSection">
 
     <section>
       <div class="card">
@@ -578,6 +614,84 @@
     </section>
 
   </div>
+
+  <!-- Sealed product. List only for now — boxes photograph much the same and
+       a grid of near-identical cartons is harder to scan than a list. -->
+  <div class="catalog-grid" id="sealedSection" style="display:none;">
+    <section>
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Sealed product</span>
+          <span class="status" id="sealedCount"></span>
+        </div>
+
+        <div class="sealed-filters">
+          <label class="sealed-field">
+            <span>Search</span>
+            <input type="text" id="sealedQ" placeholder="Prismatic Evolutions" autocomplete="off">
+          </label>
+          <label class="sealed-field">
+            <span>Set</span>
+            <select id="sealedSetFilter"><option value="">All sets</option></select>
+          </label>
+          <label class="sealed-field">
+            <span>Type</span>
+            <select id="sealedTypeFilter"><option value="">All types</option></select>
+          </label>
+        </div>
+
+        <div class="table-wrap">
+          <table class="rows">
+            <thead>
+              <tr>
+                <th class="col-card">Product</th>
+                <th class="col-set">Set</th>
+                <th>Type</th>
+                <th class="num">Market price</th>
+                {% if not is_guest %}<th class="acts-col"></th>{% endif %}
+              </tr>
+            </thead>
+            <tbody id="sealedRows"></tbody>
+          </table>
+        </div>
+        <div id="sealedEmpty" class="hint" style="padding:16px;display:none;"></div>
+      </div>
+    </section>
+  </div>
+
+  {% if not is_guest %}
+  <!-- Add a sealed product to one of your portfolios. Anchored at body level
+       for the same reason as the column picker: the table scrolls. -->
+  <div class="picker" id="pfPicker" style="display:none" role="dialog" aria-modal="false">
+    <div class="pf-head" id="pfPickerTitle">Add to portfolio</div>
+    <div class="picker-list" id="pfPickerList"></div>
+    <div class="pf-grid">
+      <label class="sealed-field">
+        <span>How many</span>
+        <input type="number" id="pfQty" min="1" step="1" value="1">
+      </label>
+      <label class="sealed-field">
+        <span>Price paid, each</span>
+        <input type="number" id="pfCost" min="0" step="0.01" placeholder="market price">
+      </label>
+      <label class="sealed-field">
+        <span>Date bought</span>
+        <input type="date" id="pfDate">
+      </label>
+    </div>
+    <div class="hint" style="padding:0 10px 8px;">
+      Leave the price blank and we'll use today's market price, marked as an
+      estimate you can correct later.
+    </div>
+    <div class="picker-foot">
+      <span class="status" id="pfMsg"></span>
+      <button type="button" class="btn btn-sm" onclick="closePfPicker()">Cancel</button>
+      <button type="button" class="btn btn-sm btn-primary" id="pfAddBtn"
+              onclick="confirmAddToPortfolio()">Add</button>
+    </div>
+  </div>
+  {% endif %}
+
 </div>
 
 <!-- One shared picker, at body level and position:fixed on purpose: the table
@@ -1743,6 +1857,228 @@ function toggleNavGroup(ev){
 }
 document.addEventListener('click', closeNavGroups);
 document.addEventListener('keydown', function(ev){ if (ev.key === 'Escape') closeNavGroups(); });
+
+// ── Sealed product tab ──────────────────────────────────────────────────
+// List only for now: sealed boxes photograph much the same as each other,
+// so a grid of near-identical cartons is harder to scan than a list.
+const IS_GUEST_CAT = {{ 'true' if is_guest else 'false' }};
+let sealedRows = [];
+let sealedLoaded = false;
+let sealedTimer = null;
+let pfTarget = null;          // the product being added
+let pfPortfolios = [];
+let pfChosen = null;
+
+function setSection(which) {
+  const singles = which !== 'sealed';
+  document.getElementById('singlesSection').style.display = singles ? '' : 'none';
+  document.getElementById('sealedSection').style.display = singles ? 'none' : '';
+  document.getElementById('tabSingles').classList.toggle('on', singles);
+  document.getElementById('tabSealed').classList.toggle('on', !singles);
+  document.getElementById('tabSingles').setAttribute('aria-selected', String(singles));
+  document.getElementById('tabSealed').setAttribute('aria-selected', String(!singles));
+  try { localStorage.setItem('catalogSection', which); } catch (e) {}
+  if (!singles && !sealedLoaded) loadSealed();
+}
+
+function sealedEsc(v) {
+  return String(v === null || v === undefined ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function sealedMoney(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  if (!isFinite(n)) return null;
+  return '$' + n.toLocaleString(undefined, { minimumFractionDigits: 2,
+                                             maximumFractionDigits: 2 });
+}
+
+async function loadSealed() {
+  const params = new URLSearchParams();
+  const q = document.getElementById('sealedQ').value.trim();
+  const set = document.getElementById('sealedSetFilter').value;
+  if (q) params.set('q', q);
+  if (set) params.set('set_name', set);
+  params.set('limit', '300');
+  try {
+    const resp = await fetch('/api/portfolios/sealed?' + params.toString());
+    if (!resp.ok) throw new Error('Could not load sealed product.');
+    sealedRows = await resp.json();
+    sealedLoaded = true;
+    if (!document.getElementById('sealedSetFilter').dataset.filled) fillSealedFilters();
+    renderSealed();
+  } catch (e) {
+    document.getElementById('sealedRows').innerHTML = '';
+    showSealedEmpty(e.message);
+  }
+}
+
+function fillSealedFilters() {
+  const sets = [...new Set(sealedRows.map(r => r.set_name).filter(Boolean))].sort();
+  const types = [...new Set(sealedRows.map(r => r.type_label).filter(Boolean))].sort();
+  const setSel = document.getElementById('sealedSetFilter');
+  const typeSel = document.getElementById('sealedTypeFilter');
+  setSel.innerHTML = '<option value="">All sets</option>' +
+    sets.map(x => '<option value="' + sealedEsc(x) + '">' + sealedEsc(x) + '</option>').join('');
+  typeSel.innerHTML = '<option value="">All types</option>' +
+    types.map(x => '<option value="' + sealedEsc(x) + '">' + sealedEsc(x) + '</option>').join('');
+  setSel.dataset.filled = '1';
+}
+
+function showSealedEmpty(message) {
+  const box = document.getElementById('sealedEmpty');
+  box.textContent = message;
+  box.style.display = message ? 'block' : 'none';
+  document.getElementById('sealedCount').textContent = '';
+}
+
+function renderSealed() {
+  const typeWanted = document.getElementById('sealedTypeFilter').value;
+  const rows = sealedRows.filter(r => !typeWanted || r.type_label === typeWanted);
+  const body = document.getElementById('sealedRows');
+
+  if (!rows.length) {
+    body.innerHTML = '';
+    showSealedEmpty(sealedRows.length
+      ? 'Nothing matches those filters.'
+      : "No sealed product has been added yet. An admin or server mod stocks it "
+        + 'per set from Tracker Management.');
+    return;
+  }
+  showSealedEmpty('');
+  document.getElementById('sealedCount').textContent =
+    rows.length + (rows.length === 1 ? ' product' : ' products');
+
+  body.innerHTML = rows.map(r => {
+    const price = sealedMoney(r.market_price);
+    return '<tr>' +
+      '<td class="col-card">' + sealedEsc(r.name) + '</td>' +
+      '<td class="col-set">' + sealedEsc(r.set_name || '—') + '</td>' +
+      '<td>' + sealedEsc(r.type_label || 'Other') + '</td>' +
+      '<td class="num">' + (price ||
+        '<span style="opacity:.6">no price yet</span>') + '</td>' +
+      (IS_GUEST_CAT ? '' :
+        '<td class="acts-col"><button type="button" class="btn btn-sm" ' +
+        'data-add-sealed="' + r.id + '">Add to portfolio</button></td>') +
+      '</tr>';
+  }).join('');
+
+  if (!IS_GUEST_CAT) {
+    body.querySelectorAll('[data-add-sealed]').forEach(btn => {
+      btn.onclick = (ev) => openPfPicker(
+        rows.find(x => String(x.id) === btn.dataset.addSealed), ev);
+    });
+  }
+}
+
+// ── Add to a portfolio ──────────────────────────────────────────────────
+async function openPfPicker(product, ev) {
+  if (!product) return;
+  pfTarget = product;
+  pfChosen = null;
+  const box = document.getElementById('pfPicker');
+  document.getElementById('pfPickerTitle').textContent = 'Add: ' + product.name;
+  document.getElementById('pfQty').value = 1;
+  document.getElementById('pfCost').value = '';
+  document.getElementById('pfDate').value = new Date().toISOString().slice(0, 10);
+  document.getElementById('pfMsg').textContent = '';
+  document.getElementById('pfPickerList').innerHTML =
+    '<div class="hint" style="padding:8px 10px;">Loading your portfolios…</div>';
+
+  const r = ev && ev.currentTarget ? ev.currentTarget.getBoundingClientRect() : null;
+  box.style.display = 'block';
+  if (r) {
+    box.style.top = Math.min(r.bottom + 6, window.innerHeight - 320) + 'px';
+    box.style.left = Math.max(12, Math.min(r.left - 220, window.innerWidth - 360)) + 'px';
+  }
+
+  try {
+    const resp = await fetch('/api/portfolios');
+    if (!resp.ok) throw new Error('Could not load your portfolios.');
+    const data = await resp.json();
+    pfPortfolios = data.portfolios || [];
+    renderPfOptions();
+  } catch (e) {
+    document.getElementById('pfPickerList').innerHTML =
+      '<div class="hint" style="padding:8px 10px;">' + sealedEsc(e.message) + '</div>';
+  }
+}
+
+function renderPfOptions() {
+  const list = document.getElementById('pfPickerList');
+  if (!pfPortfolios.length) {
+    list.innerHTML = '<div class="hint" style="padding:8px 10px;">' +
+      'You have no portfolios yet. <a href="/portfolios">Create one</a> first.</div>';
+    document.getElementById('pfAddBtn').disabled = true;
+    return;
+  }
+  document.getElementById('pfAddBtn').disabled = false;
+  if (pfPortfolios.length === 1) pfChosen = pfPortfolios[0].id;
+  list.innerHTML = pfPortfolios.map(p =>
+    '<button type="button" class="pf-option' + (p.id === pfChosen ? ' on' : '') +
+    '" data-pf="' + p.id + '">' + sealedEsc(p.name) + '</button>').join('');
+  list.querySelectorAll('[data-pf]').forEach(b => {
+    b.onclick = () => { pfChosen = parseInt(b.dataset.pf, 10); renderPfOptions(); };
+  });
+}
+
+function closePfPicker() {
+  document.getElementById('pfPicker').style.display = 'none';
+  pfTarget = null;
+}
+
+async function confirmAddToPortfolio() {
+  if (!pfTarget) return;
+  if (!pfChosen) {
+    document.getElementById('pfMsg').textContent = 'Pick a portfolio first.';
+    return;
+  }
+  const btn = document.getElementById('pfAddBtn');
+  btn.disabled = true;
+  document.getElementById('pfMsg').textContent = 'Adding…';
+  try {
+    const resp = await fetch('/api/portfolios/' + pfChosen + '/lots', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'sealed',
+        item_id: pfTarget.id,
+        quantity: document.getElementById('pfQty').value,
+        // Blank price means "use market price", which the server fills in and
+        // marks as an estimate — see portfolios.add_lot.
+        unit_cost: document.getElementById('pfCost').value,
+        purchased_on: document.getElementById('pfDate').value || null,
+        condition: 'sealed'
+      })
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || 'Could not add it.');
+    const where = (pfPortfolios.find(p => p.id === pfChosen) || {}).name || 'your portfolio';
+    document.getElementById('pfMsg').textContent = 'Added to ' + where + '.';
+    setTimeout(closePfPicker, 900);
+  } catch (e) {
+    document.getElementById('pfMsg').textContent = e.message;
+  }
+  btn.disabled = false;
+}
+
+(function initSealedTab() {
+  const q = document.getElementById('sealedQ');
+  const setSel = document.getElementById('sealedSetFilter');
+  const typeSel = document.getElementById('sealedTypeFilter');
+  if (!q) return;
+  q.addEventListener('input', () => {
+    clearTimeout(sealedTimer);
+    sealedTimer = setTimeout(loadSealed, 220);
+  });
+  setSel.addEventListener('change', loadSealed);
+  typeSel.addEventListener('change', renderSealed);
+  let saved = null;
+  try { saved = localStorage.getItem('catalogSection'); } catch (e) {}
+  if (saved === 'sealed') setSection('sealed');
+})();
+
 </script>
 </body>
 </html>

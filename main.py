@@ -3294,7 +3294,7 @@ async def api_portfolio_resolve_card(request: Request,
 @app.get("/api/portfolios/sealed")
 async def api_portfolio_sealed(request: Request, set_name: str = "", q: str = "",
                                limit: int = 10,
-                               user=Depends(get_member_or_subscriber)):
+                               user=Depends(get_current_user_or_guest)):
     """Sealed product, filtered by set and/or free text. Type-ahead: this is
     called on every keystroke, so it returns a short list by default.
 
@@ -3302,8 +3302,10 @@ async def api_portfolio_sealed(request: Request, set_name: str = "", q: str = ""
     "prismatic" is looking for that set's boxes and shouldn't have to know
     how each product happens to be named.
     """
+    # Default is small because this backs a type-ahead; the Catalog's sealed
+    # tab asks for a full page. It reads one small local table either way.
     try:
-        limit = max(1, min(int(limit), 50))
+        limit = max(1, min(int(limit), 500))
     except (TypeError, ValueError):
         limit = 10
     clauses, params = [], []
@@ -3318,14 +3320,16 @@ async def api_portfolio_sealed(request: Request, set_name: str = "", q: str = ""
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     async with request.app.state.db.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, name, set_name, product_type, language, image_url "
+            "SELECT id, name, set_name, product_type, language, image_url, "
+            "market_price "
             "FROM sealed_products " + where +
             " ORDER BY set_name, name LIMIT $" + str(len(params)), *params)
     return JSONResponse([
         {"id": r["id"], "name": r["name"], "set_name": r["set_name"],
          "product_type": r["product_type"], "language": r["language"],
          "type_label": portfolios.SEALED_TYPE_LABELS.get(r["product_type"], "Sealed"),
-         "image_url": r["image_url"]}
+         "image_url": r["image_url"],
+         "market_price": _portfolio_json(r["market_price"])}
         for r in rows
     ], headers={"Cache-Control": "no-store"})
 
