@@ -249,6 +249,7 @@
             <input type="text" id="sealedMinYear" value="2020" placeholder="2020">
           </div>
           <div><button class="btn" onclick="importAllSealed()">Look up sets, newest first</button></div>
+          <div><button class="btn" onclick="forgetChecks()">Re-check skipped sets</button></div>
         </div>
         <div class="hint">
           Works newest first, because that's where sealed product exists &mdash; older
@@ -784,6 +785,25 @@ async function runWithCredits(remaining, soFar) {
   }
   loadSealedSets();
   return totals;
+}
+
+// Sets we previously looked up and found nothing for are skipped. That list
+// was once written for ANY failed lookup, not just a genuine empty result,
+// so a stretch of failures could hide hundreds of sets. This clears it.
+async function forgetChecks() {
+  if (!confirm("Forget which sets were found empty, so they get checked again?" +
+               "\n\n" +
+               "This only clears our note of what we have asked — no products " +
+               "or portfolios are touched.")) return;
+  say("sealedMsg", "Clearing…", "busy");
+  try {
+    const data = await api("/api/portfolios/sealed/forget-checks", { method: "POST" });
+    say("sealedMsg", "Cleared " + data.cleared + " skipped set(s). Run the " +
+        "look-up again to check them.", "ok");
+    loadSealedSets();
+  } catch (e) {
+    say("sealedMsg", e.message, "err");
+  }
 }
 
 async function purgeSealed(mode, dryRun) {

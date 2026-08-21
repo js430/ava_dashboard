@@ -3479,7 +3479,13 @@ async def api_portfolio_sealed_import(request: Request,
 
         if status != "ok":
             failures.append({"set_name": set_name, "status": status})
-            await portfolios.record_sealed_check(pool, set_name, 0)
+            # ONLY "empty" means the set genuinely has no sealed product.
+            # "not_found" and "error" mean we could not tell — recording those
+            # as zero poisons the skip list, and the set is then ignored for
+            # 30 days. That is exactly what happened when /sealed was tried
+            # first and 404'd on every set.
+            if status == "empty":
+                await portfolios.record_sealed_check(pool, set_name, 0)
             continue
         parsed, n_skipped = portfolios.parse_sealed_rows(rows, set_name)
         skipped += n_skipped
@@ -3503,6 +3509,34 @@ async def api_portfolio_sealed_import(request: Request,
         "used_extra_credits": use_extra,
         "retry_after": next((f.get("retry_after") for f in failures
                              if f.get("retry_after")), None),
+    }, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/portfolios/sealed/forget-checks")
+@limiter.limit("20/hour")
+async def api_portfolio_sealed_forget_checks(request: Request,
+                                             user=Depends(require_server_mod)):
+    """Clear the "already looked, found nothing" list so those sets are
+    checked again.
+
+    Needed because that list was written for ANY failed lookup, not only for
+    a genuine empty result. A stretch where the endpoint 404'd recorded
+    hundreds of sets as having no sealed product, and the 30-day skip then
+    hid them from every later run.
+
+    Deletes only the check LOG. No product, portfolio or holding is touched —
+    this is a note-to-self about what we have asked, nothing more.
+    """
+    async with request.app.state.db.acquire() as conn:
+        before = await conn.fetchval("SELECT COUNT(*) FROM sealed_set_checks") or 0
+        empties = await conn.fetchval(
+            "SELECT COUNT(*) FROM sealed_set_checks WHERE found = 0") or 0
+        result = await conn.execute("DELETE FROM sealed_set_checks WHERE found = 0")
+    cleared = int(result.rsplit(" ", 1)[-1]) if result else 0
+    logger.info("Sealed: cleared %d empty check(s) of %d by %s",
+                cleared, before, user["id"])
+    return JSONResponse({
+        "cleared": cleared, "kept": before - cleared, "was_empty": empties,
     }, headers={"Cache-Control": "no-store"})
 
 

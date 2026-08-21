@@ -1529,3 +1529,35 @@ rows is "empty", no 200 at all is "not_found".
     real set to fetch by.
 
 ---
+
+## 2026-08-20 — The sealed skip list was poisoned, hiding most sets
+
+**Symptom:** "missing a ton of sets, most in fact — it seems to be skipping
+most."
+
+**Cause:** the bulk import called `record_sealed_check(set, 0)` for ANY
+non-ok status, not only for a genuine empty. During the stretch when
+`/sealed` was tried first and 404'd on every request (status `not_found`),
+that wrote "this set has no sealed product" for hundreds of sets. The
+30-day skip then honoured those false entries on every later run, so the
+sets were never looked at again — including after the endpoint order and
+pagination were fixed.
+
+**Fix:** only `status == "empty"` records a zero. `not_found`, `error`,
+`rate_limited` and `daily_exhausted` all mean "we could not tell" and now
+record nothing.
+
+**The existing rows were already wrong**, so a "Re-check skipped sets"
+control was added (`POST /api/portfolios/sealed/forget-checks`, server mod).
+It deletes ONLY `sealed_set_checks` rows with `found = 0` — no product, no
+portfolio, no holding is touched, and rows recording real product survive.
+
+**Order of operations to recover:** Re-check skipped sets, then run the
+look-up again. The pagination fix means large sets now import whole.
+
+**Process note:** a bash heredoc mangled `\n` inside JS for the FOURTH time
+in this session, and `check_js.py` caught it within seconds. That tool has
+now paid for itself; the standing rule not to write escape-bearing code
+through a heredoc still applies.
+
+---
