@@ -73,6 +73,11 @@
   .tag-new { background: #eaf6ef; color: #16794c; }
   .tag-have { background: #f2f2f4; color: #888; }
 
+  .raw-box { margin-top: 10px; font-size: 11.5px; }
+  .raw-box summary { cursor: pointer; color: #666; }
+  .raw-box pre { margin-top: 8px; padding: 10px; background: #f6f6f8; border-radius: 8px;
+                 max-height: 260px; overflow: auto; font-size: 11px; line-height: 1.5; }
+  [data-theme="dark"] .raw-box pre { background: #202027; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
   .chip { font-size: 11.5px; padding: 5px 10px; border: 1px solid #ddd; border-radius: 999px; background: #fff; cursor: pointer; user-select: none; }
   .chip.on { background: #5865F2; color: #fff; border-color: #5865F2; }
@@ -232,6 +237,7 @@
       <div><button class="btn" id="sealedImportBtn" onclick="importSealed()" disabled>Save these</button></div>
     </div>
     <div class="preview-list" id="sealedList" style="display:none;"></div>
+    <details id="sealedRaw" class="raw-box" style="display:none;"></details>
     <div class="msg" id="sealedMsg" role="status" aria-live="polite"></div>
 
     <details style="margin-top:14px;">
@@ -601,7 +607,17 @@ async function previewSealed() {
       document.getElementById("sealedImportBtn").disabled = false;
       let note = data.detail;
       if (data.skipped) note += " " + data.skipped + " record(s) couldn't be read.";
-      say("sealedMsg", note, "ok");
+      // Products parsing but prices not is a real failure mode and used to be
+      // invisible, because the raw record only showed when NOTHING parsed.
+      if (data.priced === 0 && data.products.length) {
+        note += " None of them came back with a price — open the record below " +
+          "to see what the price API actually sent.";
+      } else if (data.priced < data.products.length) {
+        note += " " + data.priced + " of " + data.products.length + " have a price.";
+      }
+      showRaw(data);
+      say("sealedMsg", note,
+          (data.priced === 0 && data.products.length) ? "busy" : "ok");
     } else {
       say("sealedMsg", data.detail, data.status === "empty" ? "busy" : "err");
       // A shape we can't parse is worth showing, not just logging.
@@ -617,6 +633,18 @@ async function previewSealed() {
     say("sealedMsg", e.message, "err");
   }
   btn.disabled = false;
+}
+
+// The raw record, on every look-up rather than only on total failure. A
+// partial mis-parse (names fine, prices missing) is exactly the case that
+// needs seeing, and it was the one case hidden.
+function showRaw(data) {
+  const box = document.getElementById("sealedRaw");
+  if (!data.sample_raw) { box.style.display = "none"; return; }
+  box.innerHTML = "<summary>What the price API sent (first of " +
+    (data.raw_count || 0) + " record(s))</summary><pre>" +
+    esc(JSON.stringify(data.sample_raw, null, 2)) + "</pre>";
+  box.style.display = "block";
 }
 
 async function importSealed() {

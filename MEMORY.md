@@ -1332,3 +1332,36 @@ limitation. 22 templates, 0 errors.
     the requests it should make on load.
 
 ---
+
+## 2026-08-20 — Sealed products parsed but showed no price
+
+**Symptom:** a Paldea Evolved look-up returned every product with the right
+name and type, and "no price" on all of them — though the price exists in
+the API.
+
+**Cause:** the price extractor was a flat list of key names
+(`prices.market`, `marketPrice`, …). Of eight realistic shapes it handled
+three. It also fed the raw value straight to `Decimal()`, so a display
+string like `"$129.99"` raised and read as *absent*.
+
+**Fix — search instead of guess.** `find_price()` walks the record for any
+price-shaped key, ranking `market` above a generic `price` above `mid`, and
+preferring shallower matches so a current price beats a historical one.
+Explicitly rejected: `low`, `high`, `min`, `max`, ids, quantities, percent
+changes and graded (`psa`/`bgs`/`cgc`) prices. A price-shaped PARENT lends
+its meaning to a generic leaf, so `{"marketPrice": {"amount": 129.99}}`
+reads correctly while `{"quantity": {"amount": 5}}` does not. Currency
+symbols and thousands separators are stripped before parsing. Depth is
+capped at 4 and long lists are sampled, so a big payload can't hang it.
+
+**The deeper failure was the blind spot, not the parser.** The raw record
+was shown ONLY when nothing parsed at all — so a partial mis-parse (names
+right, prices missing) was invisible. It is now shown on every look-up in a
+collapsible block, the preview returns a `priced` count, and the server logs
+the first record's keys (and the whole record when nothing prices).
+
+**Rule:** when consuming an API whose shape isn't documented to us, surface
+the raw record on EVERY response, not just on total failure. Partial
+successes are the ones that hide.
+
+---

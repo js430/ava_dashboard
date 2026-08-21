@@ -3353,6 +3353,18 @@ async def api_portfolio_sealed_preview(request: Request,
         set_name, allow_over_quota=use_extra)
     parsed, skipped = portfolios.parse_sealed_rows(rows, set_name)
 
+    # Log the shape once per preview. Every product parsing EXCEPT its price
+    # is invisible from the outside, and this is how that gets diagnosed
+    # without asking someone to reproduce it.
+    if rows and isinstance(rows[0], dict):
+        priced = sum(1 for p in parsed if p.get("market_price") is not None)
+        logger.info("Sealed preview %s: %d row(s), %d parsed, %d priced | "
+                    "first record keys: %s", set_name, len(rows), len(parsed),
+                    priced, sorted(rows[0].keys()))
+        if parsed and not priced:
+            logger.warning("Sealed preview %s: NOTHING priced — first record: %s",
+                           set_name, json.dumps(rows[0])[:900])
+
     wait = meta.get("retry_after") or 0
     detail = {
         "ok": "Found %d product(s)." % len(parsed),
@@ -3385,6 +3397,7 @@ async def api_portfolio_sealed_preview(request: Request,
         } for p in parsed],
         "skipped": skipped,
         "daily_remaining": meta.get("daily_remaining"),
+        "priced": sum(1 for p in parsed if p.get("market_price") is not None),
         # One raw record, so a wrong parse is diagnosable without the logs.
         "sample_raw": rows[0] if rows else None,
         "raw_count": len(rows),

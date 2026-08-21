@@ -34,6 +34,7 @@ MONEY
 """
 
 import os
+import re
 import logging
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
@@ -1131,8 +1132,6 @@ _SET_KEYS = ("setName", "set_name", "set", "expansion")
 _ID_KEYS = ("id", "productId", "product_id", "tcgPlayerId", "tcgplayer_id")
 _IMAGE_KEYS = ("imageCdnUrl", "imageUrl", "image_url", "image", "imageCdnUrlLarge")
 _TYPE_KEYS = ("productType", "product_type", "type", "category")
-_PRICE_PARENTS = ("prices", "price", "marketPrice", "market")
-_PRICE_KEYS = ("market", "marketPrice", "mid", "value", "usd", "amount")
 
 # Name -> product_type. Order matters: "elite trainer box" must be tested
 # before "box", or every ETB would be filed as a booster box.
@@ -1169,24 +1168,103 @@ def _first(row: dict, keys) -> str:
     return ""
 
 
-def _nested_price(row: dict):
-    """Dig a market price out of whatever shape it arrives in."""
-    for parent in _PRICE_PARENTS:
-        block = row.get(parent)
-        if isinstance(block, dict):
-            for k in _PRICE_KEYS:
-                money = to_money(block.get(k))
-                if money is not None and money > 0:
-                    return money
-        else:
-            money = to_money(block)
-            if money is not None and money > 0:
-                return money
-    for k in _PRICE_KEYS:
-        money = to_money(row.get(k))
-        if money is not None and money > 0:
-            return money
+def _clean_money_text(value):
+    """Strip currency decoration before parsing: "$1,299.00" -> "1299.00".
+
+    APIs quote money as a display string more often than you'd like, and a
+    Decimal() on "$129.99" raises, so a real price was being read as absent.
+    """
+    if isinstance(value, (int, float, Decimal)):
+        return value
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    # Keep digits, sign and the decimal point; drop symbols, spaces, commas
+    # and any trailing currency code.
+    cleaned = re.sub(r"[^0-9.\-]", "", text.replace(",", ""))
+    if not cleaned or cleaned in ("-", ".", "-."):
+        return None
+    return cleaned
+
+
+# Keys whose value is plausibly a market price, best first. A key containing
+# "market" wins over a bare "price", which wins over "low"/"mid" — we want the
+# figure a portfolio should be valued at, not the cheapest listing.
+_PRICE_KEY_RANKS = (
+    (re.compile(r"market", re.I), 0),
+    (re.compile(r"^price$|current|latest|avg|average", re.I), 1),
+    (re.compile(r"mid|median", re.I), 2),
+    (re.compile(r"price", re.I), 3),
+)
+# Never read a price out of these: they are historical or unrelated figures.
+_PRICE_KEY_REJECT = re.compile(
+    r"low|min|max|high|change|percent|pct|count|id$|qty|quantity|volume|"
+    r"psa|bgs|cgc|graded|foil.*low|days?|weeks?|months?", re.I)
+
+
+# Leaf names that carry no meaning of their own — they inherit it from the
+# key above, if that one looked like a price.
+_GENERIC_VALUE_KEY = re.compile(
+    r"^(amount|value|usd|cents|raw|num|number|total)$", re.I)
+
+
+def _rank_price_key(key: str):
+    if _PRICE_KEY_REJECT.search(key or ""):
+        return None
+    for pattern, rank in _PRICE_KEY_RANKS:
+        if pattern.search(key or ""):
+            return rank
     return None
+
+
+def find_price(record, _depth: int = 0):
+    """Best market price anywhere in a record, or None.
+
+    Walks the structure instead of guessing at a fixed set of key paths. The
+    sealed endpoint's shape was never documented to us, and the first import
+    showed every product parsing correctly EXCEPT its price — the figure was
+    there, just not where the flat lookup looked.
+
+    Shallower matches win over deeper ones, and a "market" key wins over a
+    generic "price", so a top-level market price beats a nested historical
+    one.
+    """
+    if _depth > 4 or record is None:
+        return None
+
+    best = None            # (rank, depth, value)
+    stack = [(record, "", 0)]
+    while stack:
+        node, key, depth = stack.pop(0)
+        if depth > 4:
+            continue
+        if isinstance(node, dict):
+            for k, v in node.items():
+                child = str(k)
+                # A price-shaped parent carries its meaning down to a generic
+                # leaf: {"marketPrice": {"amount": 129.99}} is a market price,
+                # but "amount" alone tells you nothing.
+                if _rank_price_key(child) is None and _rank_price_key(key) is not None                         and _GENERIC_VALUE_KEY.match(child):
+                    child = key
+                stack.append((v, child, depth + 1))
+            continue
+        if isinstance(node, list):
+            # Only look into short lists — a long one is card rows, not a price.
+            for item in node[:5]:
+                stack.append((item, key, depth + 1))
+            continue
+        rank = _rank_price_key(key)
+        if rank is None:
+            continue
+        money = to_money(_clean_money_text(node))
+        if money is None or money <= 0:
+            continue
+        candidate = (rank, depth, money)
+        if best is None or candidate[:2] < best[:2]:
+            best = candidate
+    return best[2] if best else None
 
 
 def parse_sealed_row(row, fallback_set: str = "") -> dict:
@@ -1208,7 +1286,7 @@ def parse_sealed_row(row, fallback_set: str = "") -> dict:
         "product_type": classify_sealed_type(name, str(_first(row, _TYPE_KEYS) or "")),
         "ppt_product_id": str(_first(row, _ID_KEYS) or "")[:60],
         "image_url": image[:500] if image.startswith("http") else "",
-        "market_price": _nested_price(row),
+        "market_price": find_price(row),
     }
 
 
