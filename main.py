@@ -3013,6 +3013,10 @@ async def portfolios_page(request: Request):
         "sealed_conditions": [{"key": k, "label": portfolios.CONDITION_LABELS.get(k, k)}
                               for k in portfolios.SEALED_CONDITIONS],
         "common_sources": list(portfolios.COMMON_SOURCES),
+        # Typical retail cost per sealed type, so the add form can prefill
+        # "price paid" rather than making someone type the same figure every
+        # time. Serialized as strings — see _portfolio_json on why not floats.
+        "default_costs": {k: str(v) for k, v in portfolios.DEFAULT_SEALED_COST.items()},
     })
 
 

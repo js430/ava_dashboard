@@ -1617,3 +1617,34 @@ type-ahead was kept — a slow reply must not repaint a newer selection.
 replacement had left behind. `check_js` caught the duplicate immediately.
 
 ---
+
+## 2026-08-20 — Cost defaults, sale-price shortcuts, more purchase sources
+
+**Retail cost defaults for sealed**, set by the user: Elite Trainer Box $60,
+Mini Tin $10, Booster Box $161, Booster Bundle $25, Booster Pack $5. Held in
+`portfolios.DEFAULT_SEALED_COST` as Decimals.
+
+Used two ways:
+  * the add form PREFILLS "price paid" when a product of that type is
+    picked, so the number is seen and accepted rather than guessed. It only
+    fills an EMPTY box, never overwriting something typed.
+  * server-side, a blank price now falls back to the type default FIRST and
+    market price second. Sealed is usually bought at or near retail, and
+    market drifts a long way from it. Either fallback is still flagged
+    `cost_is_estimated`, because nobody confirmed the figure.
+
+A type with no default falls through to market price exactly as before, and
+an explicit `0` still means free — blank and zero stay distinct.
+
+**Sale-price shortcuts:** 75% / 80% / 85% buttons on the sell panel that
+compute from the position's market price, plus an "Other" that clears the box
+and focuses it. Picking one shows the basis ("80% of $161.00 market") and
+refreshes the gain preview; typing by hand drops the highlight, because the
+number is no longer a percentage of anything once edited. With no market
+price the percentages are disabled rather than silently wrong.
+
+**Bought from** gained "Local seller" and "Social media (FBM, X)" — the
+examples are in the label so the category is obvious. Still a datalist, not a
+locked dropdown: the field is free text and anything can be typed.
+
+---

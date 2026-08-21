@@ -75,8 +75,12 @@ CONDITION_LABELS = {
 
 # Where an item came from. Free text is allowed, but offering a short list
 # makes the data worth aggregating later ("you buy best at shows").
-COMMON_SOURCES = ("Local shop", "eBay", "TCGplayer", "Big-box retail",
-                  "Card show", "Trade", "Pulled", "Other")
+# Suggestions only — the field is free text, so anything can be typed. The
+# list exists so the common answers are spelled consistently, which is what
+# makes "where do I actually buy well" answerable later.
+COMMON_SOURCES = ("Local shop", "Local seller", "eBay", "TCGplayer",
+                  "Social media (FBM, X)", "Big-box retail", "Card show",
+                  "Trade", "Pulled", "Other")
 
 SEALED_PRODUCT_TYPES = (
     "booster_box", "elite_trainer_box", "booster_bundle", "collection_box",
@@ -88,6 +92,29 @@ SEALED_TYPE_LABELS = {
     "tin": "Tin", "blister": "Blister", "booster_pack": "Booster Pack",
     "premium_collection": "Premium Collection", "other": "Other",
 }
+
+
+# What a sealed product typically costs at retail, by type. Used to prefill
+# the "price paid" box when adding one, because most sealed buys are at or
+# near these figures and typing the same number repeatedly is the main
+# friction in recording a collection.
+#
+# These are DEFAULTS, not truth: the field stays editable, and whatever is
+# submitted is what gets stored. A type with no entry here falls back to the
+# item's market price (flagged as an estimate) exactly as before.
+DEFAULT_SEALED_COST = {
+    "elite_trainer_box": Decimal("60.00"),
+    "tin": Decimal("10.00"),
+    "booster_box": Decimal("161.00"),
+    "booster_bundle": Decimal("25.00"),
+    "booster_pack": Decimal("5.00"),
+}
+
+
+def default_cost_for(product_type: str):
+    """Typical retail cost for a sealed product type, or None."""
+    return DEFAULT_SEALED_COST.get((product_type or "").strip().lower())
+
 
 TWO_DP = Decimal("0.01")
 # Upper bound on any single money value. Guards quantize() against absurd but
@@ -653,6 +680,21 @@ async def item_already_held(pool, user_id: int, card_id, sealed_id) -> bool:
 
 
 
+
+async def sealed_product_type(pool, sealed_id):
+    """The product_type of one sealed row, or "" — used to pick a default cost."""
+    if not sealed_id:
+        return ""
+    try:
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT product_type FROM sealed_products WHERE id = $1",
+                int(sealed_id)) or ""
+    except Exception:
+        logger.exception("Portfolios: could not read product type for %s", sealed_id)
+        return ""
+
+
 async def latest_unit_price(pool, kind: str, item_id):
     """Most recent known market price for one item, or None.
 
@@ -703,9 +745,19 @@ async def add_lot(pool, user_id: int, portfolio_id: int, kind: str,
     # from, and claiming otherwise would be a lie in the UI.
     estimated = False
     if cleaned["unit_cost"] is None:
-        market = await latest_unit_price(pool, kind, card_id or sealed_id)
-        if market is not None:
-            cleaned["unit_cost"] = market
+        # Order matters. A typical retail price for this KIND of product is a
+        # better guess than today's market price — sealed is usually bought at
+        # or near retail, and market price drifts a long way from it. Only
+        # when there is no default for the type do we fall back to market.
+        fallback = None
+        if kind == "sealed":
+            fallback = default_cost_for(await sealed_product_type(pool, sealed_id))
+        if fallback is None:
+            fallback = await latest_unit_price(pool, kind, card_id or sealed_id)
+        if fallback is not None:
+            cleaned["unit_cost"] = fallback
+            # Still an estimate: nobody looked at this number. The UI prefills
+            # the same figure so it is normally accepted deliberately instead.
             estimated = True
         else:
             cleaned["unit_cost"] = Decimal("0")

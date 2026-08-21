@@ -93,6 +93,14 @@
   .preview-box { margin-top: 14px; padding: 12px 14px; border: 1px solid #e4e4e7; border-radius: 10px; background: #fafafb; font-size: 12.5px; line-height: 1.7; }
   [data-theme="dark"] .sub-row td, [data-theme="dark"] .preview-box { background: #202027; }
   [data-theme="dark"] .preview-box { border-color: #2c2c34; }
+  .quick-row { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+  .quick { font-family: inherit; font-size: 11.5px; padding: 4px 10px; cursor: pointer;
+           border: 1px solid #ddd; border-radius: 999px; background: #fff; color: #555; }
+  .quick:hover { border-color: #7c6de1; color: #333; }
+  .quick.on { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .quick:disabled { opacity: .45; cursor: default; }
+  [data-theme="dark"] .quick { background: #24242b; border-color: #33333c; color: #c9c9d1; }
+  [data-theme="dark"] .quick.on { background: #5865F2; color: #fff; }
   .seg { display: inline-flex; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; }
   .seg button { font-family: inherit; font-size: 12.5px; padding: 7px 14px; border: none; background: #fff; color: #555; cursor: pointer; }
   .seg button.on { background: #5865F2; color: #fff; }
@@ -242,6 +250,7 @@
         <div>
           <label for="fUnitCost">Price paid, each</label>
           <input type="number" id="fUnitCost" min="0" step="0.01" placeholder="0.00">
+          <div class="hint" id="costNote" style="display:none;"></div>
         </div>
         <div>
           <label for="fFees">Shipping &amp; fees, total</label>
@@ -307,6 +316,15 @@
       <div>
         <label for="sPrice">Sold for, each</label>
         <input type="number" id="sPrice" min="0" step="0.01" placeholder="0.00">
+        <!-- Selling below market is the norm on a marketplace, so the common
+             fractions get a button rather than a calculator. -->
+        <div class="quick-row" id="salePresets">
+          <button type="button" class="quick" data-pct="75">75%</button>
+          <button type="button" class="quick" data-pct="80">80%</button>
+          <button type="button" class="quick" data-pct="85">85%</button>
+          <button type="button" class="quick" data-pct="">Other</button>
+        </div>
+        <div class="hint" id="saleBasis"></div>
       </div>
       <div>
         <label for="sFees">Selling fees, total</label>
@@ -344,6 +362,7 @@ const MAX_PORTFOLIOS = {{ max_portfolios }};
 const MAX_ITEMS = {{ max_items }};
 const CARD_CONDITIONS = {{ card_conditions | tojson }};
 const SEALED_CONDITIONS = {{ sealed_conditions | tojson }};
+const DEFAULT_COSTS = {{ default_costs | tojson }};
 
 let portfolios = [];
 let activeId = null;
@@ -592,6 +611,13 @@ function showSell(pos) {
   document.getElementById("sFees").value = "";
   document.getElementById("sDate").value = new Date().toISOString().slice(0, 10);
   document.getElementById("sNotes").value = "";
+  // No market price means there is nothing to take a percentage of.
+  const hasMarket = !!(pos.unit_price && Number(pos.unit_price));
+  document.querySelectorAll("#salePresets .quick").forEach(b => {
+    b.classList.remove("on");
+    if (b.dataset.pct) b.disabled = !hasMarket;
+  });
+  setSaleBasis(hasMarket ? "" : "No market price for this item yet — enter the sale price.");
   document.getElementById("sellPreview").style.display = "none";
   document.getElementById("sellMsg").innerHTML = "";
   document.getElementById("sellCard").style.display = "block";
@@ -644,6 +670,47 @@ async function refreshSellPreview() {
     box.style.display = "block";
   }
 }
+
+// Quick sale prices as a share of market. A marketplace sale is usually
+// below market once fees and haggling are in, and typing 0.8 x a number from
+// another column is the sort of arithmetic people get wrong.
+function applySalePreset(pct, btn) {
+  const priceBox = document.getElementById("sPrice");
+  document.querySelectorAll("#salePresets .quick")
+    .forEach(b => b.classList.toggle("on", b === btn));
+  if (!pct) {                       // "Other" — clear and let them type
+    priceBox.value = "";
+    priceBox.focus();
+    setSaleBasis(null);
+    refreshSellPreview();
+    return;
+  }
+  const market = sellPos && sellPos.unit_price ? Number(sellPos.unit_price) : null;
+  if (!market) {                    // nothing to take a percentage OF
+    setSaleBasis(null);
+    return;
+  }
+  priceBox.value = (market * (pct / 100)).toFixed(2);
+  setSaleBasis(pct + "% of " + money(market) + " market");
+  refreshSellPreview();
+}
+
+function setSaleBasis(text) {
+  const note = document.getElementById("saleBasis");
+  if (note) note.textContent = text || "";
+}
+
+document.getElementById("salePresets").addEventListener("click", (e) => {
+  const btn = e.target.closest(".quick");
+  if (btn) applySalePreset(btn.dataset.pct ? parseInt(btn.dataset.pct, 10) : 0, btn);
+});
+
+// Typing a price by hand clears the preset highlight — the number is no
+// longer "80% of market" once it has been edited.
+document.getElementById("sPrice").addEventListener("input", () => {
+  document.querySelectorAll("#salePresets .quick").forEach(b => b.classList.remove("on"));
+  setSaleBasis(null);
+});
 
 async function confirmSell() {
   if (!sellPos) return;
@@ -867,7 +934,7 @@ async function runPick() {
       if (el.search.value.trim()) p.set("q", el.search.value.trim());
       const data = await api("/api/portfolios/sealed/browse?" + p.toString());
       rows = (data.items || []).map(r => ({
-        kind: "sealed", id: r.id, label: r.name,
+        kind: "sealed", id: r.id, label: r.name, productType: r.product_type,
         sub: [r.set_name, r.type_label].filter(Boolean).join(" · "),
       }));
     } else {
@@ -949,6 +1016,25 @@ function showChosen() {
   el.textContent = "Adding: " + chosenItem.label;
   document.getElementById("detailStep").style.display = "block";
   fillConditions(chosenItem.kind);
+  applyDefaultCost();
+}
+
+// Prefill "price paid" with what this kind of product usually costs. It is a
+// starting point, not a claim: the field stays editable and whatever is
+// submitted is what gets stored. Only fills an EMPTY box, so it never
+// overwrites a figure someone has already typed.
+function applyDefaultCost() {
+  const box = document.getElementById("fUnitCost");
+  const note = document.getElementById("costNote");
+  const preset = chosenItem && chosenItem.kind === "sealed"
+    ? DEFAULT_COSTS[chosenItem.productType] : null;
+  if (preset && !box.value) box.value = preset;
+  if (note) {
+    note.textContent = preset
+      ? "Filled in with the usual retail price — change it if you paid something else."
+      : "";
+    note.style.display = preset ? "block" : "none";
+  }
 }
 
 function formPayload() {
