@@ -1365,3 +1365,35 @@ the raw record on EVERY response, not just on total failure. Partial
 successes are the ones that hide.
 
 ---
+
+## 2026-08-20 — Adding a lot 500'd: an alias RETURNING can't see
+
+**Symptom:** `asyncpg.exceptions.UndefinedTableError: missing FROM-clause
+entry for table "l"` on every attempt to add an item to a portfolio.
+
+**Cause:** `LOT_COLUMNS` was written as `l.id, l.portfolio_id, …` for
+`list_lots`, which joins `portfolio_lots l` alongside tracked_cards and
+sealed_products. The same constant was then reused in
+`INSERT … RETURNING {LOT_COLUMNS}` and `UPDATE … RETURNING {LOT_COLUMNS}`.
+**RETURNING has no FROM clause**, so the alias does not exist there. Adding
+a lot had been broken since the feature shipped.
+
+**Fix:** one field tuple, two rendered lists — `LOT_COLUMNS` (aliased, for
+the joined SELECT) and `LOT_COLUMNS_BARE` (unqualified, for RETURNING).
+
+**Why nothing caught it:** the tests have no database, so SQL is never
+executed. Template rendering, AST checks and money math all passed while a
+core write path was dead.
+
+**New check — `check_sql.py`:** parses every SQL literal across
+portfolios/billing/catalog/card_tracker/inventory/main, resolves f-string
+placeholders from module constants, works out which aliases each statement
+DECLARES (including subquery and LATERAL aliases after a closing paren) and
+reports any it USES without declaring. 198 statements, 0 problems.
+Verified by re-introducing the production bug and confirming it is caught.
+
+**Rule:** a SQL fragment written for one statement shape cannot be reused in
+another without checking the aliases still resolve. Prefer building
+column lists from a field tuple over hand-writing them twice.
+
+---

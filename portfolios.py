@@ -552,12 +552,17 @@ async def delete_portfolio(pool, user_id: int, portfolio_id: int) -> bool:
 
 # ── Lots ─────────────────────────────────────────────────────────────────
 
-LOT_COLUMNS = """
-    l.id, l.portfolio_id, l.card_id, l.sealed_id, l.quantity, l.condition,
-    l.unit_cost, l.fees, l.purchased_on, l.acquired_from,
-    l.sold_on, l.sale_unit_price, l.sale_fees, l.notes, l.created_at,
-    l.cost_is_estimated
-"""
+# The lot's own columns, twice over. RETURNING has no FROM clause, so it
+# cannot see the "l" alias that the SELECT joins need — using the aliased
+# list there fails with "missing FROM-clause entry for table l".
+_LOT_FIELDS = ("id", "portfolio_id", "card_id", "sealed_id", "quantity",
+               "condition", "unit_cost", "fees", "purchased_on",
+               "acquired_from", "sold_on", "sale_unit_price", "sale_fees",
+               "notes", "created_at", "cost_is_estimated")
+# For SELECTs that join tracked_cards/sealed_products and need the alias.
+LOT_COLUMNS = ", ".join("l." + f for f in _LOT_FIELDS)
+# For INSERT/UPDATE ... RETURNING, where the table is implicit.
+LOT_COLUMNS_BARE = ", ".join(_LOT_FIELDS)
 
 
 async def list_lots(pool, portfolio_id: int) -> list:
@@ -689,7 +694,7 @@ async def add_lot(pool, user_id: int, portfolio_id: int, kind: str,
                  fees, purchased_on, acquired_from, sold_on, sale_unit_price,
                  sale_fees, notes, cost_is_estimated)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8::date,$9,$10::date,$11,$12,$13,$14)
-            RETURNING {LOT_COLUMNS}
+            RETURNING {LOT_COLUMNS_BARE}
             """,
             portfolio_id, card_id, sealed_id, cleaned["quantity"],
             cleaned["condition"], cleaned["unit_cost"], cleaned["fees"],
@@ -732,7 +737,7 @@ async def update_lot(pool, user_id: int, lot_id: int, payload: dict) -> tuple:
                    sale_unit_price = $9, sale_fees = $10, notes = $11,
                    cost_is_estimated = $12, updated_at = NOW()
              WHERE id = $1
-            RETURNING {LOT_COLUMNS}
+            RETURNING {LOT_COLUMNS_BARE}
             """,
             lot_id, cleaned["quantity"], cleaned["condition"], cleaned["unit_cost"],
             cleaned["fees"], cleaned["purchased_on"], cleaned["acquired_from"],
