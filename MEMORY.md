@@ -1428,3 +1428,37 @@ production bugs and confirming each is caught.
 first. A `::date` cast in the SQL is documentation, not coercion.
 
 ---
+
+## 2026-08-20 — Schema audit: no further table bugs found
+
+After two execution-only SQL bugs, swept the whole repo rather than waiting
+for a third. `check_schema.py` builds the schema from the **imported** DDL
+constants (ACCOUNT_SCHEMA, PORTFOLIO_SCHEMA, …) and audits every SQL literal
+for:
+  1. INSERT/UPDATE columns no CREATE/ALTER declares
+  2. qualified references (`p.price_mid`) against the aliased table's columns
+  3. ON CONFLICT targets with no matching UNIQUE key
+  4. INSERT column count vs VALUES count
+  5. highest `$N` vs arguments passed, and gaps in the sequence
+
+**Result: 233 statements across 7 modules, 0 problems.** Verified by
+injecting all five fault classes and confirming each is caught.
+
+Tables with no DDL in this repo (`terms_acceptance`, `restock_reports`,
+`locations`, …) are SKIPPED, not guessed at — the bot owns them, and a false
+alarm there would train everyone to ignore the tool.
+
+**Five initial "findings" were all bugs in the checker**, worth recording so
+the next person doesn't "fix" working code:
+  * DDL split across adjacent string literals is one string at RUNTIME but
+    two in the source — hence reading imported constants, not source text.
+  * `VALUES ([^)]*)` stops at the first `)` inside `NOW()`.
+  * A column-level `UNIQUE` (`email_lower TEXT NOT NULL UNIQUE`) has no
+    parentheses and the parenthesised pattern misses it.
+
+**Bash heredocs mangled escapes a THIRD time here** — `\b` became a literal
+backspace byte (0x08) inside a regex, which silently never matched. Combined
+with the earlier `\n` damage in template JS and test files: do not write code
+containing escapes through a heredoc. Use the Write tool.
+
+---
