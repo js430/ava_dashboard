@@ -1506,6 +1506,10 @@ _sealed_working_path = None
 # costs more, so this is deliberately modest. Most sets have a handful of
 # sealed products, not a hundred.
 PPT_SEALED_LIMIT = int(os.getenv("POKEMONPRICETRACKER_SEALED_LIMIT", "25"))
+# Pages to walk per set before giving up. 12 x 25 = 300 products, far above
+# any real set — the ceiling exists so a misbehaving endpoint that always
+# returns a full page cannot loop forever spending credits.
+PPT_SEALED_MAX_PAGES = int(os.getenv("POKEMONPRICETRACKER_SEALED_MAX_PAGES", "12"))
 
 # THE DAILY BUDGET IS SHARED with the catalog backfill, the grading
 # calculator and the nightly tracker ingest — one key, one allowance. A bulk
@@ -1553,47 +1557,80 @@ async def fetch_ppt_sealed(set_name: str, limit: int = None,
     limit = PPT_SEALED_LIMIT if limit is None else limit
     # A known-good path first, then the candidates; never re-probe a path we
     # have already seen answer.
-    paths = ([_sealed_working_path] if _sealed_working_path else []) +             [p for p in SEALED_PATH_CANDIDATES if p != _sealed_working_path]
+    paths = ([_sealed_working_path] if _sealed_working_path else []) + \
+            [p for p in SEALED_PATH_CANDIDATES if p != _sealed_working_path]
 
     last_status, meta = "not_found", {}
     async with httpx.AsyncClient(timeout=30.0) as client:
         for path in paths:
-            rows, resp = await _ppt_get(
-                client, path, {"set": set_name, "limit": limit},
-                f"sealed({set_name})")
-            remaining = _daily_remaining(resp)
-            if remaining is not None:
-                meta["daily_remaining"] = remaining
+            collected = []
+            offset = 0
+            # Did THIS path answer with a 200? Without tracking that, a set
+            # that genuinely has no sealed product is indistinguishable from
+            # a wrong endpoint, and both report "not_found".
+            answered = False
+            # PAGE THROUGH. The first version asked once with a small limit
+            # and kept whatever came back, so any set with more sealed
+            # products than the page size was silently truncated — a set with
+            # forty SKUs imported twenty-five and looked complete.
+            for page in range(PPT_SEALED_MAX_PAGES):
+                rows, resp = await _ppt_get(
+                    client, path, {"set": set_name, "limit": limit, "offset": offset},
+                    "sealed(%s +%d)" % (set_name, offset))
+                remaining = _daily_remaining(resp)
+                if remaining is not None:
+                    meta["daily_remaining"] = remaining
 
-            if resp is None:
-                last_status = "error"
-                continue
-            if resp.status_code == 429:
-                try:
-                    meta["retry_after"] = int(resp.headers.get("Retry-After") or 0)
-                except (TypeError, ValueError):
-                    meta["retry_after"] = 0
-                # A spent daily allowance is a different problem from a
-                # minute window — unless the caller has said they'll pay
-                # for the overage, in which case it is just another minute
-                # window to wait out.
-                if remaining == 0 and not allow_over_quota:
-                    return [], "daily_exhausted", meta
-                if remaining == 0:
-                    meta["over_quota"] = True
-                return [], "rate_limited", meta
-            if resp.status_code == 404:
-                logger.info("PokemonPriceTracker: no sealed endpoint at %s", path)
-                last_status = "not_found"
-                continue
-            if resp.status_code != 200:
-                last_status = "error"
-                continue
+                if resp is None:
+                    last_status = "error"
+                    break
+                if resp.status_code == 429:
+                    try:
+                        meta["retry_after"] = int(resp.headers.get("Retry-After") or 0)
+                    except (TypeError, ValueError):
+                        meta["retry_after"] = 0
+                    # A spent daily allowance is a different problem from a
+                    # minute window — unless the caller has said they'll pay
+                    # for the overage, in which case it is just another
+                    # minute window to wait out.
+                    if remaining == 0 and not allow_over_quota:
+                        return collected, "daily_exhausted", meta
+                    if remaining == 0:
+                        meta["over_quota"] = True
+                    # Hand back what we already have: a partial page is worth
+                    # importing, and the caller records how far it got.
+                    meta["partial"] = bool(collected)
+                    return collected, "rate_limited", meta
+                if resp.status_code == 404:
+                    logger.info("PokemonPriceTracker: no sealed endpoint at %s", path)
+                    last_status = "not_found"
+                    break
+                if resp.status_code != 200:
+                    last_status = "error"
+                    break
 
-            if _sealed_working_path != path:
-                _sealed_working_path = path
-                logger.info("PokemonPriceTracker: using sealed endpoint %s", path)
-            return rows, ("ok" if rows else "empty"), meta
+                answered = True
+                if _sealed_working_path != path:
+                    _sealed_working_path = path
+                    logger.info("PokemonPriceTracker: using sealed endpoint %s", path)
+
+                collected.extend(rows)
+                # A short page is the last page. Without this the loop would
+                # keep asking (and keep spending) past the end of the set.
+                if len(rows) < limit:
+                    break
+                offset += limit
+            else:
+                logger.warning("PokemonPriceTracker: %s hit the %d-page ceiling "
+                               "(%d products) — there may be more",
+                               set_name, PPT_SEALED_MAX_PAGES, len(collected))
+
+            if answered:
+                meta["pages"] = (offset // limit) + 1
+                return collected, ("ok" if collected else "empty"), meta
+            if last_status == "not_found":
+                continue          # wrong path — try the next candidate
+            return [], last_status, meta
     return [], last_status, meta
 
 

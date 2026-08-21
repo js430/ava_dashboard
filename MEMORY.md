@@ -1496,3 +1496,36 @@ cards-only, so the old heading was simply inaccurate. Left alone:
 copy listing the tools; renaming those is a copy decision, not a nav one.
 
 ---
+
+## 2026-08-20 — Sealed import silently truncated every large set
+
+**Symptom:** products missing from certain sets after a successful import.
+
+**Cause: no pagination.** `fetch_ppt_sealed` made ONE request with
+`limit=25` and kept whatever came back, reporting "ok". A set with forty
+sealed products imported twenty-five and looked complete. Worse, this was a
+regression I introduced: the limit was 100 until the budget work dropped it
+to 25, which turned an occasional truncation into a routine one.
+
+**Fix:** walk pages by `offset` until a short page arrives, capped at
+`PPT_SEALED_MAX_PAGES` (12 x 25 = 300 products/set) so a misbehaving
+endpoint that always returns a full page cannot loop forever spending
+credits. A throttled walk now RETURNS the pages it already fetched, and the
+import saves them rather than discarding credits already spent.
+
+**Second bug found while fixing it:** an empty first page fell through to
+`not_found`, so a set with genuinely no sealed product was indistinguishable
+from a wrong endpoint. Now tracked with an `answered` flag: 200 with zero
+rows is "empty", no 200 at all is "not_found".
+
+**Re-running picks up the missing products** — only sets recorded with
+`found = 0` are skipped, so any set that imported partially is re-checked.
+
+**Other reasons a set can still be missing, none of them bugs:**
+  * the bulk run's year floor (default 2020) excludes older sets;
+  * One Piece sealed is never fetched — the seeding and the candidate set
+    list are both Pokemon-only, by decision;
+  * products Collectr files under "Miscellaneous Cards & Products" have no
+    real set to fetch by.
+
+---

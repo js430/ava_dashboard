@@ -3458,6 +3458,16 @@ async def api_portfolio_sealed_import(request: Request,
             stopped = status
             failures.append({"set_name": set_name, "status": status,
                              "retry_after": meta.get("retry_after")})
+            # A throttled walk can still have fetched whole pages. Save them
+            # rather than throwing away credits we already spent; the set is
+            # re-checked on the next run because its check row is non-zero.
+            if rows:
+                partial, n_skipped = portfolios.parse_sealed_rows(rows, set_name)
+                skipped += n_skipped
+                result = await portfolios.import_sealed_products(pool, partial)
+                added += result["added"]
+                updated += result["updated"]
+                await portfolios.record_sealed_check(pool, set_name, len(partial))
             break
         # Leave headroom for the features members actually use rather than
         # spending the last of the allowance on a bulk backfill. The reserve
