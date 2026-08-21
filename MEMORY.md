@@ -1397,3 +1397,34 @@ another without checking the aliases still resolve. Prefer building
 column lists from a field tuple over hand-writing them twice.
 
 ---
+
+## 2026-08-20 — "Record the sale" 500'd: a date column bound a string
+
+**Symptom:** `asyncpg.exceptions.DataError: invalid input for query argument
+$2: '2026-08-21' ('str' object has no attribute 'toordinal')`.
+
+**Cause:** `sold_on` and `purchased_on` reached date columns as the strings
+an `<input type="date">` posts. **asyncpg binds by TYPE, and the `::date`
+casts in the SQL do not help** — the parameter is already typed by the time
+the value is bound. `add_lot` and `update_lot` had the same latent bug: any
+lot saved WITH a purchase date would have failed identically.
+
+**Fix:** `to_date()` converts once, in `validate_lot` and at the top of
+`sell_from_position`, so nothing downstream holds a date-shaped string. It
+accepts `YYYY-MM-DD` and full ISO timestamps, and returns None for junk
+rather than raising — an unparseable date should not stop someone recording
+a purchase.
+
+**This is the SECOND execution-only SQL bug in a row** (the first was the
+RETURNING alias). Both shipped because the tests have no database.
+
+**New check — `test_dbtypes.py`:** a stub connection that records every
+query and validates arguments against the parameter types the SQL declares,
+which is what the driver does minus the network. It runs `add_lot`,
+`update_lot` and `sell_from_position` for real. Verified by feeding it both
+production bugs and confirming each is caught.
+
+**Rule:** any value that reaches a typed column must be converted in Python
+first. A `::date` cast in the SQL is documentation, not coercion.
+
+---

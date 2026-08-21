@@ -36,6 +36,7 @@ MONEY
 import os
 import re
 import logging
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 logger = logging.getLogger("dashboard.portfolios")
@@ -230,6 +231,36 @@ def to_money(value, default=None):
         return d.quantize(TWO_DP, rounding=ROUND_HALF_UP)
     except InvalidOperation:
         return default
+
+
+
+def to_date(value):
+    """Coerce a date from the browser into a real `date`, or None.
+
+    asyncpg binds by TYPE, not by text: a "sold_on" parameter is a date
+    column, and handing it the string "2026-08-21" raises
+    "'str' object has no attribute 'toordinal'". The ::date casts in the SQL
+    do not save it — the parameter is already typed by then. So every date
+    is converted here, once, before it reaches a query.
+
+    Accepts what an <input type="date"> sends (YYYY-MM-DD) and tolerates a
+    full ISO timestamp; anything else is None rather than an error, because a
+    date nobody can parse should not stop someone recording a purchase.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        logger.info("Portfolios: ignoring unparseable date %r", text[:30])
+        return None
 
 
 def cost_basis(lot) -> Decimal:
@@ -439,9 +470,9 @@ def validate_lot(payload: dict, kind: str) -> tuple:
     if sale_fees is None or sale_fees < 0:
         return None, "Selling fees can't be negative."
 
-    purchased_on = payload.get("purchased_on") or None
-    sold_on = payload.get("sold_on") or None
-    if sold_on and purchased_on and str(sold_on) < str(purchased_on):
+    purchased_on = to_date(payload.get("purchased_on"))
+    sold_on = to_date(payload.get("sold_on"))
+    if sold_on and purchased_on and sold_on < purchased_on:
         return None, "The sale date is before the purchase date."
     if sold_on and sale_unit_price is None:
         return None, "Add the price it sold for, so the return can be worked out."
@@ -1047,6 +1078,10 @@ async def sell_from_position(pool, user_id: int, portfolio_id: int, kind: str,
     fees = to_money(sale_fees, Decimal("0"))
     if fees is None or fees < 0:
         return None, "Selling fees can't be negative."
+
+    # Same reason as validate_lot: this reaches a date column, so it has to
+    # BE a date, not a string that merely looks like one.
+    sold_on = to_date(sold_on)
 
     if not await owns_portfolio(pool, user_id, portfolio_id):
         return None, "That isn't one of your portfolios."
