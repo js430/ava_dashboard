@@ -1561,3 +1561,32 @@ now paid for itself; the standing rule not to write escape-bearing code
 through a heredoc still applies.
 
 ---
+
+## 2026-08-20 — The Catalog's sealed tab was capped at 300 and showed few sets
+
+**Symptom:** "only 300 products and only certain sets."
+
+**Two bugs, one visible:**
+  1. The page asked the type-ahead endpoint for `limit=300` and rendered
+     whatever came back — the alphabetically first 300 rows of
+     `ORDER BY set_name, name`.
+  2. Worse and less obvious: the set and type dropdowns were built **from
+     those 300 rows**, so only sets appearing in that slice were offered.
+     Filtering to a set beyond the cap was impossible, which is why it looked
+     like most sets were missing rather than merely truncated.
+
+**Fix:** new `/api/portfolios/sealed/browse` for the tab. Filters by set,
+type and text **in SQL**; returns a `total`; and returns the full set and
+type lists from `GROUP BY` over the whole table so the dropdowns are complete
+regardless of which page is on screen. The page shows "showing N of M" with a
+Load more control, so a partial list can never read as the whole catalogue.
+
+The type-ahead endpoint (`/api/portfolios/sealed`) is left alone — a browse
+and a type-ahead want different things, and two callers already depended on
+its list-shaped response.
+
+**Pattern worth remembering:** deriving filter options from the current page
+is a silent failure. The list looks plausible, the filter looks populated,
+and the missing data is invisible.
+
+---

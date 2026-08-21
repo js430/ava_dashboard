@@ -3666,6 +3666,80 @@ async def api_portfolio_sealed_purge(request: Request, user=Depends(require_admi
                         headers={"Cache-Control": "no-store"})
 
 
+@app.get("/api/portfolios/sealed/browse")
+async def api_portfolio_sealed_browse(request: Request, set_name: str = "",
+                                      product_type: str = "", q: str = "",
+                                      limit: int = 200, offset: int = 0,
+                                      user=Depends(get_current_user_or_guest)):
+    """Sealed product for the Catalog's sealed tab.
+
+    Separate from /sealed (the type-ahead) because a browse needs different
+    things: server-side filtering, a TOTAL so the page can say how much it is
+    showing, and the full list of sets and types.
+
+    The first version reused the type-ahead and asked for 300 rows, then built
+    its set filter from whatever came back — so it showed the alphabetically
+    first 300 products and offered only the sets among them. Filtering has to
+    happen in SQL, and the filter options have to come from the whole table,
+    not from one page of it.
+    """
+    try:
+        limit = max(1, min(int(limit), 500))
+    except (TypeError, ValueError):
+        limit = 200
+    try:
+        offset = max(0, int(offset))
+    except (TypeError, ValueError):
+        offset = 0
+
+    clauses, params = [], []
+    if set_name:
+        params.append(set_name[:120])
+        clauses.append("set_name = $" + str(len(params)))
+    if product_type:
+        params.append(product_type[:60])
+        clauses.append("product_type = $" + str(len(params)))
+    if q:
+        params.append("%" + q.strip()[:80] + "%")
+        n = str(len(params))
+        clauses.append("(name ILIKE $" + n + " OR set_name ILIKE $" + n + ")")
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    async with request.app.state.db.acquire() as conn:
+        total = await conn.fetchval(
+            "SELECT COUNT(*) FROM sealed_products " + where, *params) or 0
+        rows = await conn.fetch(
+            "SELECT id, name, set_name, product_type, language, image_url, "
+            "market_price FROM sealed_products " + where +
+            " ORDER BY set_name, name LIMIT $" + str(len(params) + 1) +
+            " OFFSET $" + str(len(params) + 2), *params, limit, offset)
+        # Filter options come from the WHOLE table so the dropdowns are
+        # complete no matter which page is being viewed.
+        set_rows = await conn.fetch(
+            "SELECT set_name, COUNT(*) AS n FROM sealed_products "
+            "WHERE set_name <> '' GROUP BY set_name ORDER BY set_name")
+        type_rows = await conn.fetch(
+            "SELECT product_type, COUNT(*) AS n FROM sealed_products "
+            "GROUP BY product_type ORDER BY product_type")
+
+    return JSONResponse({
+        "items": [{
+            "id": r["id"], "name": r["name"], "set_name": r["set_name"],
+            "product_type": r["product_type"], "language": r["language"],
+            "type_label": portfolios.SEALED_TYPE_LABELS.get(r["product_type"], "Other"),
+            "image_url": r["image_url"],
+            "market_price": _portfolio_json(r["market_price"]),
+        } for r in rows],
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "sets": [{"set_name": r["set_name"], "count": r["n"]} for r in set_rows],
+        "types": [{"key": r["product_type"], "count": r["n"],
+                   "label": portfolios.SEALED_TYPE_LABELS.get(r["product_type"], "Other")}
+                  for r in type_rows],
+    }, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/api/portfolios/sealed/sets")
 async def api_portfolio_sealed_sets(request: Request,
                                     user=Depends(get_member_or_subscriber)):
