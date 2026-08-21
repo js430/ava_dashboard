@@ -278,6 +278,13 @@
         <div>
           <label for="fSalePrice">Sold for, each</label>
           <input type="number" id="fSalePrice" min="0" step="0.01" placeholder="0.00">
+          <div class="quick-row" id="formSalePresets">
+            <button type="button" class="quick" data-fpct="75">75%</button>
+            <button type="button" class="quick" data-fpct="80">80%</button>
+            <button type="button" class="quick" data-fpct="85">85%</button>
+            <button type="button" class="quick" data-fpct="">Other</button>
+          </div>
+          <div class="hint" id="formSaleBasis"></div>
         </div>
         <div>
           <label for="fSaleFees">Selling fees, total</label>
@@ -800,7 +807,7 @@ function showAdd(pos) {
   if (pos) {
     // "Buy more" of something already held: skip the search entirely.
     chosenItem = { kind: pos.kind, id: pos.item_id, label: pos.name,
-                   productType: pos.product_type };
+                   productType: pos.product_type, marketPrice: pos.unit_price };
     document.getElementById("pickStep").style.display = "none";
     showChosen();
   }
@@ -936,6 +943,7 @@ async function runPick() {
       const data = await api("/api/portfolios/sealed/browse?" + p.toString());
       rows = (data.items || []).map(r => ({
         kind: "sealed", id: r.id, label: r.name, productType: r.product_type,
+        marketPrice: r.market_price,
         sub: [r.set_name, r.type_label].filter(Boolean).join(" · "),
       }));
     } else {
@@ -979,7 +987,7 @@ async function choosePicked(row) {
   if (row.kind === "sealed") {
     // productType carries through so the cost default can be looked up.
     chosenItem = { kind: "sealed", id: row.id, label: row.label,
-                   productType: row.productType };
+                   productType: row.productType, marketPrice: row.marketPrice };
     showChosen();
     return;
   }
@@ -1020,6 +1028,7 @@ function showChosen() {
   document.getElementById("detailStep").style.display = "block";
   fillConditions(chosenItem.kind);
   applyDefaultCost();
+  setFormMarket(chosenItem.marketPrice);
 }
 
 // Prefill "price paid" with what this kind of product usually costs. It is a
@@ -1039,6 +1048,57 @@ function applyDefaultCost() {
     note.style.display = preset ? "block" : "none";
   }
 }
+
+// The same % shortcuts on the add/edit form's sale price. This form records a
+// sale too, so having the buttons only on the Sell panel meant doing the
+// arithmetic by hand in exactly the place people first look.
+//
+// The market price comes from whichever route got here: an edit knows the
+// lot's current unit price, an add knows it from the row that was picked.
+let formMarketPrice = null;
+
+function setFormMarket(value) {
+  const n = value === null || value === undefined || value === "" ? null : Number(value);
+  formMarketPrice = isFinite(n) && n > 0 ? n : null;
+  document.querySelectorAll("#formSalePresets .quick").forEach(b => {
+    b.classList.remove("on");
+    if (b.dataset.fpct) b.disabled = !formMarketPrice;
+  });
+  setFormSaleBasis(formMarketPrice ? "" :
+    "No market price for this item yet — type the sale price.");
+}
+
+function setFormSaleBasis(text) {
+  const note = document.getElementById("formSaleBasis");
+  if (note) note.textContent = text || "";
+}
+
+function applyFormSalePreset(pct, btn) {
+  const box = document.getElementById("fSalePrice");
+  document.querySelectorAll("#formSalePresets .quick")
+    .forEach(b => b.classList.toggle("on", b === btn));
+  if (!pct) {                        // "Other" — clear and let them type
+    box.value = "";
+    box.focus();
+    setFormSaleBasis(null);
+    return;
+  }
+  if (!formMarketPrice) { setFormSaleBasis(null); return; }
+  box.value = (formMarketPrice * (pct / 100)).toFixed(2);
+  setFormSaleBasis(pct + "% of " + money(formMarketPrice) + " market");
+}
+
+document.getElementById("formSalePresets").addEventListener("click", (e) => {
+  const btn = e.target.closest(".quick");
+  if (btn) applyFormSalePreset(btn.dataset.fpct ? parseInt(btn.dataset.fpct, 10) : 0, btn);
+});
+
+// Typing by hand drops the highlight: the number is no longer a percentage
+// of anything once it has been edited.
+document.getElementById("fSalePrice").addEventListener("input", () => {
+  document.querySelectorAll("#formSalePresets .quick").forEach(b => b.classList.remove("on"));
+  setFormSaleBasis(null);
+});
 
 function formPayload() {
   return {
@@ -1096,12 +1156,17 @@ function editLot(lot) {
   document.getElementById("fQty").value = lot.quantity;
   document.getElementById("fCondition").value = lot.condition;
   document.getElementById("fUnitCost").value = lot.unit_cost;
+  // This figure came from the saved lot, not from a default — clear any note
+  // left over from a previous add, which would otherwise claim otherwise.
+  const editNote = document.getElementById("costNote");
+  if (editNote) { editNote.textContent = ""; editNote.style.display = "none"; }
   document.getElementById("fFees").value = lot.fees;
   document.getElementById("fPurchased").value = lot.purchased_on || "";
   document.getElementById("fFrom").value = lot.acquired_from || "";
   document.getElementById("fSoldOn").value = lot.sold_on || "";
   document.getElementById("fSalePrice").value = lot.sale_unit_price || "";
   document.getElementById("fSaleFees").value = lot.sale_fees || "";
+  setFormMarket(lot.unit_price);
   document.getElementById("fNotes").value = lot.notes || "";
   document.getElementById("addCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }

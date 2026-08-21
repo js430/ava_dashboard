@@ -1675,3 +1675,30 @@ replace on source without asserting the anchor matched, and verify after
 writing. Four separate silent no-ops this session.
 
 ---
+
+## 2026-08-20 — Sale % shortcuts were only on the Sell panel
+
+**Symptom:** "where are the preset buttons for % of market to sell" — they
+existed, but on the SELL panel (opened by the Sell button on a position
+row), not on the add/edit form's "If you've sold it" section, which is where
+someone recording a past sale looks first.
+
+**Fix:** the same 75 / 80 / 85 / Other buttons on the form's sale price. The
+market price to work from comes from whichever route reached the form:
+  * adding from the picker — the browse row's `market_price`
+  * editing a lot — the lot's `unit_price`
+  * "Buy more" on a position — the position's `unit_price`
+All three now set it, verified by simulating each path.
+
+**Second bug in the same screenshot:** editing a lot showed "Filled in with
+the usual retail price" above a figure that came from the member's own saved
+lot. The note was left over from a previous add and is now cleared in
+`editLot`.
+
+**Rounding note:** the browser and Python disagree on an exact half-cent
+(212.50 x 85% = 180.625 -> JS 180.63, Python 180.62). It does not matter —
+this is a suggested price the member can edit, and what is stored is what the
+form submits — but tests should avoid tie values rather than encode one
+engine's answer.
+
+---
