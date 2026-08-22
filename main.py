@@ -48,6 +48,7 @@ import card_eras
 import population
 import inventory
 import billing
+import collectr_import
 import portfolios
 import tips
 
@@ -3136,6 +3137,135 @@ async def api_portfolio_lot_add(request: Request, portfolio_id: int,
     if error:
         raise HTTPException(status_code=400, detail=error)
     return JSONResponse({"id": lot["id"]}, headers={"Cache-Control": "no-store"})
+
+
+# ── Importing a Collectr portfolio ───────────────────────────────────────
+# The member pastes either their showcase page's text or a CSV export. NOT a
+# link: a server-side GET of a share URL returns the page shell with zero
+# holdings in it — everything is loaded client-side from an API that answers
+# 401 without the app's own credentials. The text on screen is the only
+# complete source we can legitimately read.
+#
+# Nothing is written until the member has seen what matched and what did not.
+
+async def _collectr_catalog(pool, kinds):
+    """Candidate rows to match against, for whichever kinds are present.
+
+    Loaded once per preview rather than per item: matching 100 items against
+    the catalog is a lot of comparisons, but they are all in memory.
+    """
+    singles, sealed = [], []
+    async with pool.acquire() as conn:
+        if "sealed" in kinds:
+            rows = await conn.fetch(
+                "SELECT id, name, set_name, product_type FROM sealed_products")
+            sealed = [dict(r) for r in rows]
+        if "card" in kinds:
+            rows = await conn.fetch(
+                "SELECT id, name, set_name, card_number, rarity AS variant, "
+                "tcgplayer_id, language FROM catalog_cards "
+                "WHERE game = 'pokemon' LIMIT 60000")
+            singles = [dict(r) for r in rows]
+    return singles, sealed
+
+
+@app.post("/api/portfolios/{portfolio_id}/collectr/preview")
+@limiter.limit("30/hour")
+async def api_collectr_preview(request: Request, portfolio_id: int,
+                               user=Depends(get_member_or_subscriber)):
+    """Match a pasted portfolio against the catalog. Writes nothing."""
+    await _require_own_portfolio(request, user, portfolio_id)
+    body = await request.json()
+    text = body.get("text") or ""
+    items, source = collectr_import.read_any(text)
+    if not items:
+        detail = {
+            "empty": "Paste your Collectr list first.",
+            "unrecognised": ("That doesn't look like a Collectr page or a CSV "
+                             "export. Open your showcase, select all, copy, and "
+                             "paste it here."),
+        }.get(source, "Nothing to import.")
+        raise HTTPException(status_code=400, detail=detail)
+
+    kinds = {("sealed" if collectr_import.looks_sealed(i["name"]) else "card")
+             for i in items}
+    singles, sealed = await _collectr_catalog(request.app.state.db, kinds)
+    rows = [collectr_import.classify(i, singles, sealed) for i in items]
+    summary = collectr_import.summarize(rows)
+
+    logger.info("Collectr preview by %s: %d item(s) from %s, %d matched",
+                user["id"], len(items), source, summary["matched"])
+    return JSONResponse({
+        "source": source,
+        "summary": summary,
+        "rows": [{
+            "name": r["name"],
+            "quantity": r["quantity"],
+            "kind": r["kind"],
+            "status": r["status"],
+            "score": r["score"],
+            "reason": r["reason"],
+            "match_name": (r["match"] or {}).get("name") if r["match"] else None,
+            "match_set": (r["match"] or {}).get("set_name") if r["match"] else None,
+            "match_id": (r["match"] or {}).get("id") if r["match"] else None,
+        } for r in rows],
+    }, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/portfolios/{portfolio_id}/collectr/import")
+@limiter.limit("10/hour")
+async def api_collectr_import(request: Request, portfolio_id: int,
+                              user=Depends(get_member_or_subscriber)):
+    """Add the matched items as lots.
+
+    Re-matches server-side from the pasted text rather than trusting a list
+    of ids from the browser: this writes to someone's holdings, and a
+    hand-edited payload could attach any catalog row to any quantity.
+    """
+    await _require_own_portfolio(request, user, portfolio_id)
+    body = await request.json()
+    text = body.get("text") or ""
+    items, source = collectr_import.read_any(text)
+    if not items:
+        raise HTTPException(status_code=400, detail="Nothing to import.")
+
+    kinds = {("sealed" if collectr_import.looks_sealed(i["name"]) else "card")
+             for i in items}
+    singles, sealed = await _collectr_catalog(request.app.state.db, kinds)
+    rows = [collectr_import.classify(i, singles, sealed) for i in items]
+
+    pool = request.app.state.db
+    added = failed = 0
+    problems = []
+    for row in rows:
+        if row["status"] != "matched" or not row["match"]:
+            continue
+        payload = {
+            "quantity": row["quantity"],
+            # Left blank on purpose: add_lot fills it from the retail default
+            # for the type, or market price, and flags it as an estimate. The
+            # showcase never shows what was actually paid.
+            "unit_cost": "",
+            "condition": row["grade"] or portfolios.default_condition(row["kind"]),
+            "acquired_from": "",
+            "notes": "Imported from Collectr",
+        }
+        lot, error = await portfolios.add_lot(
+            pool, int(user["id"]), portfolio_id, row["kind"],
+            row["match"]["id"], payload)
+        if error:
+            failed += 1
+            if len(problems) < 10:
+                problems.append({"name": row["name"], "error": error})
+        else:
+            added += 1
+
+    logger.info("Collectr import by %s into %s: %d added, %d failed",
+                user["id"], portfolio_id, added, failed)
+    return JSONResponse({
+        "added": added, "failed": failed, "problems": problems,
+        "skipped": sum(1 for r in rows if r["status"] != "matched"),
+    }, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/portfolios/{portfolio_id}/sell")

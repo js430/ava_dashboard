@@ -1702,3 +1702,37 @@ form submits — but tests should avoid tie values rather than encode one
 engine's answer.
 
 ---
+
+## 2026-08-20 — Collectr import shipped: paste, not link
+
+**Status before:** `collectr_import.py` was committed but had NO routes and
+NO UI. It was unreachable. Flagged at the time, then overtaken by other work.
+
+**Why it cannot be a link.** Measured, not assumed: a server-side GET of a
+share URL returns 81KB containing **zero holdings** — no "Qty:", no product
+names. Collectr renders everything client-side from
+`api-v2.getcollectr.com`, which answers **401** without the app's own auth
+header. Extracting that header from their bundle would be circumventing an
+access control and is refused. So the text the member can see is the only
+complete source we can legitimately read.
+
+**What shipped:** an "Import from Collectr" button on each portfolio opening
+a paste box. `read_any()` sniffs showcase text vs CSV. Preview shows what
+matched and what was skipped, with the reason; nothing is written until the
+member confirms.
+
+**The import re-matches server-side** from the pasted text rather than
+trusting ids from the browser — this writes to someone's holdings, and a
+hand-edited payload could otherwise attach any catalog row at any quantity.
+
+**Imported lots leave `unit_cost` blank on purpose**, so the retail default
+for the type (or market price) fills it and it is flagged as an estimate.
+The showcase shows current value, never what was paid.
+
+**Parser detail worth keeping:** blocks are cut on the "Qty: n" line and read
+backwards to the "$" value line. Page furniture above the first item (menus,
+the totals strip, sort/filter controls) is discarded by cutting at the LAST
+chrome line rather than trying to recognise every one. A bare money line must
+NOT be treated as chrome — an item's own value line is the anchor.
+
+---

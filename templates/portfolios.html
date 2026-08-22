@@ -101,6 +101,22 @@
   .quick:disabled { opacity: .45; cursor: default; }
   [data-theme="dark"] .quick { background: #24242b; border-color: #33333c; color: #c9c9d1; }
   [data-theme="dark"] .quick.on { background: #5865F2; color: #fff; }
+  #importText { width: 100%; font-family: inherit; font-size: 12.5px; padding: 10px;
+                border: 1px solid #ddd; border-radius: 8px; background: #fff;
+                color: #111; resize: vertical; }
+  #importText:focus { outline: none; border-color: #5865F2; }
+  .import-list { margin-top: 12px; max-height: 320px; overflow-y: auto;
+                 border: 1px solid #eee; border-radius: 8px; }
+  .import-head { padding: 8px 11px; font-size: 12px; font-weight: 600;
+                 background: #fafafb; border-bottom: 1px solid #eee; }
+  .import-row { padding: 6px 11px; font-size: 12.5px; display: flex;
+                justify-content: space-between; gap: 10px;
+                border-bottom: 1px solid #f4f4f5; }
+  .import-row:last-child { border-bottom: none; }
+  [data-theme="dark"] #importText { background: #24242b; border-color: #33333c; color: #e8e8ea; }
+  [data-theme="dark"] .import-list { border-color: #2c2c34; }
+  [data-theme="dark"] .import-head { background: #202027; border-bottom-color: #2c2c34; }
+  [data-theme="dark"] .import-row { border-bottom-color: #26262d; }
   .seg { display: inline-flex; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; }
   .seg button { font-family: inherit; font-size: 12.5px; padding: 7px 14px; border: none; background: #fff; color: #555; cursor: pointer; }
   .seg button.on { background: #5865F2; color: #fff; }
@@ -177,6 +193,7 @@
       <div style="display:flex;gap:6px;">
         <button class="btn btn-primary btn-sm" onclick="showAdd()">Add an item</button>
         <button class="btn btn-sm" onclick="renamePortfolio()">Rename</button>
+        <button class="btn btn-sm" onclick="showImport()">Import from Collectr</button>
         <button class="btn btn-sm btn-danger" onclick="deletePortfolio()">Delete portfolio</button>
       </div>
     </div>
@@ -352,6 +369,34 @@
       <button class="btn" onclick="cancelSell()">Cancel</button>
     </div>
     <div class="msg" id="sellMsg" role="status" aria-live="polite"></div>
+  </div>
+
+
+  <!-- Import from Collectr. A pasted list, not a link: a share URL fetched
+       server-side returns the page shell with no holdings in it. -->
+  <div class="card" id="importCard" style="display:none;">
+    <div class="card-title">Import from Collectr</div>
+    <p class="hint" style="margin-bottom:10px;">
+      Open your Collectr showcase in another tab, select the whole page
+      (Ctrl&#8209;A), copy, and paste it below. A CSV export works here too.
+      Nothing is added until you have seen what matched.
+    </p>
+    <textarea id="importText" rows="6"
+              placeholder="Paste your Collectr list here…"></textarea>
+    <div class="hint">
+      Quantities come across; what you paid does not &mdash; the showcase
+      doesn't show it. Prices are filled from the usual retail cost and
+      marked as estimates you can correct.
+    </div>
+    <div style="display:flex;gap:8px;margin-top:12px;">
+      <button class="btn btn-primary" id="importPreviewBtn"
+              onclick="previewImport()">Check what matches</button>
+      <button class="btn" id="importRunBtn" onclick="runImport()" disabled>
+        Add matched items</button>
+      <button class="btn" onclick="closeImport()">Cancel</button>
+    </div>
+    <div class="msg" id="importMsg" role="status" aria-live="polite"></div>
+    <div id="importRows" class="import-list" style="display:none;"></div>
   </div>
 
   <div id="noPortfolios" class="card empty" style="display:none;">
@@ -1177,6 +1222,96 @@ async function removeLot(id) {
     await api("/api/portfolios/lots/" + id + "/delete", { method: "POST" });
     await selectPortfolio(activeId);
   } catch (e) { alert(e.message); }
+}
+
+// ── Import from Collectr ────────────────────────────────────────────────
+// Paste-driven, not link-driven: fetching a share URL server-side returns
+// the page shell with no holdings, because Collectr loads them client-side
+// from an API that needs its own credentials.
+function showImport() {
+  document.getElementById("importCard").style.display = "block";
+  document.getElementById("importText").value = "";
+  document.getElementById("importRows").style.display = "none";
+  document.getElementById("importRunBtn").disabled = true;
+  say("importMsg", "");
+  document.getElementById("importCard").scrollIntoView(
+    { behavior: "smooth", block: "nearest" });
+}
+
+function closeImport() {
+  document.getElementById("importCard").style.display = "none";
+}
+
+async function previewImport() {
+  const text = document.getElementById("importText").value;
+  const btn = document.getElementById("importPreviewBtn");
+  btn.disabled = true;
+  say("importMsg", "Matching against the catalog…", "busy");
+  try {
+    const data = await api("/api/portfolios/" + activeId + "/collectr/preview", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text })
+    });
+    renderImportPreview(data);
+  } catch (e) {
+    document.getElementById("importRows").style.display = "none";
+    document.getElementById("importRunBtn").disabled = true;
+    say("importMsg", e.message, "err");
+  }
+  btn.disabled = false;
+}
+
+function renderImportPreview(data) {
+  const s = data.summary;
+  const box = document.getElementById("importRows");
+  const matched = (data.rows || []).filter(r => r.status === "matched");
+  const skipped = (data.rows || []).filter(r => r.status !== "matched");
+
+  box.innerHTML =
+    '<div class="import-head">Will add ' + s.matched + ' of ' + s.items +
+      ' item' + (s.items === 1 ? '' : 's') + ' — ' + s.units + ' unit' +
+      (s.units === 1 ? '' : 's') + '</div>' +
+    matched.map(r =>
+      '<div class="import-row"><span>' + esc(r.name) + '</span>' +
+      '<span class="muted">x' + r.quantity + ' → ' + esc(r.match_name || "") +
+      '</span></div>').join("") +
+    (skipped.length
+      ? '<div class="import-head">Skipped ' + skipped.length +
+        ' — nothing close enough in the catalog</div>' +
+        skipped.map(r =>
+          '<div class="import-row"><span class="muted">' + esc(r.name) +
+          '</span><span class="muted">' + esc(r.reason || "") + '</span></div>'
+        ).join("")
+      : "");
+  box.style.display = "block";
+  document.getElementById("importRunBtn").disabled = s.matched === 0;
+  say("importMsg", s.matched
+    ? "Read " + s.items + " item(s) from your " +
+      (data.source === "csv" ? "CSV" : "showcase") + "."
+    : "Nothing matched. Stock the sets first, then try again.",
+    s.matched ? "ok" : "busy");
+}
+
+async function runImport() {
+  const text = document.getElementById("importText").value;
+  const btn = document.getElementById("importRunBtn");
+  btn.disabled = true;
+  say("importMsg", "Adding…", "busy");
+  try {
+    const data = await api("/api/portfolios/" + activeId + "/collectr/import", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text })
+    });
+    let note = "Added " + data.added + " item(s).";
+    if (data.skipped) note += " Skipped " + data.skipped + " that didn't match.";
+    if (data.failed) note += " " + data.failed + " could not be added.";
+    say("importMsg", note, "ok");
+    document.getElementById("importRows").style.display = "none";
+    await selectPortfolio(activeId);
+  } catch (e) {
+    say("importMsg", e.message, "err");
+    btn.disabled = false;
+  }
 }
 
 (function init() {

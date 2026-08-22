@@ -341,3 +341,135 @@ def parse_csv(text: str):
             "unit_cost": _first(clean, _COST_KEYS),
         })
     return items
+
+
+# ── Reading a pasted Collectr showcase ───────────────────────────────────
+# WHY PASTE AND NOT A LINK
+#     A server-side GET of a share URL returns the page shell and nothing
+#     else: 81KB of HTML with zero holdings in it. Everything is fetched
+#     client-side from api-v2.getcollectr.com, which answers 401 without the
+#     app's own auth header. So the link alone cannot be read by us, and the
+#     text the member can see is the only complete source.
+#
+# THE LAYOUT, decoded from a real showcase
+#     A sealed row:                     A card row:
+#         Prismatic Evolutions ETB          Charizard ex
+#         Prismatic Evolutions              Promo
+#         $251.00                           •
+#         -$4.12                            34/53
+#         (-1.61%)                          Near Mint
+#         Qty: 8                            •
+#                                           Reverse Holofoil
+#                                           $31.38
+#                                           -$0.27
+#                                           (-0.85%)
+#                                           Qty: 1
+#     The only reliable anchors are the "Qty: n" line and the "$" value line,
+#     so blocks are cut on Qty and read backwards from there. Everything
+#     between the value line and the block start is the name plus whatever
+#     subtitle lines that row happens to carry.
+
+_QTY_LINE = re.compile(r"^Qty:\s*(\d+)\s*$", re.I)
+_MONEY_LINE = re.compile(r"^[-+]?\$[\d,]+(?:\.\d{2})?$")
+_PCT_LINE = re.compile(r"^\([-+]?[\d.]+%\)$")
+# Lines the showcase chrome adds around the list — never part of an item.
+# Page furniture that appears ABOVE the first item — menus, the totals
+# strip, the sort and filter controls, the portfolio tab labels. The block
+# before the first "Qty:" contains all of it, so rather than trying to
+# recognise every possible line, cut at the LAST one of these and keep what
+# follows. Later blocks contain none of it and are unaffected.
+_CHROME = re.compile(
+    r"^(open main menu|command palette|search|clear|filters?|sort by:?|"
+    r"portfolio:?|usd|login|log in|explore|sets|shop|showcase|about us|"
+    r"discord|instagram|facebook|estimated portfolio value|total cards|"
+    r"total sealed|total graded|best match|find a product|sealed|unsealed|"
+    r"cards|graded|all)$", re.I)
+# Deliberately NOT matching a bare money line here: the totals strip's figure
+# ("$67,462.68") sits above the named labels and is cut with them, whereas an
+# ITEM's value line sits inside the block and must survive.
+# A bullet used as a separator inside a card row. Dropped from the name
+# lines, but never treated as a boundary — a card block is full of them.
+_BULLET = re.compile(r"^[•·]$")
+
+
+def parse_showcase_text(text: str):
+    """Items from a pasted Collectr showcase page.
+
+    Returns the same shape as the CSV and payload readers: name, quantity,
+    set_name. No prices — the showcase shows current value, never what was
+    paid, so cost basis has to come from somewhere else.
+    """
+    if not text or "Qty:" not in text:
+        return []
+    lines = [l.strip() for l in text.splitlines()]
+    lines = [l for l in lines if l]
+
+    items = []
+    block = []
+    for line in lines:
+        m = _QTY_LINE.match(line)
+        if not m:
+            block.append(line)
+            continue
+        item = _read_block(block, int(m.group(1)))
+        if item:
+            items.append(item)
+        block = []
+        if len(items) >= MAX_ITEMS:
+            break
+    return items
+
+
+def _read_block(block, quantity):
+    """One item from the lines preceding its "Qty:" line."""
+    if not block:
+        return None
+    # The value line is the last money-looking line; everything before the
+    # trailing value/change/percent group is the name and its subtitles.
+    value_at = None
+    for i in range(len(block) - 1, -1, -1):
+        if _MONEY_LINE.match(block[i]):
+            value_at = i
+            break
+        if not (_PCT_LINE.match(block[i]) or _MONEY_LINE.match(block[i])):
+            # Hit real content before finding a value — malformed block.
+            break
+    if value_at is None:
+        return None
+
+    head = block[:value_at]
+    # Drop everything up to and including the last piece of page furniture.
+    last_chrome = -1
+    for i, line in enumerate(head):
+        if _CHROME.match(line):
+            last_chrome = i
+    head = [l for l in head[last_chrome + 1:] if not _BULLET.match(l)]
+    if not head:
+        return None
+    name = head[0]
+    # A set/subtitle line, when the row has one. Cards carry several (rarity,
+    # number, condition, printing); the first is the closest thing to a set.
+    set_name = head[1] if len(head) > 1 else ""
+    return {
+        "name": name,
+        "quantity": quantity,
+        "set_name": set_name,
+        "card_number": extract_number(" ".join(head)),
+        "unit_cost": None,          # the showcase never shows what was paid
+    }
+
+
+def read_any(text: str):
+    """Items from whatever the member pasted: showcase text or CSV.
+
+    Sniffed rather than asked about, because "which format is this?" is a
+    question the page can answer for itself.
+    """
+    if not text or not text.strip():
+        return [], "empty"
+    if "Qty:" in text:
+        return parse_showcase_text(text), "showcase"
+    rows = parse_csv(text)
+    if rows:
+        return rows, "csv"
+    return [], "unrecognised"
