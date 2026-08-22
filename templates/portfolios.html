@@ -48,6 +48,15 @@
   .down { color: #b42318; }
 
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  tr.panel-row > td { padding: 0 0 12px; border-bottom: none; }
+  .lot-search-bar { display: flex; align-items: center; gap: 10px;
+                    margin-bottom: 10px; }
+  #lotSearch { flex: 0 1 280px; padding: 7px 10px; font-family: inherit;
+               font-size: 12.5px; border: 1px solid #ddd; border-radius: 8px;
+               background: #fff; color: #111; }
+  #lotSearch:focus { outline: none; border-color: #5865F2; }
+  [data-theme="dark"] #lotSearch { background: #24242b; border-color: #33333c;
+                                   color: #e8e8ea; }
   th.sortable { cursor: pointer; user-select: none; }
   th.sortable:hover { color: #5865F2; }
   th.sorted { color: #5865F2; }
@@ -227,6 +236,11 @@
         <button class="btn btn-sm btn-danger" onclick="deletePortfolio()">Delete portfolio</button>
       </div>
     </div>
+    <div class="lot-search-bar" id="lotSearchBar">
+      <input type="search" id="lotSearch" placeholder="Search your holdings…"
+             oninput="onLotSearch()" aria-label="Search holdings by name">
+      <span class="muted" id="lotSearchNote"></span>
+    </div>
     <div style="overflow-x:auto;">
       <table id="lots">
         <thead>
@@ -245,6 +259,9 @@
         </thead>
         <tbody id="lotRows"></tbody>
       </table>
+    </div>
+    <div id="noLotMatches" class="empty" style="display:none;">
+      Nothing here matches that. Clear the search to see everything again.
     </div>
     <div id="emptyLots" class="empty" style="display:none;">
       Nothing in this portfolio yet.<br>Add a card or a sealed product to start tracking what it's doing.
@@ -576,6 +593,10 @@ function renderTabs(data) {
 async function selectPortfolio(id) {
   activeId = id;
   cancelAdd();
+  // A filter left over from the last portfolio would silently blank this one.
+  lotSearch = "";
+  const searchBox = document.getElementById("lotSearch");
+  if (searchBox) searchBox.value = "";
   renderTabs({ items_used: undefined });
   const data = await api("/api/portfolios/" + id + "/lots");
   renderSummary(data.summary);
@@ -674,18 +695,51 @@ function initSorting() {
 
 let currentPositions = [];
 
+// Filtering happens here alongside the sort, for the same reason: the whole
+// portfolio is already loaded, and going back to the server on every keypress
+// would throw away expanded rows and any open panel.
+let lotSearch = "";
+
+function onLotSearch() {
+  const box = document.getElementById("lotSearch");
+  lotSearch = (box ? box.value : "").trim().toLowerCase();
+  renderPositions(currentPositions);
+}
+
+function matchesLotSearch(pos) {
+  if (!lotSearch) return true;
+  // Set name counts as well as the item name: for a card they are separate
+  // fields, so searching "prismatic" should still find the cards from it.
+  return (pos.name || "").toLowerCase().indexOf(lotSearch) !== -1
+      || (pos.set_name || "").toLowerCase().indexOf(lotSearch) !== -1;
+}
+
 function renderPositions(positions) {
   currentPositions = positions;
   const body = document.getElementById("lotRows");
+  // Rescue any docked panel before the rows it lives in are thrown away.
+  undockPanel("sellCard");
+  undockPanel("addCard");
   body.innerHTML = "";
+  const shown = positions.filter(matchesLotSearch);
+
+  // An empty portfolio and a search that found nothing are different things
+  // and read differently.
   document.getElementById("emptyLots").style.display = positions.length ? "none" : "block";
-  document.getElementById("lots").style.display = positions.length ? "table" : "none";
+  document.getElementById("noLotMatches").style.display =
+    (positions.length && !shown.length) ? "block" : "none";
+  document.getElementById("lots").style.display = shown.length ? "table" : "none";
+  document.getElementById("lotSearchNote").textContent =
+    lotSearch ? "Showing " + shown.length + " of " + positions.length : "";
+  document.getElementById("lotSearchBar").style.display =
+    positions.length ? "flex" : "none";
   markSortedColumn();
 
-  sortedPositions(positions).forEach(pos => {
+  sortedPositions(shown).forEach(pos => {
     const key = pos.kind + ":" + pos.item_id;
     const open = expanded.has(key);
     const tr = document.createElement("tr");
+    tr.setAttribute("data-key", key);
     const kindPill = pos.kind === "sealed"
       ? '<span class="pill pill-sealed">Sealed</span>'
       : '<span class="pill">Card</span>';
@@ -763,6 +817,9 @@ function renderPositions(positions) {
       sr.querySelector("[data-del]").onclick = () => removeLot(l.id);
     });
   });
+
+  // Expanding a row rebuilds the table; put any open panel back where it was.
+  redockOpenPanels();
 }
 
 function signed(amount, pct) {
@@ -776,6 +833,71 @@ function signed(amount, pct) {
 }
 
 // ── Selling ─────────────────────────────────────────────────────────────
+// ── Panels that open where you clicked ──────────────────────────────────
+// Sell and Buy more used to appear below the whole table, which on a long
+// portfolio meant losing your place. The panel is MOVED into a row of the
+// table instead of being duplicated there, so it keeps its ids, its values
+// and its event listeners.
+const panelHome = {};        // panel id -> where it lives when not docked
+let sellAnchorKey = null;
+let addAnchorKey = null;
+
+function positionKey(pos) {
+  return pos.kind + ":" + pos.item_id;
+}
+
+function rowForKey(key) {
+  return Array.from(document.querySelectorAll("#lotRows tr[data-key]"))
+              .filter(tr => tr.getAttribute("data-key") === key)[0] || null;
+}
+
+function rememberHome(id) {
+  if (panelHome[id]) return;
+  const el = document.getElementById(id);
+  panelHome[id] = { parent: el.parentNode, next: el.nextSibling };
+}
+
+function undockPanel(id) {
+  rememberHome(id);
+  const el = document.getElementById(id);
+  const row = el.parentNode && el.parentNode.closest
+    ? el.parentNode.closest("tr.panel-row") : null;
+  panelHome[id].parent.insertBefore(el, panelHome[id].next);
+  if (row) row.remove();
+}
+
+function dockPanel(id, key) {
+  rememberHome(id);
+  undockPanel(id);
+  const el = document.getElementById(id);
+  const anchor = key ? rowForKey(key) : null;
+  // No anchor — the row is filtered out, or this is the top "Add an item"
+  // button. The panel simply stays where it normally lives.
+  if (!anchor) return;
+  // Sit after the position's expanded purchases rather than between the
+  // position and its own breakdown.
+  let after = anchor;
+  while (after.nextSibling && after.nextSibling.className === "sub-row") {
+    after = after.nextSibling;
+  }
+  const tr = document.createElement("tr");
+  tr.className = "panel-row";
+  const td = document.createElement("td");
+  td.colSpan = 10;
+  tr.appendChild(td);
+  after.parentNode.insertBefore(tr, after.nextSibling);
+  td.appendChild(el);
+}
+
+function redockOpenPanels() {
+  if (sellAnchorKey && document.getElementById("sellCard").style.display !== "none") {
+    dockPanel("sellCard", sellAnchorKey);
+  }
+  if (addAnchorKey && document.getElementById("addCard").style.display !== "none") {
+    dockPanel("addCard", addAnchorKey);
+  }
+}
+
 function showSell(pos) {
   sellPos = pos;
   cancelAdd();
@@ -800,12 +922,16 @@ function showSell(pos) {
   document.getElementById("sellPreview").style.display = "none";
   document.getElementById("sellMsg").innerHTML = "";
   document.getElementById("sellCard").style.display = "block";
+  sellAnchorKey = positionKey(pos);
+  dockPanel("sellCard", sellAnchorKey);
   document.getElementById("sellCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
   refreshSellPreview();
 }
 
 function cancelSell() {
   document.getElementById("sellCard").style.display = "none";
+  undockPanel("sellCard");
+  sellAnchorKey = null;
   sellPos = null;
 }
 
@@ -982,11 +1108,17 @@ function showAdd(pos) {
                    productType: pos.product_type, marketPrice: pos.unit_price };
     document.getElementById("pickStep").style.display = "none";
     showChosen();
+    addAnchorKey = positionKey(pos);
+    dockPanel("addCard", addAnchorKey);
+    document.getElementById("addCard").scrollIntoView(
+      { behavior: "smooth", block: "nearest" });
   }
 }
 
 function cancelAdd() {
   document.getElementById("addCard").style.display = "none";
+  undockPanel("addCard");
+  addAnchorKey = null;
   editingLotId = null;
   chosenItem = null;
 }
