@@ -3139,12 +3139,21 @@ async def api_portfolio_lot_add(request: Request, portfolio_id: int,
     return JSONResponse({"id": lot["id"]}, headers={"Cache-Control": "no-store"})
 
 
+# The showcase text for a very large collection is still only a few hundred
+# KB; this is a ceiling on what a browser tab can hand us, not a real limit.
+MAX_IMPORT_CHARS = 2_000_000
+
 # ── Importing a Collectr portfolio ───────────────────────────────────────
-# The member pastes either their showcase page's text or a CSV export. NOT a
-# link: a server-side GET of a share URL returns the page shell with zero
-# holdings in it — everything is loaded client-side from an API that answers
-# 401 without the app's own credentials. The text on screen is the only
-# complete source we can legitimately read.
+# The text arrives from the member's own browser, via the bookmark button on
+# the portfolios page: it scrolls their showcase to the end and hands the page
+# text over by postMessage.
+#
+# WHY NOT JUST READ THE LINK. A share URL fetched from here does return
+# holdings — but only the first 30, every time. That cap is baked into the
+# server-rendered prefetch: limit/searchString/id are ignored outright, and
+# groupId/sortType/sortOrder are echoed back but change nothing. There is no
+# cursor and no paged sub-route. The rest of the collection only appears as
+# the page is scrolled, in the browser. Hence the bookmark.
 #
 # Nothing is written until the member has seen what matched and what did not.
 
@@ -3161,12 +3170,61 @@ async def _collectr_catalog(pool, kinds):
                 "SELECT id, name, set_name, product_type FROM sealed_products")
             sealed = [dict(r) for r in rows]
         if "card" in kinds:
+            # catalog_cards calls it card_name, and its id is NOT what a lot
+            # points at — see _tracked_card_id below.
             rows = await conn.fetch(
-                "SELECT id, name, set_name, card_number, rarity AS variant, "
-                "tcgplayer_id, language FROM catalog_cards "
-                "WHERE game = 'pokemon' LIMIT 60000")
+                "SELECT id, card_name AS name, set_name, card_number, "
+                "rarity AS variant, tcgplayer_id, language "
+                "FROM catalog_cards WHERE game = 'pokemon' LIMIT 60000")
             singles = [dict(r) for r in rows]
     return singles, sealed
+
+
+async def _tracked_card_id(conn, match: dict):
+    """The shared-catalog id a card lot has to reference.
+
+    Matches come out of catalog_cards, but lots point at tracked_cards — the
+    table the nightly price ingest reads (same reasoning as
+    api_portfolio_resolve_card). An unseen card is added there, which is what
+    makes it eligible for pricing.
+
+    Returns None when the card isn't already known and the shared catalog is
+    full, so that one row is skipped instead of the whole import failing.
+    """
+    name = (match.get("name") or "").strip()[:200]
+    set_name = (match.get("set_name") or "").strip()[:200]
+    card_number = (match.get("card_number") or "").strip()[:40]
+    variant = (match.get("variant") or "").strip()[:200] or None
+    tcgplayer_id = (match.get("tcgplayer_id") or "").strip()[:40] or None
+    language = price_sources.ppt_language(match.get("language"))
+
+    found = await conn.fetchrow(
+        "SELECT id FROM tracked_cards WHERE game = 'pokemon' AND name = $1 "
+        "AND set_name = $2 AND card_number = $3 AND language = $4",
+        name, set_name, card_number, language)
+    if found:
+        return found["id"]
+
+    # Checked before inserting rather than after, so the ceiling never blocks
+    # a card the catalog already holds.
+    total = await conn.fetchval("SELECT COUNT(*) FROM tracked_cards")
+    if total >= MAX_TRACKED_CARDS:
+        return None
+
+    inserted = await conn.fetchrow(
+        "INSERT INTO tracked_cards (name, game, set_name, card_number, variant, "
+        "tcgplayer_id, language) VALUES ($1, 'pokemon', $2, $3, $4, $5, $6) "
+        "ON CONFLICT (game, name, set_name, card_number, language) "
+        "DO NOTHING RETURNING id",
+        name, set_name, card_number, variant, tcgplayer_id, language)
+    if inserted:
+        return inserted["id"]
+    # Lost a race between the lookup and the insert; read it back.
+    raced = await conn.fetchrow(
+        "SELECT id FROM tracked_cards WHERE game = 'pokemon' AND name = $1 "
+        "AND set_name = $2 AND card_number = $3 AND language = $4",
+        name, set_name, card_number, language)
+    return raced["id"] if raced else None
 
 
 @app.post("/api/portfolios/{portfolio_id}/collectr/preview")
@@ -3177,13 +3235,16 @@ async def api_collectr_preview(request: Request, portfolio_id: int,
     await _require_own_portfolio(request, user, portfolio_id)
     body = await request.json()
     text = body.get("text") or ""
+    if len(text) > MAX_IMPORT_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail="That collection is too large to import in one go.")
     items, source = collectr_import.read_any(text)
     if not items:
         detail = {
-            "empty": "Paste your Collectr list first.",
-            "unrecognised": ("That doesn't look like a Collectr page or a CSV "
-                             "export. Open your showcase, select all, copy, and "
-                             "paste it here."),
+            "empty": "Nothing came across from your Collectr tab.",
+            "unrecognised": ("That didn't look like a Collectr showcase. Open "
+                             "your showcase page, then click the bookmark."),
         }.get(source, "Nothing to import.")
         raise HTTPException(status_code=400, detail=detail)
 
@@ -3225,6 +3286,10 @@ async def api_collectr_import(request: Request, portfolio_id: int,
     await _require_own_portfolio(request, user, portfolio_id)
     body = await request.json()
     text = body.get("text") or ""
+    if len(text) > MAX_IMPORT_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail="That collection is too large to import in one go.")
     items, source = collectr_import.read_any(text)
     if not items:
         raise HTTPException(status_code=400, detail="Nothing to import.")
@@ -3237,9 +3302,31 @@ async def api_collectr_import(request: Request, portfolio_id: int,
     pool = request.app.state.db
     added = failed = 0
     problems = []
-    for row in rows:
+
+    # Cards are resolved to shared-catalog ids up front, on one connection, so
+    # that add_lot below never has to acquire a second one while this holds it.
+    resolved = {}
+    card_rows = [i for i, r in enumerate(rows)
+                 if r["status"] == "matched" and r["match"] and r["kind"] == "card"]
+    if card_rows:
+        async with pool.acquire() as conn:
+            for i in card_rows:
+                resolved[i] = await _tracked_card_id(conn, rows[i]["match"])
+
+    for index, row in enumerate(rows):
         if row["status"] != "matched" or not row["match"]:
             continue
+        if row["kind"] == "card":
+            item_id = resolved.get(index)
+            if item_id is None:
+                failed += 1
+                if len(problems) < 10:
+                    problems.append({
+                        "name": row["name"],
+                        "error": "The shared card catalog is full."})
+                continue
+        else:
+            item_id = row["match"]["id"]
         payload = {
             "quantity": row["quantity"],
             # Left blank on purpose: add_lot fills it from the retail default
@@ -3251,8 +3338,7 @@ async def api_collectr_import(request: Request, portfolio_id: int,
             "notes": "Imported from Collectr",
         }
         lot, error = await portfolios.add_lot(
-            pool, int(user["id"]), portfolio_id, row["kind"],
-            row["match"]["id"], payload)
+            pool, int(user["id"]), portfolio_id, row["kind"], item_id, payload)
         if error:
             failed += 1
             if len(problems) < 10:

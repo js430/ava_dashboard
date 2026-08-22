@@ -101,10 +101,14 @@
   .quick:disabled { opacity: .45; cursor: default; }
   [data-theme="dark"] .quick { background: #24242b; border-color: #33333c; color: #c9c9d1; }
   [data-theme="dark"] .quick.on { background: #5865F2; color: #fff; }
-  #importText { width: 100%; font-family: inherit; font-size: 12.5px; padding: 10px;
-                border: 1px solid #ddd; border-radius: 8px; background: #fff;
-                color: #111; resize: vertical; }
-  #importText:focus { outline: none; border-color: #5865F2; }
+  .bookmarklet { display: inline-block; padding: 8px 14px; border-radius: 8px;
+                 background: #5865F2; color: #fff; font-weight: 600; font-size: 13px;
+                 text-decoration: none; cursor: grab; border: 1px solid #4650c8; }
+  .bookmarklet:active { cursor: grabbing; }
+  .import-step { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 14px; }
+  .import-step .n { flex: none; width: 22px; height: 22px; border-radius: 50%;
+                    background: #5865F2; color: #fff; font-size: 12px; font-weight: 700;
+                    display: flex; align-items: center; justify-content: center; }
   .import-list { margin-top: 12px; max-height: 320px; overflow-y: auto;
                  border: 1px solid #eee; border-radius: 8px; }
   .import-head { padding: 8px 11px; font-size: 12px; font-weight: 600;
@@ -113,7 +117,6 @@
                 justify-content: space-between; gap: 10px;
                 border-bottom: 1px solid #f4f4f5; }
   .import-row:last-child { border-bottom: none; }
-  [data-theme="dark"] #importText { background: #24242b; border-color: #33333c; color: #e8e8ea; }
   [data-theme="dark"] .import-list { border-color: #2c2c34; }
   [data-theme="dark"] .import-head { background: #202027; border-bottom-color: #2c2c34; }
   [data-theme="dark"] .import-row { border-bottom-color: #26262d; }
@@ -372,28 +375,58 @@
   </div>
 
 
-  <!-- Import from Collectr. A pasted list, not a link: a share URL fetched
-       server-side returns the page shell with no holdings in it. -->
+  <!-- Import from Collectr. A bookmark button, not a paste: a share link read
+       from our side only ever returns the first 30 holdings, because the rest
+       load as you scroll. So the reading happens in the member's own browser,
+       on the page they already have open, and is handed here by postMessage. -->
   <div class="card" id="importCard" style="display:none;">
     <div class="card-title">Import from Collectr</div>
-    <p class="hint" style="margin-bottom:10px;">
-      Open your Collectr showcase in another tab, select the whole page
-      (Ctrl&#8209;A), copy, and paste it below. A CSV export works here too.
-      Nothing is added until you have seen what matched.
+    <p class="hint" style="margin-bottom:14px;">
+      Set this up once, then it's one click every time after.
     </p>
-    <textarea id="importText" rows="6"
-              placeholder="Paste your Collectr list here…"></textarea>
+
+    <div class="import-step">
+      <div class="n">1</div>
+      <div>
+        <div>Drag this button up onto your bookmarks bar:</div>
+        <div style="margin-top:8px;">
+          <a class="bookmarklet" id="collectrBookmarklet"
+             onclick="return bookmarkletClicked(event);">Send to Nexus</a>
+        </div>
+        <div class="hint" style="margin-top:6px;">
+          No bookmarks bar showing? Press Ctrl&#8209;Shift&#8209;B first.
+        </div>
+      </div>
+    </div>
+
+    <div class="import-step">
+      <div class="n">2</div>
+      <div>
+        Open your Collectr showcase and click that bookmark. It scrolls
+        through your whole collection and sends it back here.
+      </div>
+    </div>
+
+    <div class="import-step">
+      <div class="n">3</div>
+      <div>
+        <div>Return to this tab, look over what matched, and add it.</div>
+        <div style="margin-top:8px;">
+          <label class="hint" for="importTarget">Add to</label>
+          <select id="importTarget" style="margin-left:6px;"></select>
+        </div>
+      </div>
+    </div>
+
     <div class="hint">
       Quantities come across; what you paid does not &mdash; the showcase
       doesn't show it. Prices are filled from the usual retail cost and
       marked as estimates you can correct.
     </div>
     <div style="display:flex;gap:8px;margin-top:12px;">
-      <button class="btn btn-primary" id="importPreviewBtn"
-              onclick="previewImport()">Check what matches</button>
-      <button class="btn" id="importRunBtn" onclick="runImport()" disabled>
+      <button class="btn btn-primary" id="importRunBtn" onclick="runImport()" disabled>
         Add matched items</button>
-      <button class="btn" onclick="closeImport()">Cancel</button>
+      <button class="btn" onclick="closeImport()">Close</button>
     </div>
     <div class="msg" id="importMsg" role="status" aria-live="polite"></div>
     <div id="importRows" class="import-list" style="display:none;"></div>
@@ -418,6 +451,7 @@ const DEFAULT_COSTS = {{ default_costs | tojson }};
 
 let portfolios = [];
 let activeId = null;
+let readyPromise = null;   // resolves once loadPortfolios() has settled
 let addKind = "card";
 let chosenItem = null;     // {kind, id, label}
 let editingLotId = null;
@@ -1225,40 +1259,140 @@ async function removeLot(id) {
 }
 
 // ── Import from Collectr ────────────────────────────────────────────────
-// Paste-driven, not link-driven: fetching a share URL server-side returns
-// the page shell with no holdings, because Collectr loads them client-side
-// from an API that needs its own credentials.
+// A bookmark button, not a paste. Reading a share link from our side returns
+// only the first 30 holdings — everything after that loads as you scroll —
+// and there is no page or size parameter that lifts the cap. So the reading
+// happens in the member's own browser, on a page they already have open, and
+// comes back here by postMessage. Nothing of ours ever calls Collectr.
+const COLLECTR_ORIGIN = "https://app.getcollectr.com";
+let pendingImportText = "";
+let importReceived = false;
+
+// Runs on the Collectr tab, never on this one: it is serialised with
+// toString() into the bookmark, so it must not reference anything outside
+// itself. The window is opened first, while the click is still the current
+// user gesture, or the pop-up blocker eats it.
+async function collectrGrabber(target) {
+  const w = window.open(target, "_blank");
+  if (!w) {
+    alert("Allow pop-ups for this site, then click the bookmark again.");
+    return;
+  }
+  const origin = new URL(target).origin;
+  const box = document.createElement("div");
+  box.style.cssText = "position:fixed;z-index:2147483647;left:16px;bottom:16px;" +
+    "padding:10px 14px;background:#111;color:#fff;font:13px sans-serif;" +
+    "border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.4)";
+  document.body.appendChild(box);
+  const count = () => (document.body.innerText.match(/Qty:/g) || []).length;
+
+  // The list loads a page at a time, so scroll until the count stops growing.
+  // Capped so an enormous collection can't spin here forever.
+  let last = -1, stable = 0;
+  for (let i = 0; i < 80 && stable < 3; i++) {
+    window.scrollTo(0, document.body.scrollHeight);
+    await new Promise(r => setTimeout(r, 1200));
+    const n = count();
+    stable = (n === last) ? stable + 1 : 0;
+    last = n;
+    box.textContent = "Reading your collection… " + n + " items";
+  }
+  if (!last) {
+    box.textContent = "No items here — open your showcase first.";
+    setTimeout(() => box.remove(), 6000);
+    return;
+  }
+
+  const text = document.body.innerText;
+  let done = false;
+  window.addEventListener("message", (e) => {
+    if (e.origin === origin && e.data && e.data.type === "nexus-got-it") done = true;
+  });
+  // Sent on a loop because the other tab may still be loading. It acks once.
+  for (let i = 0; i < 60 && !done; i++) {
+    w.postMessage({ type: "collectr-import", text: text }, origin);
+    await new Promise(r => setTimeout(r, 500));
+  }
+  box.textContent = done
+    ? "Sent " + last + " items. Check the Nexus tab."
+    : "Couldn't reach the Nexus tab.";
+  setTimeout(() => box.remove(), 6000);
+}
+
+function bookmarkletUrl() {
+  const target = location.origin + "/portfolios?import=collectr";
+  return "javascript:" + encodeURIComponent(
+    "(" + collectrGrabber.toString() + ")(" + JSON.stringify(target) + ")");
+}
+
+function bookmarkletClicked(ev) {
+  ev.preventDefault();
+  say("importMsg", "Drag it up to your bookmarks bar — clicking it here " +
+      "does nothing. It only works on your Collectr page.", "busy");
+  return false;
+}
+
 function showImport() {
-  document.getElementById("importCard").style.display = "block";
-  document.getElementById("importText").value = "";
-  document.getElementById("importRows").style.display = "none";
-  document.getElementById("importRunBtn").disabled = true;
-  say("importMsg", "");
-  document.getElementById("importCard").scrollIntoView(
-    { behavior: "smooth", block: "nearest" });
+  const card = document.getElementById("importCard");
+  card.style.display = "block";
+  document.getElementById("collectrBookmarklet").href = bookmarkletUrl();
+  fillImportTargets();
+  card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function fillImportTargets() {
+  const sel = document.getElementById("importTarget");
+  sel.innerHTML = portfolios.map(p =>
+    '<option value="' + p.id + '">' + esc(p.name) + '</option>').join("");
+  if (activeId) sel.value = String(activeId);
+}
+
+function importTargetId() {
+  const sel = document.getElementById("importTarget");
+  return (sel && sel.value) || activeId;
 }
 
 function closeImport() {
   document.getElementById("importCard").style.display = "none";
 }
 
+// The handover. Origin is checked before the payload is looked at, and the
+// text is only ever matched server-side — nothing here decides what gets
+// written to a portfolio.
+window.addEventListener("message", async (e) => {
+  if (e.origin !== COLLECTR_ORIGIN) return;
+  const d = e.data;
+  if (!d || d.type !== "collectr-import" || typeof d.text !== "string") return;
+  if (e.source) {
+    try { e.source.postMessage({ type: "nexus-got-it" }, COLLECTR_ORIGIN); }
+    catch (err) { /* the sending tab went away; nothing to do */ }
+  }
+  if (importReceived) return;          // the sender retries until acked
+  importReceived = true;
+  pendingImportText = d.text;
+  await readyPromise;
+  if (!portfolios.length) {
+    say("importMsg", "Make a portfolio first, then import into it.", "err");
+    return;
+  }
+  showImport();
+  previewImport();
+});
+
 async function previewImport() {
-  const text = document.getElementById("importText").value;
-  const btn = document.getElementById("importPreviewBtn");
-  btn.disabled = true;
   say("importMsg", "Matching against the catalog…", "busy");
   try {
-    const data = await api("/api/portfolios/" + activeId + "/collectr/preview", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: text })
-    });
+    const data = await api(
+      "/api/portfolios/" + importTargetId() + "/collectr/preview", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: pendingImportText })
+      });
     renderImportPreview(data);
   } catch (e) {
     document.getElementById("importRows").style.display = "none";
     document.getElementById("importRunBtn").disabled = true;
     say("importMsg", e.message, "err");
   }
-  btn.disabled = false;
 }
 
 function renderImportPreview(data) {
@@ -1286,28 +1420,27 @@ function renderImportPreview(data) {
   box.style.display = "block";
   document.getElementById("importRunBtn").disabled = s.matched === 0;
   say("importMsg", s.matched
-    ? "Read " + s.items + " item(s) from your " +
-      (data.source === "csv" ? "CSV" : "showcase") + "."
+    ? "Read " + s.items + " item(s) from your showcase."
     : "Nothing matched. Stock the sets first, then try again.",
     s.matched ? "ok" : "busy");
 }
 
 async function runImport() {
-  const text = document.getElementById("importText").value;
+  const target = importTargetId();
   const btn = document.getElementById("importRunBtn");
   btn.disabled = true;
   say("importMsg", "Adding…", "busy");
   try {
-    const data = await api("/api/portfolios/" + activeId + "/collectr/import", {
+    const data = await api("/api/portfolios/" + target + "/collectr/import", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: text })
+      body: JSON.stringify({ text: pendingImportText })
     });
     let note = "Added " + data.added + " item(s).";
     if (data.skipped) note += " Skipped " + data.skipped + " that didn't match.";
     if (data.failed) note += " " + data.failed + " could not be added.";
     say("importMsg", note, "ok");
     document.getElementById("importRows").style.display = "none";
-    await selectPortfolio(activeId);
+    await selectPortfolio(target);
   } catch (e) {
     say("importMsg", e.message, "err");
     btn.disabled = false;
@@ -1319,10 +1452,19 @@ async function runImport() {
     document.getElementById("themeToggle").textContent = "☀️";
   }
   fillConditions("card");
-  loadPortfolios().catch(e => {
+  readyPromise = loadPortfolios().catch(e => {
     document.getElementById("noPortfolios").style.display = "block";
     document.getElementById("noPortfolios").textContent = e.message;
   });
+  // Opened by the bookmark: hold the panel open until the Collectr tab
+  // sends its list across.
+  if (new URLSearchParams(location.search).get("import") === "collectr") {
+    readyPromise.then(() => {
+      if (!portfolios.length) return;
+      showImport();
+      if (!importReceived) say("importMsg", "Waiting for your Collectr tab…", "busy");
+    });
+  }
 })();
 </script>
 </body>

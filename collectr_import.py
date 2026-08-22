@@ -344,12 +344,12 @@ def parse_csv(text: str):
 
 
 # ── Reading a pasted Collectr showcase ───────────────────────────────────
-# WHY PASTE AND NOT A LINK
-#     A server-side GET of a share URL returns the page shell and nothing
-#     else: 81KB of HTML with zero holdings in it. Everything is fetched
-#     client-side from api-v2.getcollectr.com, which answers 401 without the
-#     app's own auth header. So the link alone cannot be read by us, and the
-#     text the member can see is the only complete source.
+# WHERE THE TEXT COMES FROM
+#     The bookmark button on the portfolios page, which runs in the member's
+#     own browser: it scrolls their showcase to the end and hands the page
+#     text over. Reading the share link from the server instead returns a
+#     hard-capped first 30 holdings, with no parameter, cursor, or sub-route
+#     that lifts the cap — the rest only render as the page is scrolled.
 #
 # THE LAYOUT, decoded from a real showcase
 #     A sealed row:                     A card row:
