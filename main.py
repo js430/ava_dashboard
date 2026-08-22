@@ -3421,6 +3421,10 @@ async def api_collectr_import(request: Request, portfolio_id: int,
             "unit_cost": "",
             "condition": row["grade"] or portfolios.default_condition(row["kind"]),
             "acquired_from": "",
+            # The showcase doesn't say when anything was bought. Today is a
+            # date the member can see and correct, where a blank one just
+            # leaves every imported lot undated.
+            "purchased_on": datetime.now().date(),
             "notes": "Imported from Collectr",
         }
         lot, error = await portfolios.add_lot(

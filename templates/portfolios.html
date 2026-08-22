@@ -48,6 +48,10 @@
   .down { color: #b42318; }
 
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: #5865F2; }
+  th.sorted { color: #5865F2; }
+  [data-theme="dark"] th.sortable:hover, [data-theme="dark"] th.sorted { color: #8b93ff; }
   th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #888; padding: 8px 10px; border-bottom: 1px solid #e4e4e7; white-space: nowrap; }
   td { padding: 9px 10px; border-bottom: 1px solid #f1f1f4; vertical-align: middle; }
   tr:last-child td { border-bottom: none; }
@@ -109,23 +113,24 @@
   .import-step .n { flex: none; width: 22px; height: 22px; border-radius: 50%;
                     background: #5865F2; color: #fff; font-size: 12px; font-weight: 700;
                     display: flex; align-items: center; justify-content: center; }
-  .import-list { margin-top: 12px; max-height: 320px; overflow-y: auto;
-                 border: 1px solid #eee; border-radius: 8px; }
+  /* The whole list, laid out flat. It was a 320px scroller, which meant
+     hunting for a row inside a box inside a scrolling page. */
+  .import-list { margin-top: 12px; border: 1px solid #eee; border-radius: 8px;
+                 overflow: hidden; }
   .import-head { padding: 8px 11px; font-size: 12px; font-weight: 600;
                  background: #fafafb; border-bottom: 1px solid #eee; }
-  .import-row { padding: 6px 11px; font-size: 12.5px; display: flex;
-                align-items: center; gap: 10px;
-                border-bottom: 1px solid #f4f4f5; }
-  .import-row:last-child { border-bottom: none; }
-  .ir-name { flex: 1 1 40%; min-width: 0; overflow-wrap: anywhere; }
-  .ir-detail { flex: 1 1 40%; min-width: 0; text-align: right;
-               overflow-wrap: anywhere; }
-  .ir-actions { flex: none; display: flex; gap: 4px; }
+  .import-table { font-size: 12.5px; }
+  .import-table th:nth-child(2), .import-table td:nth-child(2) {
+                 text-align: right; white-space: nowrap; width: 1%; }
+  .import-table td:last-child { width: 1%; white-space: nowrap; }
+  .import-table tr:last-child td { border-bottom: none; }
+  .ir-name { overflow-wrap: anywhere; }
+  .ir-detail { overflow-wrap: anywhere; }
+  .ir-actions { display: flex; gap: 4px; justify-content: flex-end; }
   .ir-gone { opacity: .5; }
   .ir-gone .ir-name { text-decoration: line-through; }
   .ir-edited { color: #2e7d32; }
-  .ir-picker { padding: 8px 11px 12px; background: #fafafb;
-               border-bottom: 1px solid #f4f4f5; }
+  .ir-picker { background: #fafafb; }
   .ir-picker-head { font-size: 11.5px; font-weight: 600; color: #666;
                     margin: 6px 0 5px; }
   .ir-alt { display: block; width: 100%; text-align: left; margin-bottom: 4px; }
@@ -227,14 +232,14 @@
         <thead>
           <tr>
             <th style="width:24px;"></th>
-            <th>Item</th>
-            <th class="num">Held</th>
-            <th class="num">Avg cost</th>
-            <th class="num">Total cost</th>
-            <th class="num">Now ea.</th>
-            <th class="num">Value</th>
-            <th class="num">Unrealized</th>
-            <th class="num">Realized</th>
+            <th class="sortable" data-sort="name">Item</th>
+            <th class="num sortable" data-sort="quantity">Held</th>
+            <th class="num sortable" data-sort="avg_unit_cost">Avg cost</th>
+            <th class="num sortable" data-sort="cost_basis">Total cost</th>
+            <th class="num sortable" data-sort="unit_price">Now ea.</th>
+            <th class="num sortable" data-sort="market_value">Value</th>
+            <th class="num sortable" data-sort="unrealized">Unrealized</th>
+            <th class="num sortable" data-sort="realized">Realized</th>
             <th></th>
           </tr>
         </thead>
@@ -441,9 +446,10 @@
     </div>
 
     <div class="hint">
-      Quantities come across; what you paid does not &mdash; the showcase
-      doesn't show it. Prices are filled from the usual retail cost and
-      marked as estimates you can correct.
+      Quantities come across; what you paid and when does not &mdash; the
+      showcase doesn't show either. Prices are filled from the usual retail
+      cost and marked as estimates, and the purchase date is set to today.
+      Both are yours to correct afterwards.
     </div>
     <div style="display:flex;gap:8px;margin-top:12px;">
       <button class="btn btn-primary" id="importRunBtn" onclick="runImport()" disabled>
@@ -605,13 +611,78 @@ function card(label, value, sub, cls) {
     '<div class="stat-sub">' + esc(sub) + '</div></div>';
 }
 
+// Sorting is done here rather than in SQL: the whole portfolio is already on
+// the page, capped well below anything worth paging, and re-sorting in the
+// browser keeps expanded rows and the sell panel from being thrown away by a
+// round trip.
+let sortKey = null;
+let sortDir = "asc";
+
+function sortValueOf(pos) {
+  return pos[sortKey];
+}
+
+function sortedPositions(positions) {
+  if (!sortKey) return positions;
+  const dir = sortDir === "desc" ? -1 : 1;
+  return positions.slice().sort((x, y) => {
+    const a = sortValueOf(x), b = sortValueOf(y);
+    // Items with no price sit at the bottom either way: flipping them to the
+    // top on a descending sort buries the rows someone actually asked to see.
+    const aBlank = a === null || a === undefined || a === "";
+    const bBlank = b === null || b === undefined || b === "";
+    if (aBlank || bBlank) return (aBlank && bBlank) ? 0 : (aBlank ? 1 : -1);
+    if (sortKey === "name") {
+      return dir * String(a).localeCompare(String(b), undefined, { numeric: true });
+    }
+    // Money arrives as a string so the decimals survive the trip; compare it
+    // as a number or "9" sorts above "10".
+    return dir * (Number(a) - Number(b));
+  });
+}
+
+function markSortedColumn() {
+  document.querySelectorAll("#lots thead th.sortable").forEach(th => {
+    if (!th.hasAttribute("data-label")) {
+      th.setAttribute("data-label", th.textContent.trim());
+    }
+    const key = th.getAttribute("data-sort");
+    th.classList.toggle("sorted", key === sortKey);
+    th.setAttribute("aria-sort", key === sortKey
+      ? (sortDir === "asc" ? "ascending" : "descending") : "none");
+    const arrow = key === sortKey ? (sortDir === "asc" ? " ▲" : " ▼") : "";
+    th.textContent = th.getAttribute("data-label") + arrow;
+  });
+}
+
+function initSorting() {
+  document.querySelectorAll("#lots thead th.sortable").forEach(th => {
+    th.onclick = () => {
+      const key = th.getAttribute("data-sort");
+      if (sortKey === key) {
+        sortDir = sortDir === "asc" ? "desc" : "asc";
+      } else {
+        sortKey = key;
+        // Names read best A-Z; for money and counts the big ones are the
+        // point, so lead with those.
+        sortDir = key === "name" ? "asc" : "desc";
+      }
+      renderPositions(currentPositions);
+    };
+  });
+}
+
+let currentPositions = [];
+
 function renderPositions(positions) {
+  currentPositions = positions;
   const body = document.getElementById("lotRows");
   body.innerHTML = "";
   document.getElementById("emptyLots").style.display = positions.length ? "none" : "block";
   document.getElementById("lots").style.display = positions.length ? "table" : "none";
+  markSortedColumn();
 
-  positions.forEach(pos => {
+  sortedPositions(positions).forEach(pos => {
     const key = pos.kind + ":" + pos.item_id;
     const open = expanded.has(key);
     const tr = document.createElement("tr");
@@ -1457,32 +1528,41 @@ function drawImportRows() {
     (c.unmatched ? ' · ' + c.unmatched + ' unmatched' : '') +
     (c.removed ? ' · ' + c.removed + ' removed' : '') + '</div>'];
 
+  parts.push('<table class="import-table"><thead><tr>' +
+    '<th>From Collectr</th><th>Qty</th><th>Matched to</th><th></th>' +
+    '</tr></thead><tbody>');
+
   importRows.forEach((r, i) => {
     const detail = r.removed
       ? '<span class="muted">Removed</span>'
       : r.matched
-        ? '<span class="' + (r.edited ? 'ir-edited' : 'muted') + '">x' +
-          r.quantity + ' → ' + esc(r.matchName || '') +
+        ? '<span class="' + (r.edited ? 'ir-edited' : '') + '">' +
+          esc(r.matchName || '') +
           (r.matchSet ? ' <span class="muted">(' + esc(r.matchSet) + ')</span>' : '') +
-          (r.edited ? ' · your pick' : '') + '</span>'
+          (r.edited ? ' <span class="muted">· your pick</span>' : '') + '</span>'
         : '<span class="muted">' + esc(r.reason || 'No match') + '</span>';
 
     parts.push(
-      '<div class="import-row' + (r.removed ? ' ir-gone' : '') + '">' +
-        '<span class="ir-name">' + esc(r.name) + '</span>' +
-        '<span class="ir-detail">' + detail + '</span>' +
-        '<span class="ir-actions">' +
+      '<tr class="' + (r.removed ? 'ir-gone' : '') + '">' +
+        '<td class="ir-name">' + esc(r.name) + '</td>' +
+        '<td>' + r.quantity + '</td>' +
+        '<td class="ir-detail">' + detail + '</td>' +
+        '<td><span class="ir-actions">' +
           (r.removed
             ? '<button class="btn btn-sm" onclick="restoreImportRow(' + i + ')">Restore</button>'
             : '<button class="btn btn-sm" onclick="toggleImportPicker(' + i + ')">Change</button>' +
               '<button class="btn btn-sm btn-danger" title="Remove this item" ' +
               'onclick="removeImportRow(' + i + ')">&#10005;</button>') +
-        '</span>' +
-      '</div>' +
-      '<div class="ir-picker" id="irPicker' + i + '"' +
-        (importOpenPicker === i ? '' : ' style="display:none;"') + '></div>');
+        '</span></td>' +
+      '</tr>' +
+      // Rendered only while open: a hidden <tr> has to be restored to
+      // display:table-row, and getting that wrong collapses the layout.
+      (importOpenPicker === i
+        ? '<tr><td class="ir-picker" colspan="4" id="irPicker' + i + '"></td></tr>'
+        : ""));
   });
 
+  parts.push('</tbody></table>');
   document.getElementById("importRows").innerHTML = parts.join("");
   if (importOpenPicker !== null) drawImportPicker(importOpenPicker);
   document.getElementById("importRunBtn").disabled = c.keep === 0;
@@ -1523,7 +1603,6 @@ function drawImportPicker(i) {
     '<input type="text" class="ir-search" id="irSearch' + i + '" ' +
       'placeholder="Type a few letters…" oninput="searchImportMatch(' + i + ')">' +
     '<div class="ir-results" id="irResults' + i + '"></div>';
-  box.style.display = "block";
 }
 
 let irSearchTimer = null;
@@ -1625,6 +1704,7 @@ async function runImport() {
     document.getElementById("themeToggle").textContent = "☀️";
   }
   fillConditions("card");
+  initSorting();
   readyPromise = loadPortfolios().catch(e => {
     document.getElementById("noPortfolios").style.display = "block";
     document.getElementById("noPortfolios").textContent = e.message;
