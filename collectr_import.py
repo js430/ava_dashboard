@@ -125,7 +125,77 @@ def _similar(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
-def score_match(item: dict, candidate: dict) -> float:
+# Leftover words that never change WHICH product something is. Nearly nothing
+# qualifies: for sealed product the trailing words are the whole difference
+# between one item and another. A single collection can hold "151 Booster
+# Bundle" and "151 Booster Bundle Display", or a Pokemon Center Elite Trainer
+# Box next to a plain one, and those are different things at different prices.
+_IGNORABLE_EXTRA = frozenset(("the", "a", "an", "of", "and"))
+
+
+def _flat(name: str) -> str:
+    """Hyphens read as spaces when comparing names.
+
+    normalize() keeps them on purpose — "V-UNION" is part of a real product
+    name — but "151 Ultra-Premium Collection" and "151 Ultra Premium
+    Collection" are the same box, and treating them as different left that
+    pair scoring 0.96: under the near-exact gate, and then penalised for
+    "differing" by two product words.
+    """
+    return _SPACES.sub(" ", (name or "").replace("-", " ")).strip()
+
+
+def _name_agreement(item_name: str, cand_name: str) -> float:
+    """Confidence from the name alone, for names that settle it by themselves.
+
+    Only ever applied to sealed product, whose names carry their set inside
+    them ("151 Elite Trainer Box"). Card names do not — "Charizard ex" is a
+    dozen different cards — so singles still have to corroborate with a
+    number or a set, exactly as before.
+
+    Without this an identical name could still be skipped, because the two
+    catalogues spell the set differently: Collectr writes "SV: 151" where we
+    store "SV: Scarlet & Violet 151", so neither set test fired and a perfect
+    name topped out below the threshold.
+    """
+    if not item_name or not cand_name:
+        return 0.0
+    item_name, cand_name = _flat(item_name), _flat(cand_name)
+    if item_name == cand_name:
+        return 0.30
+    if (abs(len(item_name) - len(cand_name)) <= 4
+            and _similar(item_name, cand_name) >= 0.97):
+        return 0.28
+
+    # Whole-token containment, padded so "box" can't match inside "boxes".
+    short, long_ = sorted((item_name.split(), cand_name.split()), key=len)
+    if not short or " %s " % " ".join(short) not in " %s " % " ".join(long_):
+        return 0.0
+    extra = [w for w in long_ if w not in short]
+    if extra and all(w in _IGNORABLE_EXTRA for w in extra):
+        return 0.28
+    return 0.0
+
+
+# The words that decide which product a sealed item actually IS. Two names
+# differing by one of these are different products, however similar they read:
+# an Elite Trainer Box and an Elite Trainer Box Case both sit in the same
+# collection, seven of one and one of the other, at very different prices.
+_PRODUCT_WORDS = frozenset((
+    "box", "case", "display", "bundle", "tin", "pack", "blister",
+    "collection", "binder", "poster", "elite", "trainer", "premium",
+    "ultra", "super", "mini", "exclusive", "center", "jumbo", "deck",
+    "figure", "playmat", "surprise", "build", "battle", "special",
+))
+
+
+def _differs_by_product_word(a: str, b: str) -> bool:
+    """True when two names disagree about what kind of product this is."""
+    return any(w in _PRODUCT_WORDS
+               for w in set(_flat(a).split()) ^ set(_flat(b).split()))
+
+
+def score_match(item: dict, candidate: dict, kind: str = "card") -> float:
     """How confident we are that `candidate` is `item`. 0..1.
 
     Name similarity alone tops out below the import threshold on purpose.
@@ -134,19 +204,33 @@ def score_match(item: dict, candidate: dict) -> float:
     of them is the card somebody owns.
     """
     item_name = normalize(item.get("name"))
-    cand_name = normalize(candidate.get("name"))
+    cand_name = candidate.get("_norm_name")
+    if cand_name is None:
+        cand_name = normalize(candidate.get("name"))
     if not item_name or not cand_name:
         return 0.0
 
     # Compare the name with the set stripped out of it: Collectr tends to
     # write "Obsidian Flames Charizard ex", we store name and set apart.
-    cand_set = normalize(candidate.get("set_name"))
+    cand_set = candidate.get("_norm_set")
+    if cand_set is None:
+        cand_set = normalize(candidate.get("set_name"))
     bare = item_name
     if cand_set and cand_set in bare:
         bare = _SPACES.sub(" ", bare.replace(cand_set, " ")).strip()
 
     name_score = max(_similar(item_name, cand_name), _similar(bare, cand_name))
     score = name_score * 0.6
+
+    # Sealed names identify the product on their own; card names do not.
+    if kind == "sealed":
+        agreement = _name_agreement(item_name, cand_name)
+        score += agreement
+        # Only when the name did NOT settle it: a trailing "Case" or
+        # "Display" is otherwise similar enough that the set bonus alone can
+        # carry the wrong product over the line.
+        if not agreement and _differs_by_product_word(item_name, cand_name):
+            score -= 0.22
 
     # A number that agrees is the strongest signal available.
     item_number = item.get("card_number") or extract_number(item.get("name", ""))
@@ -172,7 +256,68 @@ def score_match(item: dict, candidate: dict) -> float:
     return max(0.0, min(1.0, score))
 
 
-def best_match(item: dict, candidates) -> tuple:
+class Catalog:
+    """Candidate rows with their names normalized once and indexed by word.
+
+    score_match runs SequenceMatcher two or three times, which costs about
+    200us. Scoring a whole catalog for each of a hundred imported items is
+    therefore tens of seconds of pure string comparison — and nearly all of it
+    is spent comparing names with no word in common. The index throws those
+    out for the price of a dict lookup, and caching the normalized name stops
+    the catalog being re-normalized once per item.
+    """
+
+    def __init__(self, rows):
+        self.rows = []
+        self.index = {}
+        for row in rows:
+            entry = dict(row)
+            norm = normalize(row.get("name"))
+            entry["_norm_name"] = norm
+            entry["_norm_set"] = normalize(row.get("set_name"))
+            self.rows.append(entry)
+            position = len(self.rows) - 1
+            for token in set(norm.split()):
+                self.index.setdefault(token, []).append(position)
+
+    def __len__(self):
+        return len(self.rows)
+
+    def shortlist(self, item: dict, cap: int = 120):
+        """Rows worth scoring, most words in common first.
+
+        Ranked rather than merely filtered: "box" and "collection" appear in
+        thousands of names, so a plain filter would hand back most of the
+        catalog. The row we actually want shares several words, not one.
+        """
+        counts = {}
+        for token in set(normalize(item.get("name")).split()):
+            for position in self.index.get(token, ()):
+                counts[position] = counts.get(position, 0) + 1
+        if not counts:
+            return []
+        ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+        return [self.rows[position] for position, _ in ranked[:cap]]
+
+
+def top_matches(item: dict, candidates, kind: str = "card", limit: int = 4):
+    """The closest few rows, best first, as [(candidate, score), ...].
+
+    Feeds the preview's "change this match" list. Scored the same way as
+    best_match but without its early exit, because the runner-up is the whole
+    point here: when a Pokemon Center box and a plain one both exist, the one
+    we picked and the one the member meant are usually the top two.
+    """
+    scored = []
+    for cand in candidates:
+        s = score_match(item, cand, kind)
+        if s > 0.15:            # below this it is noise, not an alternative
+            scored.append((cand, round(s, 3)))
+    scored.sort(key=lambda pair: pair[1], reverse=True)
+    return scored[:limit]
+
+
+def best_match(item: dict, candidates, kind: str = "card") -> tuple:
     """(candidate, score) for the best row, or (None, 0.0).
 
     Ties are broken toward the FIRST candidate, so callers should pass the
@@ -180,7 +325,7 @@ def best_match(item: dict, candidates) -> tuple:
     """
     best, best_score = None, 0.0
     for cand in candidates:
-        s = score_match(item, cand)
+        s = score_match(item, cand, kind)
         if s > best_score:
             best, best_score = cand, s
             if s >= GOOD_ENOUGH:
@@ -206,18 +351,28 @@ def classify(item: dict, singles, sealed) -> dict:
         "score": 0.0,
         "status": "skipped",
         "reason": "",
+        # The runners-up, so the preview can offer them as one-click
+        # corrections instead of making someone search for a name we
+        # already had in front of us.
+        "alternatives": [],
     }
     if not name:
         result["reason"] = "No product name."
         return result
 
     pool = sealed if result["kind"] == "sealed" else singles
-    match, score = best_match(item, pool)
+    rows = pool.shortlist(item) if isinstance(pool, Catalog) else pool
+    ranked = top_matches(item, rows, result["kind"], limit=5)
+    match, score = ranked[0] if ranked else (None, 0.0)
     result["score"] = score
+    result["alternatives"] = [
+        {"id": c.get("id"), "name": c.get("name"),
+         "set_name": c.get("set_name"), "score": sc}
+        for c, sc in ranked[1:]]
 
     if not match:
         result["reason"] = ("Nothing in the catalog resembles this."
-                            if pool else
+                            if len(pool) else
                             "The catalog has no %s to match against yet."
                             % ("sealed product" if result["kind"] == "sealed" else "cards"))
         return result

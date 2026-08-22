@@ -2350,19 +2350,22 @@ async def api_portfolio_search(request: Request, user=Depends(get_member_or_subs
         if language:
             rows = await conn.fetch(
                 "SELECT DISTINCT ON (card_name, set_name, card_number, rarity, language) "
-                "card_name, set_name, card_number, rarity, tcgplayer_id, language "
+                "id, card_name, set_name, card_number, rarity, tcgplayer_id, language "
                 "FROM catalog_cards WHERE game = $1 AND language = $2 AND card_name ILIKE $3 "
                 "ORDER BY card_name, set_name, card_number, rarity, language LIMIT 25",
                 game, language, f"%{query}%")
         else:
             rows = await conn.fetch(
                 "SELECT DISTINCT ON (card_name, set_name, card_number, rarity, language) "
-                "card_name, set_name, card_number, rarity, tcgplayer_id, language "
+                "id, card_name, set_name, card_number, rarity, tcgplayer_id, language "
                 "FROM catalog_cards WHERE game = $1 AND card_name ILIKE $2 "
                 "ORDER BY card_name, set_name, card_number, rarity, language LIMIT 25",
                 game, f"%{query}%")
     return JSONResponse([
-        {"name": r["card_name"], "set_name": r["set_name"], "card_number": r["card_number"],
+        # id lets the Collectr preview point a corrected match straight at a
+        # catalog row; the tracker's own add flow ignores it.
+        {"id": r["id"], "name": r["card_name"], "set_name": r["set_name"],
+         "card_number": r["card_number"],
          "variant": r["rarity"] or None, "tcgplayer_id": r["tcgplayer_id"] or None,
          "language": r["language"]}
         for r in rows
@@ -3177,7 +3180,66 @@ async def _collectr_catalog(pool, kinds):
                 "rarity AS variant, tcgplayer_id, language "
                 "FROM catalog_cards WHERE game = 'pokemon' LIMIT 60000")
             singles = [dict(r) for r in rows]
-    return singles, sealed
+    # Indexed once here rather than rescanned per item: matching a hundred
+    # items against a few thousand rows is otherwise a minute of string
+    # comparison (see collectr_import.Catalog).
+    return (collectr_import.Catalog(singles),
+            collectr_import.Catalog(sealed))
+
+
+async def _catalog_row(conn, kind: str, item_id: int):
+    """One catalog row by id, or None. Backs a member's manual correction.
+
+    The id comes from the browser, so it is read back out of the catalog here
+    rather than trusted: an id that isn't a real row of the right kind simply
+    doesn't resolve, and that item is skipped.
+    """
+    if kind == "sealed":
+        row = await conn.fetchrow(
+            "SELECT id, name, set_name, product_type FROM sealed_products "
+            "WHERE id = $1", item_id)
+    else:
+        row = await conn.fetchrow(
+            "SELECT id, card_name AS name, set_name, card_number, "
+            "rarity AS variant, tcgplayer_id, language FROM catalog_cards "
+            "WHERE id = $1 AND game = 'pokemon'", item_id)
+    return dict(row) if row else None
+
+
+def _import_instructions(body, rows):
+    """(overrides, removed) from the browser: {index: item_id}, {index}.
+
+    Quantities and names still come from re-parsing the text server-side, so
+    only the TARGET of a match is a member's to choose. Every instruction
+    carries the name it was shown against and is dropped if that no longer
+    matches the row at that index — the two sides parse the same text, but an
+    instruction landing on the wrong row would file the wrong product.
+    """
+    def position(entry):
+        try:
+            index = int(entry.get("index"))
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if not 0 <= index < len(rows):
+            return None
+        if (entry.get("name") or "") != rows[index]["name"]:
+            return None
+        return index
+
+    overrides, removed = {}, set()
+    for entry in (body.get("overrides") or [])[:collectr_import.MAX_ITEMS]:
+        index = position(entry)
+        if index is None:
+            continue
+        try:
+            overrides[index] = int(entry.get("item_id"))
+        except (TypeError, ValueError):
+            continue
+    for entry in (body.get("removed") or [])[:collectr_import.MAX_ITEMS]:
+        index = position(entry)
+        if index is not None:
+            removed.add(index)
+    return overrides, removed
 
 
 async def _tracked_card_id(conn, match: dict):
@@ -3260,16 +3322,21 @@ async def api_collectr_preview(request: Request, portfolio_id: int,
         "source": source,
         "summary": summary,
         "rows": [{
+            # Position in the parsed list. The browser sends it back with any
+            # correction, and the server re-parses the same text, so the two
+            # agree on which row is which.
+            "index": i,
             "name": r["name"],
             "quantity": r["quantity"],
             "kind": r["kind"],
             "status": r["status"],
             "score": r["score"],
             "reason": r["reason"],
+            "alternatives": r.get("alternatives") or [],
             "match_name": (r["match"] or {}).get("name") if r["match"] else None,
             "match_set": (r["match"] or {}).get("set_name") if r["match"] else None,
             "match_id": (r["match"] or {}).get("id") if r["match"] else None,
-        } for r in rows],
+        } for i, r in enumerate(rows)],
     }, headers={"Cache-Control": "no-store"})
 
 
@@ -3302,6 +3369,25 @@ async def api_collectr_import(request: Request, portfolio_id: int,
     pool = request.app.state.db
     added = failed = 0
     problems = []
+
+    # What the member changed on the preview, applied before anything is
+    # written: rows they removed, and matches they picked themselves.
+    overrides, removed = _import_instructions(body, rows)
+    for index in removed:
+        rows[index]["status"] = "removed"
+    if overrides:
+        async with pool.acquire() as conn:
+            for index, item_id in overrides.items():
+                row = rows[index]
+                if row["status"] == "removed":
+                    continue
+                chosen = await _catalog_row(conn, row["kind"], item_id)
+                if chosen:
+                    row["match"] = chosen
+                    row["status"] = "matched"
+                else:
+                    row["status"] = "skipped"
+                    row["reason"] = "That catalog item no longer exists."
 
     # Cards are resolved to shared-catalog ids up front, on one connection, so
     # that add_lot below never has to acquire a second one while this holds it.
@@ -3350,7 +3436,11 @@ async def api_collectr_import(request: Request, portfolio_id: int,
                 user["id"], portfolio_id, added, failed)
     return JSONResponse({
         "added": added, "failed": failed, "problems": problems,
-        "skipped": sum(1 for r in rows if r["status"] != "matched"),
+        # Reported apart from skips: one is our judgement, the other is a
+        # deliberate choice the member made on the preview.
+        "removed": len(removed),
+        "skipped": sum(1 for r in rows
+                       if r["status"] not in ("matched", "removed")),
     }, headers={"Cache-Control": "no-store"})
 
 

@@ -114,9 +114,31 @@
   .import-head { padding: 8px 11px; font-size: 12px; font-weight: 600;
                  background: #fafafb; border-bottom: 1px solid #eee; }
   .import-row { padding: 6px 11px; font-size: 12.5px; display: flex;
-                justify-content: space-between; gap: 10px;
+                align-items: center; gap: 10px;
                 border-bottom: 1px solid #f4f4f5; }
   .import-row:last-child { border-bottom: none; }
+  .ir-name { flex: 1 1 40%; min-width: 0; overflow-wrap: anywhere; }
+  .ir-detail { flex: 1 1 40%; min-width: 0; text-align: right;
+               overflow-wrap: anywhere; }
+  .ir-actions { flex: none; display: flex; gap: 4px; }
+  .ir-gone { opacity: .5; }
+  .ir-gone .ir-name { text-decoration: line-through; }
+  .ir-edited { color: #2e7d32; }
+  .ir-picker { padding: 8px 11px 12px; background: #fafafb;
+               border-bottom: 1px solid #f4f4f5; }
+  .ir-picker-head { font-size: 11.5px; font-weight: 600; color: #666;
+                    margin: 6px 0 5px; }
+  .ir-alt { display: block; width: 100%; text-align: left; margin-bottom: 4px; }
+  .ir-search { width: 100%; padding: 7px 9px; font-family: inherit;
+               font-size: 12.5px; border: 1px solid #ddd; border-radius: 7px;
+               background: #fff; color: #111; }
+  .ir-search:focus { outline: none; border-color: #5865F2; }
+  .ir-results { margin-top: 6px; }
+  [data-theme="dark"] .ir-picker { background: #202027; border-bottom-color: #2c2c34; }
+  [data-theme="dark"] .ir-picker-head { color: #9b9ba6; }
+  [data-theme="dark"] .ir-search { background: #24242b; border-color: #33333c;
+                                   color: #e8e8ea; }
+  [data-theme="dark"] .ir-edited { color: #81c784; }
   [data-theme="dark"] .import-list { border-color: #2c2c34; }
   [data-theme="dark"] .import-head { background: #202027; border-bottom-color: #2c2c34; }
   [data-theme="dark"] .import-row { border-bottom-color: #26262d; }
@@ -1395,34 +1417,173 @@ async function previewImport() {
   }
 }
 
+// The preview rows, plus whatever the member has changed about them. Nothing
+// here is trusted by the server: it re-parses the same text and re-matches,
+// and only takes the chosen catalog id and the removals from this list.
+let importRows = [];
+let importOpenPicker = null;
+
 function renderImportPreview(data) {
-  const s = data.summary;
-  const box = document.getElementById("importRows");
-  const matched = (data.rows || []).filter(r => r.status === "matched");
-  const skipped = (data.rows || []).filter(r => r.status !== "matched");
+  importRows = (data.rows || []).map(r => ({
+    index: r.index, name: r.name, quantity: r.quantity, kind: r.kind,
+    reason: r.reason, alternatives: r.alternatives || [],
+    matchId: r.match_id, matchName: r.match_name, matchSet: r.match_set,
+    matched: r.status === "matched", removed: false, edited: false,
+  }));
+  importOpenPicker = null;
+  document.getElementById("importRows").style.display = "block";
+  drawImportRows();
+  const kept = importRows.filter(r => r.matched && !r.removed).length;
+  say("importMsg", importRows.length
+    ? "Read " + importRows.length + " item(s) from your showcase."
+    : "Nothing to import.", kept ? "ok" : "busy");
+}
+
+function importCounts() {
+  return {
+    keep: importRows.filter(r => r.matched && !r.removed).length,
+    units: importRows.filter(r => r.matched && !r.removed)
+                     .reduce((n, r) => n + (r.quantity || 0), 0),
+    unmatched: importRows.filter(r => !r.matched && !r.removed).length,
+    removed: importRows.filter(r => r.removed).length,
+  };
+}
+
+function drawImportRows() {
+  const c = importCounts();
+  const parts = ['<div class="import-head">Will add ' + c.keep + ' of ' +
+    importRows.length + ' item' + (importRows.length === 1 ? '' : 's') + ' — ' +
+    c.units + ' unit' + (c.units === 1 ? '' : 's') +
+    (c.unmatched ? ' · ' + c.unmatched + ' unmatched' : '') +
+    (c.removed ? ' · ' + c.removed + ' removed' : '') + '</div>'];
+
+  importRows.forEach((r, i) => {
+    const detail = r.removed
+      ? '<span class="muted">Removed</span>'
+      : r.matched
+        ? '<span class="' + (r.edited ? 'ir-edited' : 'muted') + '">x' +
+          r.quantity + ' → ' + esc(r.matchName || '') +
+          (r.matchSet ? ' <span class="muted">(' + esc(r.matchSet) + ')</span>' : '') +
+          (r.edited ? ' · your pick' : '') + '</span>'
+        : '<span class="muted">' + esc(r.reason || 'No match') + '</span>';
+
+    parts.push(
+      '<div class="import-row' + (r.removed ? ' ir-gone' : '') + '">' +
+        '<span class="ir-name">' + esc(r.name) + '</span>' +
+        '<span class="ir-detail">' + detail + '</span>' +
+        '<span class="ir-actions">' +
+          (r.removed
+            ? '<button class="btn btn-sm" onclick="restoreImportRow(' + i + ')">Restore</button>'
+            : '<button class="btn btn-sm" onclick="toggleImportPicker(' + i + ')">Change</button>' +
+              '<button class="btn btn-sm btn-danger" title="Remove this item" ' +
+              'onclick="removeImportRow(' + i + ')">&#10005;</button>') +
+        '</span>' +
+      '</div>' +
+      '<div class="ir-picker" id="irPicker' + i + '"' +
+        (importOpenPicker === i ? '' : ' style="display:none;"') + '></div>');
+  });
+
+  document.getElementById("importRows").innerHTML = parts.join("");
+  if (importOpenPicker !== null) drawImportPicker(importOpenPicker);
+  document.getElementById("importRunBtn").disabled = c.keep === 0;
+}
+
+function removeImportRow(i) {
+  importRows[i].removed = true;
+  if (importOpenPicker === i) importOpenPicker = null;
+  drawImportRows();
+}
+
+function restoreImportRow(i) {
+  importRows[i].removed = false;
+  drawImportRows();
+}
+
+function toggleImportPicker(i) {
+  importOpenPicker = (importOpenPicker === i) ? null : i;
+  drawImportRows();
+}
+
+function drawImportPicker(i) {
+  const r = importRows[i];
+  const box = document.getElementById("irPicker" + i);
+  if (!box) return;
+  // The runners-up from the match we already ran, so the usual correction is
+  // one click and not a search.
+  const near = (r.alternatives || []).map((a, n) =>
+    '<button class="btn btn-sm ir-alt" onclick="chooseImportAlt(' + i + ',' + n + ')">' +
+    esc(a.name) +
+    (a.set_name ? ' <span class="muted">(' + esc(a.set_name) + ')</span>' : '') +
+    '</button>').join("");
 
   box.innerHTML =
-    '<div class="import-head">Will add ' + s.matched + ' of ' + s.items +
-      ' item' + (s.items === 1 ? '' : 's') + ' — ' + s.units + ' unit' +
-      (s.units === 1 ? '' : 's') + '</div>' +
-    matched.map(r =>
-      '<div class="import-row"><span>' + esc(r.name) + '</span>' +
-      '<span class="muted">x' + r.quantity + ' → ' + esc(r.match_name || "") +
-      '</span></div>').join("") +
-    (skipped.length
-      ? '<div class="import-head">Skipped ' + skipped.length +
-        ' — nothing close enough in the catalog</div>' +
-        skipped.map(r =>
-          '<div class="import-row"><span class="muted">' + esc(r.name) +
-          '</span><span class="muted">' + esc(r.reason || "") + '</span></div>'
-        ).join("")
-      : "");
+    (near ? '<div class="ir-picker-head">Closest others</div>' + near
+          : '<div class="ir-picker-head">Nothing else came close</div>') +
+    '<div class="ir-picker-head">Search the catalog</div>' +
+    '<input type="text" class="ir-search" id="irSearch' + i + '" ' +
+      'placeholder="Type a few letters…" oninput="searchImportMatch(' + i + ')">' +
+    '<div class="ir-results" id="irResults' + i + '"></div>';
   box.style.display = "block";
-  document.getElementById("importRunBtn").disabled = s.matched === 0;
-  say("importMsg", s.matched
-    ? "Read " + s.items + " item(s) from your showcase."
-    : "Nothing matched. Stock the sets first, then try again.",
-    s.matched ? "ok" : "busy");
+}
+
+let irSearchTimer = null;
+const irResults = {};      // last search hits per row, by row position
+
+function searchImportMatch(i) {
+  clearTimeout(irSearchTimer);
+  irSearchTimer = setTimeout(() => runImportSearch(i), 220);
+}
+
+async function runImportSearch(i) {
+  const r = importRows[i];
+  const input = document.getElementById("irSearch" + i);
+  const out = document.getElementById("irResults" + i);
+  if (!input || !out) return;
+  const q = input.value.trim();
+  if (q.length < 2) { out.innerHTML = ""; return; }
+  try {
+    let rows;
+    if (r.kind === "sealed") {
+      rows = await api("/api/portfolios/sealed?limit=10&q=" + encodeURIComponent(q));
+    } else {
+      rows = await api("/api/card-tracker/portfolio/search", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ game: "pokemon", query: q })
+      });
+    }
+    // Held in state and referenced by position: passing names through an
+    // onclick attribute means escaping them twice, and half this catalog has
+    // an ampersand in it.
+    irResults[i] = (rows || []).slice(0, 10);
+    out.innerHTML = irResults[i].map((row, n) =>
+      '<button class="btn btn-sm ir-alt" onclick="chooseImportResult(' + i + ',' + n + ')">' +
+      esc(row.name) +
+      (row.set_name ? ' <span class="muted">(' + esc(row.set_name) + ')</span>' : '') +
+      '</button>').join("") || '<div class="hint">Nothing matched that.</div>';
+  } catch (e) {
+    out.innerHTML = '<div class="hint">' + esc(e.message) + '</div>';
+  }
+}
+
+function chooseImportAlt(i, n) {
+  const a = (importRows[i].alternatives || [])[n];
+  if (a) applyImportMatch(i, a);
+}
+
+function chooseImportResult(i, n) {
+  const row = (irResults[i] || [])[n];
+  if (row) applyImportMatch(i, row);
+}
+
+function applyImportMatch(i, chosen) {
+  const r = importRows[i];
+  r.matchId = chosen.id;
+  r.matchName = chosen.name;
+  r.matchSet = chosen.set_name || "";
+  r.matched = true;
+  r.edited = true;
+  importOpenPicker = null;
+  drawImportRows();
 }
 
 async function runImport() {
@@ -1431,11 +1592,23 @@ async function runImport() {
   btn.disabled = true;
   say("importMsg", "Adding…", "busy");
   try {
+    // Only the rows the member actually changed. Each carries the name it
+    // was shown against so the server can refuse an instruction that would
+    // land on a different row.
+    const overrides = importRows
+      .filter(r => r.edited && !r.removed)
+      .map(r => ({ index: r.index, name: r.name, item_id: r.matchId }));
+    const removed = importRows
+      .filter(r => r.removed)
+      .map(r => ({ index: r.index, name: r.name }));
+
     const data = await api("/api/portfolios/" + target + "/collectr/import", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: pendingImportText })
+      body: JSON.stringify({ text: pendingImportText,
+                             overrides: overrides, removed: removed })
     });
     let note = "Added " + data.added + " item(s).";
+    if (data.removed) note += " Left out " + data.removed + " you removed.";
     if (data.skipped) note += " Skipped " + data.skipped + " that didn't match.";
     if (data.failed) note += " " + data.failed + " could not be added.";
     say("importMsg", note, "ok");
