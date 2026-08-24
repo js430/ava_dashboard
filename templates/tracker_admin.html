@@ -217,6 +217,28 @@
       </div>
     </div>
     <div class="msg" id="impMsg" role="status" aria-live="polite"></div>
+
+    {% if is_admin %}
+    <details style="margin-top:14px;">
+      <summary style="font-size:12.5px;color:#666;cursor:pointer;">Back-stock the card catalogue</summary>
+      <div style="margin-top:12px;">
+        <div class="row">
+          <div><button class="btn" id="stockAllBtn" onclick="stockAllSets('next')">Stock every set not cached yet</button></div>
+          <div><button class="btn" id="restockAllBtn" onclick="stockAllSets('refresh')">Re-pull sets already cached</button></div>
+          <div><button class="btn" id="stockStopBtn" onclick="stopStockAll()" disabled>Stop</button></div>
+        </div>
+        <div class="hint">
+          This is the expensive one: the price API bills roughly <strong>one credit per
+          card</strong>, so a single large set is around 400 and the whole catalogue runs
+          into tens of thousands. It works in batches and can be stopped between them —
+          a batch already in flight finishes. Nothing is charged twice for a set that is
+          already cached unless you choose to re-pull it. Re-pulling is what fills in the
+          card Type column on older rows.
+        </div>
+        <div class="msg" id="stockAllMsg" role="status" aria-live="polite"></div>
+      </div>
+    </details>
+    {% endif %}
   </div>
 
   <!-- 3. Sealed product -->
@@ -665,6 +687,100 @@ async function importSealed() {
     say("sealedMsg", e.message, "err");
     btn.disabled = false;
   }
+}
+
+// ── Back-stocking the whole card catalogue ──────────────────────────────
+// Driven from here rather than added as a server-side "do everything" route:
+// the batch endpoint is already bounded, admin-gated and guarded against
+// overlapping runs, and a loop of bounded batches can be stopped between
+// them. One long request for ~180 sets would time out and could not be
+// interrupted at all.
+let stockAllStop = false;
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function stopStockAll() {
+  stockAllStop = true;
+  say("stockAllMsg", "Stopping after the batch in flight…", "busy");
+}
+
+async function backfillState() {
+  const data = await api("/api/catalog/facets");
+  return data.backfill || {};
+}
+
+async function stockAllSets(mode) {
+  const isRefresh = mode === "refresh";
+  const what = isRefresh
+    ? "RE-PULL sets that are already cached"
+    : "stock every set that isn't cached yet";
+  if (!confirm(
+      "This will " + what + ", in batches, until there is nothing left." +
+      "\n\n" +
+      "The price API bills about ONE CREDIT PER CARD. A large set is roughly " +
+      "400, and the full catalogue runs into tens of thousands of credits." +
+      "\n\n" +
+      (isRefresh
+        ? "Re-pulling is how older rows get their card Type filled in.\n\n"
+        : "") +
+      "You can press Stop between batches.\n\n" +
+      "Start?")) return;
+
+  stockAllStop = false;
+  ["stockAllBtn", "restockAllBtn"].forEach(id =>
+    document.getElementById(id).disabled = true);
+  document.getElementById("stockStopBtn").disabled = false;
+
+  let batches = 0, sets = 0, cards = 0;
+  try {
+    while (!stockAllStop) {
+      let started;
+      try {
+        started = await api("/api/catalog/backfill", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: mode, sets: 50 })
+        });
+      } catch (e) {
+        // Another run is already going — wait for it rather than fighting it.
+        if (/already running/i.test(e.message)) { await sleep(4000); continue; }
+        throw e;
+      }
+      batches++;
+      say("stockAllMsg", "Batch " + batches + " running (" + started.sets +
+          " set(s))… " + sets + " set(s), " + cards + " card(s) so far.", "busy");
+
+      // Poll until this batch reports itself finished.
+      let st = await backfillState();
+      while (st.running) {
+        await sleep(3000);
+        st = await backfillState();
+        say("stockAllMsg", "Batch " + batches + ": " + (st.done || 0) + " of " +
+            (st.planned || started.sets) + " set(s)" +
+            (st.current ? " — " + st.current : "") + ". Total so far: " +
+            (sets + (st.stocked || 0)) + " set(s), " +
+            (cards + (st.cards || 0)) + " card(s).", "busy");
+      }
+      sets += st.stocked || 0;
+      cards += st.cards || 0;
+      if (st.error) { say("stockAllMsg", "Stopped: " + st.error, "err"); break; }
+      // A batch that stocked nothing means there is nothing left to do.
+      if (!st.stocked) {
+        say("stockAllMsg", "Finished. " + sets + " set(s) stocked, " + cards +
+            " card(s) written, over " + batches + " batch(es).", "ok");
+        break;
+      }
+    }
+    if (stockAllStop) {
+      say("stockAllMsg", "Stopped. " + sets + " set(s), " + cards +
+          " card(s) over " + batches + " batch(es).", "busy");
+    }
+  } catch (e) {
+    say("stockAllMsg", e.message, "err");
+  }
+  ["stockAllBtn", "restockAllBtn"].forEach(id =>
+    document.getElementById(id).disabled = false);
+  document.getElementById("stockStopBtn").disabled = true;
+  loadStats();
 }
 
 async function importAllSealed() {

@@ -747,8 +747,14 @@ try {
 } catch(e){}
 // Purely a display toggle over data already in hand — see lastCards below —
 // so switching it never re-fetches. Persisted like the other view choices.
-let showPrintings = false;
-try { showPrintings = localStorage.getItem('catalogShowPrintings') === '1'; } catch(e){}
+// On by default. Read as "has this member chosen?" rather than "is it '1'?":
+// a stored '0' is a deliberate no and must survive, but a missing value means
+// nobody has decided yet, which is where the default applies.
+let showPrintings = true;
+try {
+  const savedPrintings = localStorage.getItem('catalogShowPrintings');
+  if (savedPrintings !== null) showPrintings = savedPrintings === '1';
+} catch(e){}
 // The last page of cards loadCards() rendered, kept around so the printing-
 // prices toggle (and anything else display-only) can re-render without a
 // network round-trip for data that hasn't actually changed.
