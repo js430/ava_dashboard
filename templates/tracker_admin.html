@@ -731,7 +731,7 @@ async function stockAllSets(mode) {
     document.getElementById(id).disabled = true);
   document.getElementById("stockStopBtn").disabled = false;
 
-  let batches = 0, sets = 0, cards = 0;
+  let batches = 0, sets = 0, cards = 0, skipped = 0;
   try {
     while (!stockAllStop) {
       let started;
@@ -762,11 +762,16 @@ async function stockAllSets(mode) {
       }
       sets += st.stocked || 0;
       cards += st.cards || 0;
+      skipped += st.skipped || 0;
       if (st.error) { say("stockAllMsg", "Stopped: " + st.error, "err"); break; }
-      // A batch that stocked nothing means there is nothing left to do.
-      if (!st.stocked) {
+      // "Nothing left" is planned === 0, not stocked === 0. A batch where
+      // every set was already complete skips all of them and stocks none,
+      // which is progress, not the end.
+      if (!st.planned) {
         say("stockAllMsg", "Finished. " + sets + " set(s) stocked, " + cards +
-            " card(s) written, over " + batches + " batch(es).", "ok");
+            " card(s) written" +
+            (skipped ? ", " + skipped + " already complete and skipped" : "") +
+            ", over " + batches + " batch(es).", "ok");
         break;
       }
     }

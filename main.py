@@ -5435,23 +5435,22 @@ async def _run_catalog_backfill(app, limit: int | None = None,
         # worth doing for mode='next'/'window': those sets aren't cached yet,
         # so there's nothing to compare against.
         #
-        # Card-count completeness alone isn't enough to skip, though: a set
-        # stocked before catalog_cards.image_url (or printing_prices)
-        # existed is "complete" here but every row's image_url/
-        # printing_prices is NULL (the price-only refresh never backfilled
-        # either — see cached_set_missing_image_counts /
-        # cached_set_missing_variant_counts). Skipping those too would mean
-        # the grid view's "No image yet" placeholder, and the "Variant
-        # prices" toggle, would never have anything to show for a set
-        # stocked before those columns shipped.
+        # Card-count completeness alone isn't enough to skip, though. A set
+        # stocked before a column existed is "complete" by card count while
+        # every row has NULL in that column, and the price-only refresh never
+        # backfills one — so it would be skipped forever and the feature that
+        # reads it would have nothing to show for that set. That is what
+        # catalog.cached_set_incomplete_counts is for, and adding a new data
+        # point means listing it in catalog.REFRESH_REQUIRED_COLUMNS.
         cached_counts = (await catalog.cached_set_counts(pool, CATALOG_GAME, language)
                          if mode == "refresh" else {})
-        missing_image_counts = (await catalog.cached_set_missing_image_counts(
-                                    pool, CATALOG_GAME, language)
-                                 if mode == "refresh" else {})
-        missing_variant_counts = (await catalog.cached_set_missing_variant_counts(
-                                    pool, CATALOG_GAME, language)
-                                 if mode == "refresh" else {})
+        # One question — "is this set actually complete?" — rather than one
+        # per column. catalog.REFRESH_REQUIRED_COLUMNS is the single place a
+        # new data point gets listed; miss it there and every complete set
+        # skips forever, leaving the new column empty.
+        incomplete_counts = (await catalog.cached_set_incomplete_counts(
+                                 pool, CATALOG_GAME, language)
+                             if mode == "refresh" else {})
         preflight_client = httpx.AsyncClient(timeout=15.0) if mode == "refresh" else None
 
         error_streak = 0
@@ -5463,14 +5462,12 @@ async def _run_catalog_backfill(app, limit: int | None = None,
                     total = await price_sources.fetch_ppt_set_total(
                         preflight_client, entry["id"], language)
                     cached = cached_counts.get(entry["id"], 0)
-                    missing_images = missing_image_counts.get(entry["id"], 0)
-                    missing_variants = missing_variant_counts.get(entry["id"], 0)
-                    if (total is not None and cached >= total
-                            and missing_images == 0 and missing_variants == 0):
+                    incomplete = incomplete_counts.get(entry["id"], 0)
+                    if total is not None and cached >= total and incomplete == 0:
                         logger.info("Catalog backfill [refresh]: %r already complete "
-                                   "(%d/%d card(s), images + variant prices present) — "
-                                   "skipping the full re-fetch",
-                                   entry["id"], cached, total)
+                                    "(%d/%d card(s), every tracked column present) "
+                                    "— skipping the full re-fetch",
+                                    entry["id"], cached, total)
                         st["done"] += 1
                         st["skipped"] += 1
                         error_streak = 0

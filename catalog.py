@@ -1064,40 +1064,35 @@ async def cached_set_counts(pool, game: str, language: str = "english") -> dict:
     return {r["set_id"]: int(r["n"]) for r in rows}
 
 
-async def cached_set_missing_image_counts(pool, game: str, language: str = "english") -> dict:
-    """{set_id: cards with no image_url} for sets already in the catalog.
+# Every column a fully-stocked row is expected to carry. ADD A NEW DATA POINT
+# HERE AND NOWHERE ELSE: the refresh preflight uses this list to decide whether
+# a cached set still needs a full re-fetch. A column missing from this list
+# makes every already-complete set skip forever, so the new column stays empty
+# on exactly the sets most likely to be complete — which is what happened when
+# card_type shipped and the check still only knew about images and printings.
+#
+# Interpolated into the SQL below, so it is a fixed allowlist defined here and
+# never built from anything a request can influence.
+REFRESH_REQUIRED_COLUMNS = ("image_url", "printing_prices", "card_type")
 
-    image_url only gets written by a full set re-stock (upsert_set_cards) —
-    the price-only refresh never touches it — so a set can be "complete" by
-    cached_set_counts and still be all-NULL here if it was stocked before
-    the image column existed. The refresh preflight uses this so those sets
-    aren't skipped as already-complete forever.
+
+async def cached_set_incomplete_counts(pool, game: str,
+                                       language: str = "english") -> dict:
+    """{set_id: rows missing at least one of REFRESH_REQUIRED_COLUMNS}.
+
+    A set can be card-count complete and still be missing a whole column:
+    each of these is only written by a path that reads the matching PPT
+    field, so anything stocked before that field was captured has NULL there
+    on every row. Counting them together means the preflight asks one
+    question — "is this set actually complete?" — rather than one question
+    per column that somebody has to remember to add.
     """
+    missing = " OR ".join("%s IS NULL" % c for c in REFRESH_REQUIRED_COLUMNS)
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT set_id, COUNT(*) AS n FROM catalog_cards "
-            "WHERE game = $1 AND language = $2 AND image_url IS NULL "
+            "WHERE game = $1 AND language = $2 AND (" + missing + ") "
             "GROUP BY set_id",
             game, language)
     return {r["set_id"]: int(r["n"]) for r in rows}
 
-
-async def cached_set_missing_variant_counts(pool, game: str, language: str = "english") -> dict:
-    """{set_id: cards with no printing_prices} for sets already in the catalog.
-
-    Same story as cached_set_missing_image_counts, one column over:
-    printing_prices only gets written by a path that captures PPT's
-    `variants` field (a full set re-stock, or — since the per-card refresh
-    fix — the nightly sweep and "Refresh selected"), so a set stocked before
-    that existed can be card-count-complete and image-complete while every
-    row here is still NULL. NULL means "never captured", not "only one
-    printing" — a card with just one printing on record still stores a
-    real (single-entry) dict, never NULL.
-    """
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT set_id, COUNT(*) AS n FROM catalog_cards "
-            "WHERE game = $1 AND language = $2 AND printing_prices IS NULL "
-            "GROUP BY set_id",
-            game, language)
-    return {r["set_id"]: int(r["n"]) for r in rows}
