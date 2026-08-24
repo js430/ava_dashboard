@@ -175,6 +175,36 @@
   table.rows { border-collapse: collapse; min-width: 100%; font-size: 12px; }
   table.rows th { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: .05em; padding: 7px 10px; text-align: left; border-bottom: 1px solid #e4e4e7; white-space: nowrap; }
   table.rows th.right, table.rows td.right { text-align: right; }
+  /* Scratch list. Lives in sessionStorage only: it dies with the tab, is
+     never sent anywhere, and has no row in any table. */
+  .scratch-bar { position: fixed; right: 18px; bottom: 18px; z-index: 60;
+                 background: #1f2024; color: #fff; border-radius: 10px;
+                 box-shadow: 0 6px 24px rgba(0,0,0,.3); font-size: 13px;
+                 max-width: min(420px, calc(100vw - 36px)); display: none; }
+  .scratch-head { display: flex; align-items: center; gap: 10px;
+                  padding: 10px 12px; cursor: pointer; }
+  .scratch-total { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .scratch-body { display: none; border-top: 1px solid #33343a;
+                  max-height: min(50vh, 420px); overflow-y: auto; }
+  .scratch-bar.open .scratch-body { display: block; }
+  .scratch-row { display: flex; align-items: center; gap: 8px;
+                 padding: 8px 12px; border-bottom: 1px solid #2a2b31; }
+  .scratch-row:last-child { border-bottom: none; }
+  .scratch-name { flex: 1 1 auto; min-width: 0; }
+  .scratch-sub { display: block; font-size: 11px; opacity: .65; }
+  .scratch-qty { display: flex; align-items: center; gap: 4px; flex: none; }
+  .scratch-qty button { width: 22px; height: 22px; border-radius: 5px;
+                        border: 1px solid #43444c; background: #2a2b31;
+                        color: #fff; cursor: pointer; line-height: 1; }
+  .scratch-line { flex: none; width: 74px; text-align: right;
+                  font-variant-numeric: tabular-nums; }
+  .scratch-foot { display: flex; gap: 8px; padding: 10px 12px;
+                  border-top: 1px solid #33343a; }
+  .scratch-foot button { flex: 1; padding: 6px 8px; border-radius: 6px;
+                         border: 1px solid #43444c; background: #2a2b31;
+                         color: #fff; cursor: pointer; font-size: 12px; }
+  .scratch-note { padding: 0 12px 10px; font-size: 11px; opacity: .6; }
+  .btn-scratch.on { background: #5865F2; color: #fff; border-color: #5865F2; }
   table.rows th.sortable { cursor: pointer; user-select: none; }
   table.rows th.sortable:hover { color: #333; }
   table.rows th.sortable .sort-arrow { color: #5865F2; font-size: 10px; margin-left: 2px; }
@@ -758,6 +788,172 @@ try {
 // The last page of cards loadCards() rendered, kept around so the printing-
 // prices toggle (and anything else display-only) can re-render without a
 // network round-trip for data that hasn't actually changed.
+// ── Scratch list ────────────────────────────────────────────────────────
+// A throwaway "what do these add up to" list. sessionStorage, so it survives
+// paging and reloads but dies with the tab, is never sent to the server, and
+// has no row in any table. Prices are SNAPSHOTS taken when a thing is added —
+// the panel says when — because re-pricing would need the card to still be on
+// screen, which it usually isn't by the time you have a few in the list.
+const SCRATCH_KEY = 'catalogScratch';
+const SCRATCH_MAX = 100;
+let scratch = [];
+
+function loadScratch(){
+  try {
+    const raw = sessionStorage.getItem(SCRATCH_KEY);
+    scratch = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(scratch)) scratch = [];
+  } catch(e){ scratch = []; }
+}
+
+function saveScratch(){
+  try { sessionStorage.setItem(SCRATCH_KEY, JSON.stringify(scratch)); } catch(e){}
+}
+
+function scratchIndex(key){
+  for (let i = 0; i < scratch.length; i++) if (scratch[i].key === key) return i;
+  return -1;
+}
+
+function addToScratch(item){
+  const at = scratchIndex(item.key);
+  if (at > -1) { scratch[at].qty += 1; }
+  else {
+    if (scratch.length >= SCRATCH_MAX) {
+      alert('The list holds ' + SCRATCH_MAX + ' different items. Remove something first.');
+      return;
+    }
+    item.qty = 1;
+    item.at = Date.now();
+    scratch.push(item);
+  }
+  saveScratch();
+  renderScratch();
+}
+
+function scratchQty(key, delta){
+  const at = scratchIndex(key);
+  if (at < 0) return;
+  scratch[at].qty += delta;
+  if (scratch[at].qty < 1) scratch.splice(at, 1);
+  saveScratch();
+  renderScratch();
+}
+
+function removeFromScratch(key){
+  const at = scratchIndex(key);
+  if (at < 0) return;
+  scratch.splice(at, 1);
+  saveScratch();
+  renderScratch();
+}
+
+function clearScratch(){
+  if (scratch.length && !confirm('Clear the whole list?')) return;
+  scratch = [];
+  saveScratch();
+  renderScratch();
+}
+
+function toggleScratch(){
+  const bar = document.getElementById('scratchBar');
+  bar.classList.toggle('open');
+  document.getElementById('scratchCaret').innerHTML =
+    bar.classList.contains('open') ? '&#9662;' : '&#9652;';
+}
+
+function scratchMoney(v){
+  const n = Number(v);
+  return isFinite(n) ? '$' + n.toFixed(2) : '';
+}
+
+function renderScratch(){
+  const bar = document.getElementById('scratchBar');
+  if (!bar) return;
+  if (!scratch.length){
+    bar.style.display = 'none';
+    bar.classList.remove('open');
+    markScratchButtons();
+    return;
+  }
+  bar.style.display = 'block';
+
+  let total = 0, unpriced = 0, units = 0;
+  scratch.forEach(it => {
+    units += it.qty;
+    if (it.price === null || it.price === undefined) unpriced += it.qty;
+    else total += Number(it.price) * it.qty;
+  });
+
+  document.getElementById('scratchCount').textContent =
+    units + (units === 1 ? ' item' : ' items');
+  document.getElementById('scratchTotal').textContent = scratchMoney(total);
+
+  document.getElementById('scratchBody').innerHTML = scratch.map(it =>
+    '<div class="scratch-row">' +
+      '<span class="scratch-name">' + esc(it.name) +
+        '<span class="scratch-sub">' + esc(it.sub || '') + '</span></span>' +
+      '<span class="scratch-qty">' +
+        '<button type="button" onclick="scratchQty(' + JSON.stringify(it.key) + ', -1)">&minus;</button>' +
+        '<span>' + it.qty + '</span>' +
+        '<button type="button" onclick="scratchQty(' + JSON.stringify(it.key) + ', 1)">+</button>' +
+      '</span>' +
+      '<span class="scratch-line">' +
+        (it.price === null || it.price === undefined
+          ? '<span style="opacity:.6">no price</span>'
+          : scratchMoney(Number(it.price) * it.qty)) +
+      '</span>' +
+      '<span class="scratch-qty">' +
+        '<button type="button" title="Remove" onclick="removeFromScratch(' +
+        JSON.stringify(it.key) + ')">&times;</button>' +
+      '</span>' +
+    '</div>').join('');
+
+  const oldest = Math.min.apply(null, scratch.map(it => it.at || Date.now()));
+  const mins = Math.round((Date.now() - oldest) / 60000);
+  const age = mins < 1 ? 'just now' : mins + (mins === 1 ? ' minute ago' : ' minutes ago');
+  document.getElementById('scratchNote').textContent =
+    'Prices captured from ' + age + '. This list is only in this tab and is not saved.' +
+    (unpriced ? ' ' + unpriced + ' item(s) have no price and are not in the total.' : '');
+
+  markScratchButtons();
+}
+
+// Reflect membership on whatever rows are currently on screen.
+function markScratchButtons(){
+  document.querySelectorAll('[data-scratch-key]').forEach(btn => {
+    const at = scratchIndex(btn.getAttribute('data-scratch-key'));
+    btn.classList.toggle('on', at > -1);
+    btn.textContent = at > -1 ? 'In list (' + scratch[at].qty + ')' : 'Compare';
+  });
+}
+
+function scratchButtonHtml(key){
+  return '<button type="button" class="btn btn-sm btn-scratch" ' +
+         'data-scratch-key="' + esc(key) + '" ' +
+         'onclick="onScratchClick(this)">Compare</button>';
+}
+
+function onScratchClick(btn){
+  const key = btn.getAttribute('data-scratch-key');
+  const parts = key.split(':');
+  if (parts[0] === 'card'){
+    const c = lastCards.filter(x => String(x.id) === parts[1])[0];
+    if (!c) return;
+    addToScratch({
+      key: key, name: c.name,
+      sub: [c.set_name, c.card_number, c.shown_variant].filter(Boolean).join(' · '),
+      price: c.shown_price === undefined ? c.raw_price : c.shown_price });
+  } else {
+    const r = sealedRows.filter(x => String(x.id) === parts[1])[0];
+    if (!r) return;
+    addToScratch({
+      key: key, name: r.name,
+      sub: [r.set_name, r.type_label].filter(Boolean).join(' · '),
+      price: r.market_price });
+  }
+}
+
 let lastCards = [];
 // A card's printing_prices is only worth showing when it actually
 // differentiates something — a single-printing card would just repeat the
@@ -1467,7 +1663,8 @@ function renderList(cards){
     const checkCell = IS_GUEST ? '' : `<td class="check-col"><input type="checkbox" class="row-check" data-id="${c.id}"
           ${selectedCards.has(c.id) ? 'checked' : ''} ${eligible.ok ? '' : 'disabled'}
           title="${esc(eligible.reason)}" onchange="onCardCheck(this)"></td>`;
-    const trackCell = IS_GUEST ? '' : `<td class="col-track">${trackButtonHtml(c)}</td>`;
+    const trackCell = IS_GUEST ? '' :
+      `<td class="col-track">${trackButtonHtml(c)}${scratchButtonHtml('card:' + c.id)}</td>`;
     return `<tr>
     ${checkCell}
     <td class="col-card">${nameCell}${c.card_number ? `<span class="cnum">${esc(c.card_number)}</span>` : ''}</td>
@@ -1484,6 +1681,7 @@ function renderList(cards){
     ${trackCell}
   </tr>`;
   }).join('');
+  markScratchButtons();
 }
 
 async function loadCards(){
@@ -1866,6 +2064,8 @@ document.getElementById('qPageSize').addEventListener('change', function(){
 
 updateSortIndicators();
 applyViewMode();
+loadScratch();
+renderScratch();
 loadFacets();
 loadPortfolioKeys().then(loadCards);
 
@@ -2030,9 +2230,11 @@ function renderSealed() {
         '<span style="opacity:.6">no price yet</span>') + '</td>' +
       (IS_GUEST_CAT ? '' :
         '<td class="acts-col"><button type="button" class="btn btn-sm" ' +
-        'data-add-sealed="' + r.id + '">Add to portfolio</button></td>') +
+        'data-add-sealed="' + r.id + '">Add to portfolio</button>' +
+        scratchButtonHtml('sealed:' + r.id) + '</td>') +
       '</tr>';
   }).join('');
+  markScratchButtons();
 
   if (more) {
     more.style.display = rows.length < sealedTotal ? 'block' : 'none';
@@ -2165,5 +2367,17 @@ async function confirmAddToPortfolio() {
 })();
 
 </script>
+<div class="scratch-bar" id="scratchBar">
+  <div class="scratch-head" onclick="toggleScratch()">
+    <b id="scratchCount">0 items</b>
+    <span class="scratch-total" id="scratchTotal"></span>
+    <span id="scratchCaret">&#9652;</span>
+  </div>
+  <div class="scratch-body" id="scratchBody"></div>
+  <div class="scratch-note" id="scratchNote"></div>
+  <div class="scratch-foot">
+    <button type="button" onclick="clearScratch()">Clear list</button>
+  </div>
+</div>
 </body>
 </html>
