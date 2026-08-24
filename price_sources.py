@@ -878,6 +878,12 @@ async def fetch_ppt_set_cards_detailed(client: httpx.AsyncClient, set_name: str,
             # same free-with-this-response deal as raw_price and image_url.
             # None when PPT reports only one printing worth showing.
             "printing_prices": _ppt_printing_prices(row),
+            # PPT's own supertype/subtype label ("Pokemon", "Trainer",
+            # "Energy", and whatever else it reports). Free with this
+            # response, same as raw_price and image_url — we were already
+            # paying for the row and throwing this away.
+            "card_type": (str(_first(row, "cardType", "card_type") or "").strip()
+                          or None),
         })
 
     def _sort_key(card):

@@ -196,10 +196,11 @@
   .col-updated { color: #999; white-space: nowrap; }
   .check-col { width: 28px; text-align: center; }
   .col-track { width: 92px; text-align: center; }
-  /* Variant is a JS-driven show/hide (tied to the Variant prices toggle),
-     not a Jinja one, since flipping the toggle must not require a reload. */
-  .col-variant { display: none; min-width: 190px; }
-  body.show-variant-col .col-variant { display: table-cell; }
+  /* Variant is a permanent column: which printings a card has on record is
+     part of what the row IS, not an optional extra. The "Variant prices"
+     toggle now only controls the per-printing price BREAKDOWN. */
+  .col-variant { min-width: 190px; }
+  .col-cardtype { min-width: 130px; }
   .shown-variant-label { display: block; font-size: 10px; color: #888; font-weight: 400; }
   html[data-theme="dark"] .shown-variant-label { color: #999; }
   .track-btn.added { color: #2e7d32; border-color: #a5d6a7; }
@@ -239,7 +240,7 @@
     /* Admin selection and "last updated" are secondary on a phone-width
        table — hidden here rather than fought into the same four-column
        budget the filters already need every percent of. */
-    .check-col, .col-updated, .col-track, .col-variant { display: none; }
+    .check-col, .col-updated, .col-track, .col-variant, .col-cardtype { display: none; }
     table.rows th.col-card, table.rows td.col-card { width: 33%; }
     table.rows th.col-set, table.rows td.col-set { width: 24%; }
     table.rows th.col-rarity, table.rows td.col-rarity { width: 22%; }
@@ -455,6 +456,7 @@
                 <th class="col-card sortable" onclick="onHeaderSortClick('name')" data-sort-col="name">Card<span class="sort-arrow"></span></th>
                 <th class="col-set sortable" onclick="onHeaderSortClick('set')" data-sort-col="set">Set<span class="sort-arrow"></span></th>
                 <th class="col-rarity sortable" onclick="onHeaderSortClick('rarity')" data-sort-col="rarity">Rarity<span class="sort-arrow"></span></th>
+                <th class="col-cardtype">Type</th>
                 <th class="col-variant">Variant</th>
                 <th class="right col-price sortable" onclick="onHeaderSortClick('price')" data-sort-col="price">Raw price<span class="sort-arrow"></span></th>
                 <th class="col-updated sortable" onclick="onHeaderSortClick('updated')" data-sort-col="updated">Last updated<span class="sort-arrow"></span></th>
@@ -493,12 +495,25 @@
                     <input type="checkbox" id="excludeRarities" aria-label="Exclude the chosen rarities">Exclude
                   </label>
                 </th>
+                <th class="col-cardtype">
+                  <button type="button" class="th-picker" id="cardTypePickerBtn"
+                          onclick="openPicker('cardType', this)" aria-haspopup="true"
+                          aria-expanded="false"
+                          title="Pokemon, Trainer, Energy and whatever else the price source reports — the options are whatever the catalog actually contains.">
+                    <span id="cardTypePickerLabel">All types</span><span class="th-caret">&#9662;</span>
+                  </button>
+                  <label class="filter-exclude" title="Show every card that is NOT one of the chosen types">
+                    <input type="checkbox" id="excludeCardTypes" aria-label="Exclude the chosen card types">Exclude
+                  </label>
+                </th>
                 <th class="col-variant">
-                  <select id="qVariant" class="th-input" aria-label="Filter by printing/variant"
-                          title="Only cards with this printing on record. Also swaps the price shown/sorted to that printing's own price.">
-                    <option value="">All variants</option>
-                  </select>
-                  <label class="filter-exclude" title="Show every card that does NOT have this printing on record">
+                  <button type="button" class="th-picker" id="variantPickerBtn"
+                          onclick="openPicker('variant', this)" aria-haspopup="true"
+                          aria-expanded="false"
+                          title="Only cards with one of these printings on record. Picking exactly one also swaps the price shown and sorted to that printing's own price.">
+                    <span id="variantPickerLabel">All variants</span><span class="th-caret">&#9662;</span>
+                  </button>
+                  <label class="filter-exclude" title="Show every card that has NONE of the chosen printings">
                     <input type="checkbox" id="excludeVariant" aria-label="Exclude cards with this printing">Exclude
                   </label>
                 </th>
@@ -749,6 +764,16 @@ function printingPricesHtml(c){
     .map(([label, price]) => `${esc(label)} ${money(price)}`)
     .join(' &middot; ')}</div>`;
 }
+// With exactly one printing filtered, the cell names it — that is the price
+// the row is showing. Otherwise it lists what the card actually has on
+// record, which is what makes the column worth a permanent slot rather than
+// a mostly-blank one.
+function variantCellHtml(c){
+  if (c.shown_variant) return esc(c.shown_variant);
+  const names = c.printing_prices ? Object.keys(c.printing_prices) : [];
+  return names.length ? esc(names.join(' · ')) : '';
+}
+
 // Grid tiles have no separate Variant column (the list table does), so when
 // the Variant filter has swapped the displayed price to one printing's own
 // number, label it right there instead of leaving an unexplained price.
@@ -979,12 +1004,15 @@ async function refreshSelectedCards(){
 
 // Selection lives here, not in the DOM: the picker is built on open and torn
 // down on close, so checkbox state can't be the source of truth.
-const selected = { set: new Set(), rarity: new Set() };
+const selected = { set: new Set(), rarity: new Set(), variant: new Set(),
+                   cardType: new Set() };
 
 // Options for each picker, refreshed by loadFacets().
 const pickerData = {
   set:    { options: [], label: 'sets',     btn: 'setPickerBtn',    lbl: 'setPickerLabel' },
   rarity: { options: [], label: 'rarities', btn: 'rarityPickerBtn', lbl: 'rarityPickerLabel' },
+  variant: { options: [], label: 'variants', btn: 'variantPickerBtn', lbl: 'variantPickerLabel' },
+  cardType: { options: [], label: 'types', btn: 'cardTypePickerBtn', lbl: 'cardTypePickerLabel' },
 };
 
 function updatePickerLabel(key){
@@ -1008,8 +1036,9 @@ function updatePickerLabel(key){
 function clearFilters(){
   ['qSearch','qMin','qMax'].forEach(id => { document.getElementById(id).value = ''; });
   document.getElementById('qPriced').checked = false;
-  document.getElementById('qVariant').value = '';
-  ['excludeSearch','excludeSets','excludeRarities','excludePrice','excludeVariant'].forEach(id => {
+  selected.variant.clear(); updatePickerLabel('variant');
+  selected.cardType.clear(); updatePickerLabel('cardType');
+  ['excludeSearch','excludeSets','excludeRarities','excludePrice','excludeVariant','excludeCardTypes'].forEach(id => {
     const cb = document.getElementById(id);
     cb.checked = false;
     cb.closest('.filter-exclude').classList.remove('active');
@@ -1044,15 +1073,16 @@ function currentParams(){
   if (document.getElementById('qPriced').checked) p.set('priced_only', '1');
   if (selected.set.size) p.set('sets', [...selected.set].join(','));
   if (selected.rarity.size) p.set('rarities', [...selected.rarity].join(','));
-  const variant = document.getElementById('qVariant').value;
-  if (variant) p.set('variant', variant);
+  if (selected.variant.size) p.set('variant', [...selected.variant].join(','));
+  if (selected.cardType.size) p.set('card_type', [...selected.cardType].join(','));
   // "Exclude" flips a filter to "all but these" — only meaningful (and only
   // sent) when that filter actually has something selected.
   if (search && document.getElementById('excludeSearch').checked) p.set('exclude_search', '1');
   if (selected.set.size && document.getElementById('excludeSets').checked) p.set('exclude_sets', '1');
   if (selected.rarity.size && document.getElementById('excludeRarities').checked) p.set('exclude_rarities', '1');
   if ((min !== '' || max !== '') && document.getElementById('excludePrice').checked) p.set('exclude_price', '1');
-  if (variant && document.getElementById('excludeVariant').checked) p.set('exclude_variant', '1');
+  if (selected.variant.size && document.getElementById('excludeVariant').checked) p.set('exclude_variant', '1');
+  if (selected.cardType.size && document.getElementById('excludeCardTypes').checked) p.set('exclude_card_types', '1');
   p.set('language', currentLanguages().join(','));
   p.set('sort', document.getElementById('qSort').value);
   p.set('limit', pageSize);
@@ -1076,17 +1106,32 @@ function exportCsv(){
 // filter but not this one (catalog._facet_counts' "ignore your own filter"
 // rule) — a variant already selected is kept in the list even at 0 so it
 // doesn't vanish out from under the user mid-filter.
+function applyCardTypeFacet(types){
+  const rows = (types || []).map(t => ({
+    value: t.card_type, name: t.card_type, count: t.count }));
+  // A chosen type that now matches nothing stays listed at 0 so it can be
+  // switched back off.
+  selected.cardType.forEach(v => {
+    if (!rows.some(r => r.value === v)) rows.push({ value: v, name: v, count: 0 });
+  });
+  pickerData.cardType.options = rows;
+  updatePickerLabel('cardType');
+  if (openPickerKey === 'cardType') renderPickerList(
+    document.getElementById('pickerSearch').value);
+}
+
 function applyVariantFacet(variants){
-  const select = document.getElementById('qVariant');
-  const current = select.value;
-  const rows = (variants || []).slice();
-  if (current && !rows.some(v => v.variant === current)){
-    rows.push({ variant: current, count: 0 });
-  }
-  select.innerHTML = '<option value="">All variants</option>' + rows.map(v =>
-    `<option value="${esc(v.variant)}"${v.variant === current ? ' selected' : ''}>`
-    + `${esc(v.variant)} (${v.count})</option>`
-  ).join('');
+  const rows = (variants || []).map(v => ({
+    value: v.variant, name: v.variant, count: v.count }));
+  // A chosen printing that now matches nothing stays listed at 0, or it
+  // vanishes while still filtering and can't be switched back off.
+  selected.variant.forEach(v => {
+    if (!rows.some(r => r.value === v)) rows.push({ value: v, name: v, count: 0 });
+  });
+  pickerData.variant.options = rows;
+  updatePickerLabel('variant');
+  if (openPickerKey === 'variant') renderPickerList(
+    document.getElementById('pickerSearch').value);
 }
 
 // The set and rarity filters narrow each other: pick an era and only the
@@ -1128,6 +1173,7 @@ function applyFacets(f){
   merge('rarity', (f.rarities || []).map(r => ({
     value: r.rarity, name: r.rarity, count: r.count })));
   applyVariantFacet(f.variants || []);
+  applyCardTypeFacet(f.card_types || []);
 
   updatePickerLabel('set');
   updatePickerLabel('rarity');
@@ -1152,7 +1198,7 @@ function openPicker(key, btn){
   const panel = document.getElementById('picker');
   const search = document.getElementById('pickerSearch');
   search.value = '';
-  search.placeholder = 'Find a ' + (key === 'set' ? 'set' : 'rarity') + '…';
+  search.placeholder = 'Find a ' + ({ set: 'set', rarity: 'rarity', variant: 'printing', cardType: 'type' }[key] || key) + '…';
   renderPickerList('');
   panel.style.display = 'block';
   positionPicker(btn);
@@ -1423,7 +1469,8 @@ function renderList(cards){
       currentLanguages().length > 1 && c.language
         ? `<span class="lang-badge">${c.language === 'japanese' ? 'JP' : 'EN'}</span>` : ''}</td>
     <td class="col-rarity">${c.rarity ? `<span class="rarity-chip">${esc(c.rarity)}</span>` : ''}</td>
-    <td class="col-variant">${c.shown_variant ? esc(c.shown_variant) : ''}</td>
+    <td class="col-cardtype">${c.card_type ? esc(c.card_type) : ''}</td>
+    <td class="col-variant">${variantCellHtml(c)}</td>
     <td class="right col-price">${c.shown_price == null
         ? '<span class="price-none">no price</span>'
         : `<span class="price">${money(c.shown_price)}</span>`}${showPrintings ? printingPricesHtml(c) : ''}</td>
@@ -1772,25 +1819,14 @@ document.getElementById('qSort').addEventListener('change', () => { updateSortIn
     this.closest('.filter-exclude').classList.toggle('active', this.checked);
     resetAndLoad();
   }));
-document.getElementById('qVariant').addEventListener('change', resetAndLoad);
 
 document.getElementById('qShowPrintings').checked = showPrintings;
-document.body.classList.toggle('show-variant-col', showPrintings);
 document.getElementById('qShowPrintings').addEventListener('change', function(){
   showPrintings = this.checked;
   try { localStorage.setItem('catalogShowPrintings', showPrintings ? '1' : '0'); } catch(e){}
-  document.body.classList.toggle('show-variant-col', showPrintings);
-  if (!showPrintings){
-    // The Variant column (and its filter) just disappeared — clearing the
-    // filter along with it means results don't stay silently narrowed by a
-    // control the user can no longer see.
-    const variantWasActive = document.getElementById('qVariant').value !== '';
-    document.getElementById('qVariant').value = '';
-    const excludeVariant = document.getElementById('excludeVariant');
-    excludeVariant.checked = false;
-    excludeVariant.closest('.filter-exclude').classList.remove('active');
-    if (variantWasActive){ resetAndLoad(); return; }
-  }
+  // Only the per-printing price breakdown is optional now. The Variant column
+  // and its filter are permanent, so nothing has to be cleared here — the
+  // filter can no longer be left narrowing results from a hidden control.
   // Purely a display choice over data already fetched — re-render both
   // views from lastCards rather than re-querying the server.
   renderList(lastCards);

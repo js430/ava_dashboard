@@ -234,6 +234,18 @@ CATALOG_SCHEMA = [
     # (re-)stocked with this field read; a card with only one printing on
     # record also stores NULL — nothing extra worth showing.
     "ALTER TABLE catalog_cards ADD COLUMN IF NOT EXISTS printing_prices JSONB",
+    # PPT's own `cardType` — "Pokemon", "Trainer", "Energy" and whatever else
+    # it reports, stored verbatim rather than mapped to a vocabulary of ours:
+    # the filter's options are built from the distinct values actually present
+    # (see _facet_counts), so a value we have never seen still shows up as
+    # something to pick instead of being silently dropped. NULL until a row is
+    # (re-)stocked with this field read.
+    "ALTER TABLE catalog_cards ADD COLUMN IF NOT EXISTS card_type TEXT",
+    # Serves the card-type facet count and filter.
+    """
+    CREATE INDEX IF NOT EXISTS idx_catalog_cards_type
+        ON catalog_cards (game, language, card_type)
+    """,
 ]
 
 
@@ -281,8 +293,8 @@ _UPSERT = """
     INSERT INTO catalog_cards
         (game, language, set_id, set_name, card_name, card_number, rarity,
          tcgplayer_id, tcgplayer_verified, number_sort, raw_price, price_source,
-         image_url, printing_prices, priced_at, refreshed_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::NUMERIC,$12,$13,$14::JSONB,
+         image_url, printing_prices, card_type, priced_at, refreshed_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::NUMERIC,$12,$13,$14::JSONB,$15,
             CASE WHEN $11::NUMERIC IS NULL THEN NULL ELSE NOW() END, NOW())
     ON CONFLICT (game, language, set_id, card_number, card_name, rarity)
     DO UPDATE SET
@@ -297,6 +309,7 @@ _UPSERT = """
         -- have. Only a real value replaces a real value.
         image_url          = COALESCE(EXCLUDED.image_url, catalog_cards.image_url),
         printing_prices    = COALESCE(EXCLUDED.printing_prices, catalog_cards.printing_prices),
+        card_type          = COALESCE(EXCLUDED.card_type, catalog_cards.card_type),
         priced_at          = EXCLUDED.priced_at,
         refreshed_at       = NOW()
 """
@@ -308,7 +321,7 @@ async def upsert_set_cards(pool, game: str, language: str, set_id: str,
 
     `cards` is the shape `price_sources.fetch_ppt_set_cards` returns:
     {name, card_number, variant, tcgplayer_id, set_name, raw_price, image_url,
-    printing_prices}.
+    printing_prices, card_type}.
 
     A refresh takes the new response as truth: if a card no longer carries a
     price, its cached price is cleared rather than left to look current.
@@ -336,6 +349,8 @@ async def upsert_set_cards(pool, game: str, language: str, set_id: str,
             (str(card.get("image_url")).strip()[:500]
              if card.get("image_url") else None),
             json.dumps(printing_prices) if printing_prices else None,
+            (str(card.get("card_type")).strip()[:40]
+             if card.get("card_type") else None),
         ))
     if not rows:
         return {"cards": 0, "priced": 0}
@@ -474,7 +489,7 @@ def _norm_languages(language) -> list:
 def _build_filters(game: str, language, set_ids=None, rarities=None,
                    min_price=None, max_price=None, search: str = "",
                    priced_only: bool = False, restrict_set_ids=None,
-                   exclude=None, variant: str = "") -> tuple:
+                   exclude=None, variants=None, card_types=None) -> tuple:
     """(where_sql, params). Every value is a bind parameter, never inlined.
 
     `language` may be one language or several — see _norm_languages. It is
@@ -566,22 +581,35 @@ def _build_filters(game: str, language, set_ids=None, rarities=None,
         # other filter.
         combined = "(" + " OR ".join(clauses) + ")"
         where.append(f"NOT {combined}" if exclude.get("search") else combined)
-    if variant:
-        # `?` is JSONB's key-existence operator — printing_prices is a dict
-        # keyed by printing name, so this asks "does this card have a price
-        # on record for this specific printing" without caring what that
-        # price is. NULL (never captured) is excluded from a match the same
-        # way an unpriced card is excluded from a price-range match.
-        params.append(variant)
+    if card_types and any(card_types):
+        # Stored verbatim from PPT, so matched verbatim. A card with no type
+        # on record can never match an INCLUDE filter — same rule PPT applies
+        # to its own cardType filter.
+        params.append([str(t) for t in card_types if t])
         n = len(params)
-        clause = f"(printing_prices IS NOT NULL AND printing_prices ? ${n})"
+        clause = f"(card_type = ANY(${n}::text[]))"
+        where.append(f"NOT {clause}" if exclude.get("card_types") else clause)
+    if variants and any(variants):
+        # `?|` is JSONB's "does it have ANY of these keys" operator —
+        # printing_prices is a dict keyed by printing name, so this asks
+        # whether the card carries a price for any chosen printing, without
+        # caring what that price is. NULL (never captured) is excluded from a
+        # match the same way an unpriced card is excluded from a price range.
+        # Cleaned here, not just in the callers: a None reaching a text[]
+        # parameter is a database error, and this is the last place that can
+        # stop one.
+        params.append([str(v) for v in variants if v])
+        n = len(params)
+        clause = (f"(printing_prices IS NOT NULL "
+                  f"AND printing_prices ?| ${n}::text[])")
         where.append(f"NOT {clause}" if exclude.get("variant") else clause)
     return " AND ".join(where), params
 
 
 async def _facet_counts(conn, game, language, set_ids, rarities,
                         min_price, max_price, search, priced_only,
-                        restrict_set_ids=None, exclude=None, variant: str = "") -> dict:
+                        restrict_set_ids=None, exclude=None, variants=None,
+                        card_types=None) -> dict:
     """Option counts for the set, rarity, and variant filters, so each
     narrows the others.
 
@@ -605,16 +633,18 @@ async def _facet_counts(conn, game, language, set_ids, rarities,
     exclude = exclude or {}
     rarity_where, rarity_params = _build_filters(
         game, language, set_ids, None, min_price, max_price, search, priced_only,
-        restrict_set_ids, exclude={**exclude, "rarities": False}, variant=variant)
+        restrict_set_ids, exclude={**exclude, "rarities": False}, variants=variants,
+        card_types=card_types)
     set_where, set_params = _build_filters(
         game, language, None, rarities, min_price, max_price, search, priced_only,
-        restrict_set_ids, exclude={**exclude, "sets": False}, variant=variant)
+        restrict_set_ids, exclude={**exclude, "sets": False}, variants=variants,
+        card_types=card_types)
     # Ignoring the variant filter here means omitting it entirely (not just
     # zeroing its exclude flag) — unlike set_ids/rarities, `variant` is a
     # single value with no "selected but ignored" middle state to express.
     variant_where, variant_params = _build_filters(
         game, language, set_ids, rarities, min_price, max_price, search, priced_only,
-        restrict_set_ids, exclude=exclude, variant="")
+        restrict_set_ids, exclude=exclude, variants=None, card_types=card_types)
 
     rarity_rows = await conn.fetch(
         f"SELECT rarity, COUNT(*) AS n FROM catalog_cards "
@@ -631,6 +661,18 @@ async def _facet_counts(conn, game, language, set_ids, rarities,
     # jsonb_object_keys is a set-returning function — one row per printing
     # name per card, implicitly LATERAL against the preceding table, which is
     # why a card with two printings contributes two rows to this count.
+    # Its own filter is omitted here, same rule as the variant facet: the
+    # options a member can pick from must not be narrowed by what they have
+    # already picked, or deselecting becomes impossible.
+    type_where, type_params = _build_filters(
+        game, language, set_ids, rarities, min_price, max_price, search,
+        priced_only, restrict_set_ids, exclude=exclude, variants=variants,
+        card_types=None)
+    card_type_rows = await conn.fetch(
+        f"SELECT card_type, COUNT(*) AS n FROM catalog_cards "
+        f"WHERE {type_where} AND card_type IS NOT NULL AND card_type <> '' "
+        f"GROUP BY card_type ORDER BY n DESC, card_type ASC", *type_params)
+
     variant_rows = await conn.fetch(
         f"SELECT variant_name, COUNT(*) AS n FROM catalog_cards, "
         f"     LATERAL jsonb_object_keys(printing_prices) AS variant_name "
@@ -642,6 +684,8 @@ async def _facet_counts(conn, game, language, set_ids, rarities,
         "sets": [{"set_id": r["set_id"], "language": r["language"],
                   "set_name": r["set_name"] or r["set_id"],
                   "cards": int(r["n"])} for r in set_rows],
+        "card_types": [{"card_type": r["card_type"], "count": int(r["n"])}
+                       for r in card_type_rows],
         "variants": [{"variant": r["variant_name"], "count": int(r["n"])}
                     for r in variant_rows],
     }
@@ -649,7 +693,8 @@ async def _facet_counts(conn, game, language, set_ids, rarities,
 
 async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
                       set_ids=None, rarities=None, min_price=None, max_price=None,
-                      search: str = "", priced_only: bool = False, variant: str = "",
+                      search: str = "", priced_only: bool = False, variants=None,
+                      card_types=None,
                       sort: str = DEFAULT_SORT, limit: int = 50, offset: int = 0,
                       with_facets: bool = False, restrict_set_ids=None,
                       exclude=None) -> dict:
@@ -670,21 +715,28 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
 
     `exclude` flips individual filters to "all but these" — see _build_filters.
 
-    A `variant` selected in INCLUDE mode (not excluded) does double duty
-    beyond filtering: every matched row is guaranteed to actually carry that
+    Exactly ONE `variant` selected in INCLUDE mode (not excluded) does double
+    duty beyond filtering: every matched row is guaranteed to carry that
     printing (see _build_filters), so the card's "shown" price and a
     price-sort both switch to that printing's number instead of the card's
     default raw_price — that's the whole point of filtering by printing in
-    the first place. An excluded variant only narrows which rows show; there
-    is no "that printing's price" to display for a card that doesn't have it.
+    the first place.
+
+    With SEVERAL chosen there is no single "that printing's price" to show —
+    a row matched on Reverse Holofoil and its neighbour on Normal — so the
+    price stays the card's own and only the row filtering applies. An
+    excluded variant likewise has no price to display for a card that does
+    not carry it.
     """
     exclude = exclude or {}
-    variant = (variant or "").strip()
-    variant_shown = bool(variant) and not exclude.get("variant")
+    variants = [v for v in (variants or []) if v]
+    variant_shown = len(variants) == 1 and not exclude.get("variant")
+    variant = variants[0] if variant_shown else ""
 
     where_sql, params = _build_filters(game, language, set_ids, rarities,
                                        min_price, max_price, search, priced_only,
-                                       restrict_set_ids, exclude, variant)
+                                       restrict_set_ids, exclude, variants,
+                                       card_types)
 
     order_by = SORT_COLUMNS.get(sort, SORT_COLUMNS[DEFAULT_SORT])
     page_params = list(params)
@@ -699,7 +751,7 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
 
     page_sql = (
         "SELECT id, set_id, language, set_name, card_name, card_number, rarity, "
-        "       tcgplayer_id, image_url, printing_prices, "
+        "       card_type, tcgplayer_id, image_url, printing_prices, "
         "       tcgplayer_verified, raw_price, price_source, priced_at, refreshed_at "
         f"FROM catalog_cards WHERE {where_sql} "
         f"ORDER BY {order_by} "
@@ -712,7 +764,8 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
         total = await conn.fetchval(count_sql, *params)
         facets = await _facet_counts(
             conn, game, language, set_ids, rarities, min_price, max_price,
-            search, priced_only, restrict_set_ids, exclude, variant) if with_facets else None
+            search, priced_only, restrict_set_ids, exclude, variants,
+            card_types) if with_facets else None
 
     def _shown_price(r):
         if not variant_shown:
@@ -734,6 +787,9 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
             "name": r["card_name"],
             "card_number": r["card_number"],
             "rarity": r["rarity"],
+            # NULL on rows stocked before card_type shipped — the column shows
+            # a dash rather than pretending the card has no type.
+            "card_type": r["card_type"],
             "tcgplayer_id": r["tcgplayer_id"],
             # Resolved server-side so the gate that decides a link is safe
             # lives in one tested place, not in template JavaScript.
@@ -773,9 +829,9 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
 
 async def export_rows(pool, *, game: str, language=DEFAULT_LANGUAGE,
                       set_ids=None, rarities=None, min_price=None, max_price=None,
-                      search: str = "", priced_only: bool = False, variant: str = "",
-                      sort: str = DEFAULT_SORT, restrict_set_ids=None,
-                      exclude=None) -> list:
+                      search: str = "", priced_only: bool = False, variants=None,
+                      card_types=None, sort: str = DEFAULT_SORT,
+                      restrict_set_ids=None, exclude=None) -> list:
     """Every row matching the given filters, up to EXPORT_MAX_ROWS — no
     pagination, since the point of an export is "everything these filters
     currently match," not one page of it. Shares _build_filters with
@@ -785,12 +841,16 @@ async def export_rows(pool, *, game: str, language=DEFAULT_LANGUAGE,
     query_cards' shown_price/shown_variant).
     """
     exclude = exclude or {}
-    variant = (variant or "").strip()
-    variant_shown = bool(variant) and not exclude.get("variant")
+    variants = [v for v in (variants or []) if v]
+    # Same rule as query_cards: one chosen printing swaps the exported price,
+    # several cannot, because there is no single printing to swap to.
+    variant_shown = len(variants) == 1 and not exclude.get("variant")
+    variant = variants[0] if variant_shown else ""
 
     where_sql, params = _build_filters(game, language, set_ids, rarities,
                                        min_price, max_price, search, priced_only,
-                                       restrict_set_ids, exclude, variant)
+                                       restrict_set_ids, exclude, variants,
+                                       card_types)
 
     order_by = SORT_COLUMNS.get(sort, SORT_COLUMNS[DEFAULT_SORT])
     query_params = list(params)
@@ -803,7 +863,7 @@ async def export_rows(pool, *, game: str, language=DEFAULT_LANGUAGE,
 
     sql = (
         "SELECT set_id, language, set_name, card_name, card_number, rarity, "
-        "       tcgplayer_id, tcgplayer_verified, raw_price, printing_prices, "
+        "       card_type, tcgplayer_id, tcgplayer_verified, raw_price, printing_prices, "
         "       price_source, priced_at, refreshed_at "
         f"FROM catalog_cards WHERE {where_sql} "
         f"ORDER BY {order_by} "
@@ -829,6 +889,7 @@ async def export_rows(pool, *, game: str, language=DEFAULT_LANGUAGE,
             "name": r["card_name"],
             "card_number": r["card_number"],
             "rarity": r["rarity"],
+            "card_type": r["card_type"],
             "tcgplayer_url": tcgplayer_url(r["tcgplayer_id"], r["tcgplayer_verified"]),
             "ebay_url": ebay_search_url(r["card_name"], r["set_name"], r["card_number"]),
             "raw_price": shown_price,
