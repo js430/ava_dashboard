@@ -200,16 +200,20 @@
   .scratch-body { display: none; border-top: 1px solid #33343a;
                   overflow-y: auto; flex: 1 1 auto; min-height: 0; }
   .scratch-bar.open .scratch-body { display: block; }
-  .scratch-row { display: flex; align-items: center; gap: 8px;
-                 padding: 8px 12px; border-bottom: 1px solid #2a2b31; }
+  /* Stacked, not side by side: at 288px a name column sharing the row with
+     quantity, price and remove gets about 90px and wraps a product name over
+     four lines. */
+  .scratch-row { display: flex; flex-direction: column; gap: 6px;
+                 padding: 9px 12px; border-bottom: 1px solid #2a2b31; }
+  .scratch-ctl { display: flex; align-items: center; gap: 8px; }
   .scratch-row:last-child { border-bottom: none; }
-  .scratch-name { flex: 1 1 auto; min-width: 0; }
+  .scratch-name { line-height: 1.35; overflow-wrap: anywhere; }
   .scratch-sub { display: block; font-size: 11px; opacity: .65; }
   .scratch-qty { display: flex; align-items: center; gap: 4px; flex: none; }
-  .scratch-qty button { width: 22px; height: 22px; border-radius: 5px;
+  .scratch-qty button, .scratch-x { width: 22px; height: 22px; border-radius: 5px;
                         border: 1px solid #43444c; background: #2a2b31;
-                        color: #fff; cursor: pointer; line-height: 1; }
-  .scratch-line { flex: none; width: 74px; text-align: right;
+                        color: #fff; cursor: pointer; line-height: 1; flex: none; }
+  .scratch-line { margin-left: auto; text-align: right;
                   font-variant-numeric: tabular-nums; }
   .scratch-foot { display: flex; gap: 8px; padding: 10px 12px;
                   border-top: 1px solid #33343a; }
@@ -881,6 +885,16 @@ function scratchQty(key, delta){
   renderScratch();
 }
 
+function scratchQtyAt(i, delta){
+  const it = scratch[i];
+  if (it) scratchQty(it.key, delta);
+}
+
+function removeScratchAt(i){
+  const it = scratch[i];
+  if (it) removeFromScratch(it.key);
+}
+
 function removeFromScratch(key){
   const at = scratchIndex(key);
   if (at < 0) return;
@@ -944,23 +958,27 @@ function renderScratch(){
     units + (units === 1 ? ' item' : ' items');
   document.getElementById('scratchTotal').textContent = scratchMoney(total);
 
-  document.getElementById('scratchBody').innerHTML = scratch.map(it =>
+  // Addressed by POSITION, not by key. A key goes through JSON.stringify into
+  // an onclick="..." attribute as "sealed:9" — double quotes, inside a
+  // double-quoted attribute, which closes it and truncates the handler. The
+  // list is redrawn after every change, so positions are never stale.
+  document.getElementById('scratchBody').innerHTML = scratch.map((it, i) =>
     '<div class="scratch-row">' +
       '<span class="scratch-name">' + esc(it.name) +
         '<span class="scratch-sub">' + esc(it.sub || '') + '</span></span>' +
+      '<span class="scratch-ctl">' +
       '<span class="scratch-qty">' +
-        '<button type="button" onclick="scratchQty(' + JSON.stringify(it.key) + ', -1)">&minus;</button>' +
+        '<button type="button" onclick="scratchQtyAt(' + i + ', -1)">&minus;</button>' +
         '<span>' + it.qty + '</span>' +
-        '<button type="button" onclick="scratchQty(' + JSON.stringify(it.key) + ', 1)">+</button>' +
+        '<button type="button" onclick="scratchQtyAt(' + i + ', 1)">+</button>' +
       '</span>' +
       '<span class="scratch-line">' +
         (it.price === null || it.price === undefined
           ? '<span style="opacity:.6">no price</span>'
           : scratchMoney(Number(it.price) * it.qty)) +
       '</span>' +
-      '<span class="scratch-qty">' +
-        '<button type="button" title="Remove" onclick="removeFromScratch(' +
-        JSON.stringify(it.key) + ')">&times;</button>' +
+      '<button type="button" class="scratch-x" title="Remove" ' +
+        'onclick="removeScratchAt(' + i + ')">&times;</button>' +
       '</span>' +
     '</div>').join('');
 
