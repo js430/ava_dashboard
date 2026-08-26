@@ -365,6 +365,24 @@
 <script src="/static/csrf.js"></script>
 </head>
 <body>
+<div class="scratch-bar" id="scratchBar">
+  <div class="scratch-head" onclick="toggleScratch()">
+    <b id="scratchCount">Quick tally</b>
+    <span class="scratch-total" id="scratchTotal"></span>
+    <span id="scratchCaret">&#9652;</span>
+  </div>
+  <div class="scratch-body" id="scratchBody"></div>
+  <div class="scratch-empty" id="scratchEmpty">
+    Nothing here yet. Hit <strong>+ Tally</strong> on any card or product to
+    add it up here. Nothing is saved &mdash; this list lives in this tab only,
+    and is not your portfolio.
+  </div>
+  <div class="scratch-note" id="scratchNote"></div>
+  <div class="scratch-foot">
+    <button type="button" onclick="clearScratch()">Clear list</button>
+  </div>
+</div>
+
 
 <div class="header">
   <div>
@@ -887,6 +905,9 @@ function toggleScratch(){
 
 function setScratchOpen(open){
   const bar = document.getElementById('scratchBar');
+  // Guarded because this runs during init: if the panel ever ends up after
+  // this script again, the page must still load its cards.
+  if (!bar) return;
   bar.classList.toggle('open', open);
   document.body.classList.toggle('scratch-open', open);
   document.getElementById('scratchCaret').innerHTML = open ? '&#9652;' : '&#9662;';
@@ -2406,22 +2427,5 @@ async function confirmAddToPortfolio() {
 })();
 
 </script>
-<div class="scratch-bar" id="scratchBar">
-  <div class="scratch-head" onclick="toggleScratch()">
-    <b id="scratchCount">Quick tally</b>
-    <span class="scratch-total" id="scratchTotal"></span>
-    <span id="scratchCaret">&#9652;</span>
-  </div>
-  <div class="scratch-body" id="scratchBody"></div>
-  <div class="scratch-empty" id="scratchEmpty">
-    Nothing here yet. Hit <strong>+ Tally</strong> on any card or product to
-    add it up here. Nothing is saved &mdash; this list lives in this tab only,
-    and is not your portfolio.
-  </div>
-  <div class="scratch-note" id="scratchNote"></div>
-  <div class="scratch-foot">
-    <button type="button" onclick="clearScratch()">Clear list</button>
-  </div>
-</div>
 </body>
 </html>
