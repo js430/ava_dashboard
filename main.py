@@ -6126,6 +6126,7 @@ def _alert_json(row: dict) -> dict:
     return {
         "id": row["id"],
         "keyword": row["keyword"],
+        "match_all": row["match_all"],
         # Snowflakes as strings: a channel id is larger than JavaScript's
         # safe integer range, and the browser only ever echoes it back.
         "channel_ids": [str(c) for c in (row["channel_ids"] or [])],

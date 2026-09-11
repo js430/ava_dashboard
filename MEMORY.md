@@ -1811,6 +1811,13 @@ deliberately mirrors the one the map already runs.
   hold NULL, so the matcher should tolerate both.
 - **Channels render one per row** with checkboxes, not wrapping chips — 26
   of them wrapped was unreadable.
+- **`match_all BOOLEAN` added** — "alert me for everything", a checkbox under
+  the keyword box. An explicit column, NOT a sentinel: an empty keyword would
+  already match everything through `strpos(x, '') > 0`, which is true but far
+  too easy to break by accident, and `'*'` would collide with a real product
+  name. When it is set the keyword is blanked rather than kept, so no row
+  carries a word that has no effect. It is part of `dedupe_key`, so a
+  wildcard and a keyword alert with the same filters don't collide.
 
 **Nav: main nav, not the "Nexus Playground" dropdown.** That group is the
 card-tools suite the subscription sells; this is a Discord-member restock

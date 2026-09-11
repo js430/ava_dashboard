@@ -147,6 +147,19 @@
 
   /* One channel per row. 26 of them would otherwise make the composer far
      taller than the table beside it, hence the scroll. */
+  .all-row { display: flex; align-items: center; gap: 8px; margin-top: 9px;
+             font-size: 12.5px; color: #555; cursor: pointer; }
+  .all-row input { width: 15px; height: 15px; accent-color: #5865F2;
+                   flex: none; cursor: pointer; }
+  .all-row strong { color: #111; }
+  #aKeyword:disabled { background: #f4f4f5; color: #aaa; cursor: not-allowed; }
+  .tag.all { background: #eef0ff; color: #4550d8; border-color: #dfe3ff;
+             font-weight: 600; }
+  html[data-theme="dark"] .all-row { color: #bbbbc2; }
+  html[data-theme="dark"] .all-row strong { color: #f0f0f0; }
+  html[data-theme="dark"] #aKeyword:disabled { background: #1c1c1f; color: #66666e; }
+  html[data-theme="dark"] .tag.all { background: #23243a; color: #9aa3ff;
+    border-color: #33355a; }
   .chan-list { max-height: 260px; overflow-y: auto; border: 1px solid #eee;
                border-radius: 8px; }
   .chan-row { display: flex; align-items: center; gap: 9px; padding: 7px 10px;
@@ -355,7 +368,11 @@
           <label class="label" for="aKeyword">What to watch for</label>
           <input type="text" id="aKeyword" maxlength="100" autocomplete="off"
                  placeholder="Prismatic Evolutions, Elite Trainer Box, Charizard…">
-          <div class="hint">
+          <label class="all-row">
+            <input type="checkbox" id="aMatchAll" onchange="toggleMatchAll()">
+            <span>Alert me for <strong>everything</strong> &mdash; no keyword</span>
+          </label>
+          <div class="hint" id="aKeywordHint">
             Matches anywhere in the product name, and isn't fussy about
             capitals. A broad word like &ldquo;prismatic&rdquo; catches
             everything from that set; a fuller name catches just that item.
@@ -492,6 +509,19 @@ function drawChannels() {
   clearBtn.style.display = n ? "inline" : "none";
 }
 
+// Ticking "everything" makes the keyword box meaningless, so it is disabled
+// rather than left accepting text that would be thrown away on submit.
+function toggleMatchAll() {
+  const on = document.getElementById("aMatchAll").checked;
+  const box = document.getElementById("aKeyword");
+  box.disabled = on;
+  if (on) box.value = "";
+  box.placeholder = on
+    ? "Every restock in the channels below"
+    : "Prismatic Evolutions, Elite Trainer Box, Charizard…";
+  document.getElementById("aKeywordHint").style.display = on ? "none" : "block";
+}
+
 function clearChannels() {
   picked.channels.clear();
   drawChannels();
@@ -539,7 +569,10 @@ function drawAlerts() {
     const cap = a.max_price_usd
       ? "$" + esc(a.max_price_usd) : '<span class="muted-cell">&mdash;</span>';
     return '<tr class="' + (a.enabled ? '' : 'off') + '">' +
-      '<td class="kw-cell">' + esc(a.keyword) +
+      '<td class="kw-cell">' +
+        (a.match_all
+          ? '<span class="tag all">Everything</span>'
+          : esc(a.keyword)) +
         (a.enabled ? '' : ' <span class="tag paused">Paused</span>') + '</td>' +
       '<td>' + chans + '</td>' +
       '<td class="num">' + cap + '</td>' +
@@ -565,6 +598,7 @@ async function addAlert() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         keyword: keyword,
+        match_all: document.getElementById("aMatchAll").checked,
         channel_ids: [...picked.channels],
         max_price_usd: document.getElementById("aPrice").value
       })
@@ -573,7 +607,8 @@ async function addAlert() {
     drawAlerts();
     // Only the keyword clears: someone adding several alerts for the same
     // channels would otherwise re-tick the same boxes every time.
-    document.getElementById("aKeyword").value = "";
+    document.getElementById("aMatchAll").checked = false;
+    toggleMatchAll();
     document.getElementById("aKeyword").focus();
     say("aMsg", "Added. It starts watching now.", "ok");
   } catch (e) {

@@ -47,8 +47,15 @@ MONITOR_ALERTS_SCHEMA = [
         -- overflows a 32-bit int.
         user_id         BIGINT NOT NULL,
         -- Matched case-insensitively as a substring of the restock's
-        -- product name. Required; everything else narrows it.
+        -- product name. Empty ONLY when match_all is true.
         keyword         TEXT NOT NULL,
+        -- "Alert me for everything." When true the keyword is not consulted
+        -- at all, and the alert fires on every restock in its channels that
+        -- clears the price cap. An explicit column rather than a sentinel
+        -- keyword: an empty keyword would match everything through
+        -- strpos(x, '') > 0, which is true but far too easy to break by
+        -- accident, and '*' would collide with a real product name.
+        match_all       BOOLEAN NOT NULL DEFAULT FALSE,
         -- Empty array = any monitor channel. See the module docstring.
         channel_ids     BIGINT[] NOT NULL DEFAULT '{}',
         max_price_usd   NUMERIC(10, 2),
@@ -67,6 +74,10 @@ MONITOR_ALERTS_SCHEMA = [
     "ON product_subscriptions (user_id)",
     "CREATE UNIQUE INDEX IF NOT EXISTS product_subscriptions_dedupe_idx "
     "ON product_subscriptions (user_id, dedupe_key)",
+    # Added after the table shipped, so CREATE TABLE IF NOT EXISTS won't
+    # reach it — same ALTER-not-CREATE pattern as catalog_cards.
+    "ALTER TABLE product_subscriptions ADD COLUMN IF NOT EXISTS "
+    "match_all BOOLEAN NOT NULL DEFAULT FALSE",
 ]
 
 # A table created before the store filter was removed still has a `stores`
@@ -208,7 +219,8 @@ def to_price(raw):
     return value.quantize(Decimal("0.01")), None
 
 
-def dedupe_key(keyword: str, channel_ids, max_price, delivery: str) -> str:
+def dedupe_key(keyword: str, channel_ids, max_price, delivery: str,
+               match_all: bool = False) -> str:
     """A stable signature of one alert, so the same one can't be added twice.
 
     Sorted and lowercased, so ticking Target then Walmart matches ticking
@@ -217,7 +229,7 @@ def dedupe_key(keyword: str, channel_ids, max_price, delivery: str) -> str:
     regardless of the order the boxes were checked.
     """
     parts = [
-        keyword.strip().lower(),
+        "*all*" if match_all else keyword.strip().lower(),
         ",".join(str(c) for c in sorted(channel_ids or [])),
         "" if max_price is None else str(max_price),
         delivery,
@@ -232,10 +244,16 @@ def validate(payload: dict, allowed_channel_ids) -> tuple:
     is rejected rather than trimmed away silently: a member whose channel
     quietly vanished would think they were covered when they weren't.
     """
+    match_all = bool(payload.get("match_all"))
     keyword = normalize_keyword(payload.get("keyword"))
-    if len(keyword) < MIN_KEYWORD_LEN:
+    if match_all:
+        # The keyword box is ignored when someone asks for everything, and
+        # blanked rather than stored — keeping it would leave a word on the
+        # row that has no effect on what matches.
+        keyword = ""
+    elif len(keyword) < MIN_KEYWORD_LEN:
         return None, "Type at least a couple of characters to match on."
-    if len(keyword) > MAX_KEYWORD_LEN:
+    elif len(keyword) > MAX_KEYWORD_LEN:
         return None, "That keyword is too long."
 
     raw_channels = payload.get("channel_ids") or []
@@ -267,14 +285,16 @@ def validate(payload: dict, allowed_channel_ids) -> tuple:
 
     return {
         "keyword": keyword,
+        "match_all": match_all,
         "channel_ids": sorted(channel_ids),
         "max_price_usd": max_price,
         "delivery": delivery,
-        "dedupe_key": dedupe_key(keyword, channel_ids, max_price, delivery),
+        "dedupe_key": dedupe_key(keyword, channel_ids, max_price, delivery,
+                                 match_all),
     }, None
 
 
-_COLUMNS = ("id, keyword, channel_ids, max_price_usd, delivery, "
+_COLUMNS = ("id, keyword, match_all, channel_ids, max_price_usd, delivery, "
             "enabled, created_at, last_matched_at")
 
 
@@ -294,14 +314,14 @@ async def add_alert(pool, user_id: int, cleaned: dict) -> tuple:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "INSERT INTO product_subscriptions "
-            "  (user_id, keyword, channel_ids, max_price_usd, "
+            "  (user_id, keyword, match_all, channel_ids, max_price_usd, "
             "   delivery, dedupe_key) "
-            "VALUES ($1, $2, $3, $4, $5, $6) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7) "
             "ON CONFLICT (user_id, dedupe_key) DO NOTHING "
             f"RETURNING {_COLUMNS}",
-            user_id, cleaned["keyword"], cleaned["channel_ids"],
-            cleaned["max_price_usd"], cleaned["delivery"],
-            cleaned["dedupe_key"])
+            user_id, cleaned["keyword"], cleaned["match_all"],
+            cleaned["channel_ids"], cleaned["max_price_usd"],
+            cleaned["delivery"], cleaned["dedupe_key"])
     if row is None:
         return None, "You already have that exact alert."
     return dict(row), None
