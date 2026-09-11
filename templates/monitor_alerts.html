@@ -145,10 +145,22 @@
   .field input:focus { outline: 2px solid #5865F2; outline-offset: -1px; }
   .hint { font-size: 11.5px; color: #aaa; line-height: 1.5; margin-top: 6px; }
 
-  /* 26 monitor channels would otherwise make the composer taller than the
-     table beside it. */
-  .chip-scroll { max-height: 168px; overflow-y: auto; padding: 2px;
-                 border: 1px solid #eee; border-radius: 8px; }
+  /* One channel per row. 26 of them would otherwise make the composer far
+     taller than the table beside it, hence the scroll. */
+  .chan-list { max-height: 260px; overflow-y: auto; border: 1px solid #eee;
+               border-radius: 8px; }
+  .chan-row { display: flex; align-items: center; gap: 9px; padding: 7px 10px;
+              font-size: 12.5px; color: #555; cursor: pointer;
+              border-bottom: 1px solid #f4f4f5; }
+  .chan-row:last-child { border-bottom: none; }
+  .chan-row:hover { background: #fafafb; }
+  .chan-row.on { background: #eef0ff; color: #333; font-weight: 500; }
+  .chan-row input { width: 15px; height: 15px; accent-color: #5865F2;
+                    flex: none; cursor: pointer; }
+  html[data-theme="dark"] .chan-list { border-color: #2a2a2e; }
+  html[data-theme="dark"] .chan-row { color: #bbbbc2; border-bottom-color: #26262a; }
+  html[data-theme="dark"] .chan-row:hover { background: #232326; }
+  html[data-theme="dark"] .chan-row.on { background: #23243a; color: #e8e8ea; }
   .link-btn { background: none; border: none; padding: 0; margin-left: 6px;
               font-family: inherit; font-size: 11.5px; color: #5865F2;
               cursor: pointer; text-decoration: underline; }
@@ -352,7 +364,7 @@
 
         <div class="field">
           <label class="label">Channels</label>
-          <div class="chip-row chip-scroll" id="aChannels"></div>
+          <div class="chan-list" id="aChannels"></div>
           <div class="hint" id="aChannelHint">
             Leave all unpicked to watch every monitor channel.
             <button type="button" class="link-btn" id="aChanClear"
@@ -361,27 +373,11 @@
         </div>
 
         <div class="field">
-          <label class="label">Stores <span class="label-soft">(optional)</span></label>
-          <div class="chip-row" id="aStores"></div>
-          <div class="hint">Leave unpicked for any store.</div>
-        </div>
-
-        <div class="field">
           <label class="label" for="aPrice">Only under <span class="label-soft">(optional)</span></label>
           <input type="text" id="aPrice" inputmode="decimal" maxlength="12"
-                 placeholder="Any price">
-        </div>
-
-        <div class="field">
-          <label class="label">Send it as</label>
-          <div class="seg" id="aDelivery">
-            <button type="button" class="seg-btn on" data-value="channel">Channel ping</button>
-            <button type="button" class="seg-btn" data-value="dm">Direct message</button>
-          </div>
-          <div class="hint">
-            A channel ping mentions you in the alert channel with everyone
-            else it matched. A direct message goes to you privately instead.
-          </div>
+                 placeholder="9999 if left blank">
+          <div class="hint">Left blank, this is set to 9999 &mdash; high enough
+            that nothing gets filtered out by price.</div>
         </div>
 
         <button class="btn btn-primary btn-block" id="aAddBtn" onclick="addAlert()">
@@ -403,9 +399,7 @@
             <tr>
               <th>Watching for</th>
               <th>Channels</th>
-              <th>Stores</th>
               <th class="num">Under</th>
-              <th>Sent as</th>
               <th>Last match</th>
               <th></th>
             </tr>
@@ -437,10 +431,8 @@
 // bot that reads them and actually pings is a separate feature that does not
 // exist yet, so nothing on this page promises a ping has been sent.
 let channels = [];
-let stores = [];
 let alerts = [];
-const picked = { channels: new Set(), stores: new Set() };
-let delivery = "channel";
+const picked = { channels: new Set() };
 
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"]/g, c => (
@@ -467,71 +459,49 @@ async function loadAlerts() {
   try {
     const data = await api("/api/monitor-alerts");
     channels = data.channels || [];
-    stores = data.stores || [];
     alerts = data.alerts || [];
-    delivery = data.delivery_default || "channel";
-    drawChips();
-    drawDelivery();
+    drawChannels();
     drawAlerts();
   } catch (e) {
     say("aMsg", e.message, "err");
   }
 }
 
-// Chips are addressed by INDEX, never by interpolating a name or a snowflake
-// into an onclick attribute — a store called "Sam's Club" would close the
-// attribute on its apostrophe.
-function drawChips() {
-  const chanBox = document.getElementById("aChannels");
-  chanBox.innerHTML = channels.length
+// Rows are addressed by INDEX, never by interpolating a channel name into an
+// onclick — a name like "Sam's Club" would close the attribute on its
+// apostrophe.
+function drawChannels() {
+  const box = document.getElementById("aChannels");
+  box.innerHTML = channels.length
     ? channels.map((c, i) =>
-        '<button type="button" class="chip' +
-        (picked.channels.has(c.id) ? ' on' : '') +
-        '" onclick="toggleChannel(' + i + ')">' + esc(c.name) + '</button>').join("")
+        '<label class="chan-row' + (picked.channels.has(c.id) ? ' on' : '') + '">' +
+          '<input type="checkbox"' + (picked.channels.has(c.id) ? ' checked' : '') +
+            ' onchange="toggleChannel(' + i + ')">' +
+          '<span>' + esc(c.name) + '</span>' +
+        '</label>').join("")
     : '<span class="chip-none">No monitor channels are set up yet — an alert '
       + 'will watch every restock until they are.</span>';
+
   const hint = document.getElementById("aChannelHint");
   hint.style.display = channels.length ? "block" : "none";
   const clearBtn = document.getElementById("aChanClear");
   const n = picked.channels.size;
   hint.childNodes[0].nodeValue = n
     ? " Watching " + n + " of " + channels.length + " channels. "
-    : " Leave all unpicked to watch every monitor channel. ";
+    : " Leave all unticked to watch every monitor channel. ";
   clearBtn.style.display = n ? "inline" : "none";
-
-  const storeBox = document.getElementById("aStores");
-  storeBox.innerHTML = stores.length
-    ? stores.map((s, i) =>
-        '<button type="button" class="chip' +
-        (picked.stores.has(s) ? ' on' : '') +
-        '" onclick="toggleStore(' + i + ')">' + esc(s) + '</button>').join("")
-    : '<span class="chip-none">No store list available right now.</span>';
 }
 
 function clearChannels() {
   picked.channels.clear();
-  drawChips();
+  drawChannels();
 }
 
 function toggleChannel(i) {
   const id = channels[i].id;
   if (picked.channels.has(id)) picked.channels.delete(id);
   else picked.channels.add(id);
-  drawChips();
-}
-
-function toggleStore(i) {
-  const name = stores[i];
-  if (picked.stores.has(name)) picked.stores.delete(name);
-  else picked.stores.add(name);
-  drawChips();
-}
-
-function drawDelivery() {
-  document.querySelectorAll("#aDelivery .seg-btn").forEach(btn => {
-    btn.classList.toggle("on", btn.getAttribute("data-value") === delivery);
-    btn.onclick = () => { delivery = btn.getAttribute("data-value"); drawDelivery(); };
-  });
+  drawChannels();
 }
 
 function agoText(iso) {
@@ -566,18 +536,13 @@ function drawAlerts() {
     const chans = (a.channel_ids || []).length
       ? a.channel_ids.map(id => '<span class="tag chan">' + esc(channelName(id)) + '</span>').join(" ")
       : '<span class="tag chan">Every channel</span>';
-    const shops = (a.stores || []).length
-      ? a.stores.map(x => '<span class="tag">' + esc(x) + '</span>').join(" ")
-      : '<span class="muted-cell">Any</span>';
     const cap = a.max_price_usd
       ? "$" + esc(a.max_price_usd) : '<span class="muted-cell">&mdash;</span>';
     return '<tr class="' + (a.enabled ? '' : 'off') + '">' +
       '<td class="kw-cell">' + esc(a.keyword) +
         (a.enabled ? '' : ' <span class="tag paused">Paused</span>') + '</td>' +
       '<td>' + chans + '</td>' +
-      '<td>' + shops + '</td>' +
       '<td class="num">' + cap + '</td>' +
-      '<td>' + (a.delivery === "dm" ? "Direct message" : "Channel ping") + '</td>' +
       '<td class="' + (a.last_matched_at ? 'matched-live' : 'muted-cell') + '">' +
         esc(agoText(a.last_matched_at)) + '</td>' +
       '<td class="acts">' +
@@ -601,15 +566,13 @@ async function addAlert() {
       body: JSON.stringify({
         keyword: keyword,
         channel_ids: [...picked.channels],
-        stores: [...picked.stores],
-        max_price_usd: document.getElementById("aPrice").value,
-        delivery: delivery
+        max_price_usd: document.getElementById("aPrice").value
       })
     });
     alerts.unshift(data.alert);
     drawAlerts();
     // Only the keyword clears: someone adding several alerts for the same
-    // stores would otherwise re-pick the same chips every time.
+    // channels would otherwise re-tick the same boxes every time.
     document.getElementById("aKeyword").value = "";
     document.getElementById("aKeyword").focus();
     say("aMsg", "Added. It starts watching now.", "ok");

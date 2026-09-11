@@ -6129,7 +6129,6 @@ def _alert_json(row: dict) -> dict:
         # Snowflakes as strings: a channel id is larger than JavaScript's
         # safe integer range, and the browser only ever echoes it back.
         "channel_ids": [str(c) for c in (row["channel_ids"] or [])],
-        "stores": list(row["stores"] or []),
         "max_price_usd": _portfolio_json(row["max_price_usd"]),
         "delivery": row["delivery"],
         "enabled": row["enabled"],
@@ -6167,25 +6166,17 @@ async def api_monitor_alerts_list(request: Request,
     """This member's alerts, plus the options the form offers.
 
     Options ride along with the list rather than sitting on their own
-    endpoint: the page can't render a single chip without them, so a second
-    round-trip would only add a way for the two to disagree.
+    endpoint: the page can't render a single channel without them, so a
+    second round-trip would only add a way for the two to disagree.
     """
     pool = request.app.state.db
-    try:
-        stores = await monitor_alerts.store_options(pool)
-    except Exception:
-        # The store list comes from a bot-owned table with no schema file in
-        # either repo. If it ever moves, the page should still let someone
-        # set a keyword alert rather than failing entirely.
-        logger.exception("Monitor alerts: store list unavailable")
-        stores = []
     rows = await monitor_alerts.list_alerts(pool, int(user["id"]))
     return JSONResponse({
         "alerts": [_alert_json(r) for r in rows],
         "channels": [{"id": str(c["id"]), "name": c["name"]}
                      for c in monitor_alerts.monitor_channels()],
-        "stores": stores,
         "delivery_default": monitor_alerts.DEFAULT_DELIVERY,
+        "default_max_price": str(monitor_alerts.DEFAULT_MAX_PRICE_USD),
     }, headers={"Cache-Control": "no-store"})
 
 
@@ -6197,12 +6188,7 @@ async def api_monitor_alerts_add(request: Request,
     body = await request.json()
     pool = request.app.state.db
     allowed_channels = {c["id"] for c in monitor_alerts.monitor_channels()}
-    try:
-        stores = await monitor_alerts.store_options(pool)
-    except Exception:
-        logger.exception("Monitor alerts: store list unavailable on add")
-        stores = []
-    cleaned, error = monitor_alerts.validate(body, allowed_channels, stores)
+    cleaned, error = monitor_alerts.validate(body, allowed_channels)
     if error:
         raise HTTPException(status_code=400, detail=error)
     row, error = await monitor_alerts.add_alert(pool, int(user["id"]), cleaned)

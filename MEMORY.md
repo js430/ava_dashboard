@@ -1758,9 +1758,7 @@ not be edited from this session (the vault wasn't on `--add-dir`).
   a guess at how Zephyr names products, and the list it came from was defined
   for the For Sale forum tags — a different feature. Jeffrey's call: pick the
   channel, type the keyword.
-- **`store_filter TEXT` became `stores TEXT[]`.** A member picking Target and
-  Walmart is one alert, not two. `user_preferences.selected_locations`
-  already stores a Postgres array, so the pattern was proven here.
+- **`store_filter` dropped entirely** (revised same day, see below).
 - **`dedupe_key` added** — a normalized signature (keyword lowercased,
   channels and stores sorted) with `UNIQUE (user_id, dedupe_key)`. Duplicates
   are refused by the index, not by a read-then-write, so two fast clicks
@@ -1792,6 +1790,27 @@ page says so and an alert watches every channel. **Store list is queried live
 from `locations.store_type`**, never hardcoded, so a new chain appears on its
 own; `locations` still has no CREATE TABLE in either repo, so that query
 deliberately mirrors the one the map already runs.
+
+**REVISED THE SAME DAY, after seeing it run:**
+- **The store filter is gone.** Zephyr's monitor channels ARE the stores —
+  one channel per retailer — so a separate store filter asked the same
+  question twice and could contradict the channel it sat next to. The
+  `stores TEXT[]` column is no longer in the DDL. A table already created
+  keeps the column (NOT NULL DEFAULT `'{}'`, so inserts omitting it succeed);
+  it is deliberately NOT auto-dropped, since a startup hook should not drop
+  columns. Clean up by hand with
+  `ALTER TABLE product_subscriptions DROP COLUMN IF EXISTS stores;`
+- **Direct message delivery removed as a choice.** Every alert is a channel
+  ping. `delivery` is no longer read from the request — a hand-crafted
+  `delivery: "dm"` is ignored rather than honoured, or the UI would be
+  offering less than the API accepts. The column and its CHECK stay, so
+  turning DMs back on is a UI change rather than a migration.
+- **A blank "only under" stores 9999.00 rather than NULL**
+  (`DEFAULT_MAX_PRICE_USD`), so every alert carries a real number and the
+  bot never special-cases a missing cap. Rows written before this may still
+  hold NULL, so the matcher should tolerate both.
+- **Channels render one per row** with checkboxes, not wrapping chips — 26
+  of them wrapped was unreadable.
 
 **Nav: main nav, not the "Nexus Playground" dropdown.** That group is the
 card-tools suite the subscription sells; this is a Discord-member restock

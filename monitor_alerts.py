@@ -17,17 +17,17 @@ surprised:
     monitor channel a restock posts in is exact; a game taxonomy was a guess
     at how Zephyr names products, and the list it would have come from was
     defined for the For Sale forum tags, not for restocks.
-  * `store_filter TEXT` became `stores TEXT[]`, because a member picking
-    both Target and Walmart is one alert, not two. `user_preferences`
-    already stores a Postgres array the same way.
+  * `store_filter` is gone entirely. Zephyr's monitor channels ARE the
+    stores — one channel per retailer — so a separate store filter asked
+    the same question twice and could contradict the channel.
   * `dedupe_key` is new — a normalized signature of the whole alert, unique
     per user, so the same alert cannot be added twice even if two requests
     race. The bot can ignore this column entirely.
 
-EMPTY ARRAY MEANS "ANY", NOT "NONE". `channel_ids = '{}'` is every monitor
-channel and `stores = '{}'` is every store. This is the one piece of meaning
-the bot has to share: a matcher that treats an empty array as "matches
-nothing" would silently kill every unfiltered alert, which is most of them.
+EMPTY ARRAY MEANS "ANY", NOT "NONE". `channel_ids = '{}'` means every monitor
+channel. This is the one piece of meaning the bot has to share: a matcher that
+treats an empty array as "matches nothing" would silently kill every
+unfiltered alert, which is most of them.
 """
 
 import logging
@@ -51,8 +51,6 @@ MONITOR_ALERTS_SCHEMA = [
         keyword         TEXT NOT NULL,
         -- Empty array = any monitor channel. See the module docstring.
         channel_ids     BIGINT[] NOT NULL DEFAULT '{}',
-        -- Empty array = any store.
-        stores          TEXT[] NOT NULL DEFAULT '{}',
         max_price_usd   NUMERIC(10, 2),
         delivery        TEXT NOT NULL DEFAULT 'channel'
                         CHECK (delivery IN ('channel', 'dm')),
@@ -71,6 +69,13 @@ MONITOR_ALERTS_SCHEMA = [
     "ON product_subscriptions (user_id, dedupe_key)",
 ]
 
+# A table created before the store filter was removed still has a `stores`
+# TEXT[] NOT NULL DEFAULT '{}' column. Nothing writes or reads it, and the
+# default means inserts that omit it succeed, so it is left alone rather than
+# dropped automatically — dropping a column is not something a startup hook
+# should do on its own. To clean it up by hand:
+#     ALTER TABLE product_subscriptions DROP COLUMN IF EXISTS stores;
+
 # Deliberately no cap on how many alerts one person may keep — that was an
 # explicit call. These bound a single payload instead, which is input
 # validation rather than a limit on the feature.
@@ -79,8 +84,11 @@ MIN_KEYWORD_LEN = 2
 # Comfortably above the number of channels that exist, so selecting every
 # one of them is never refused. (At 25 it was: there are 26.)
 MAX_CHANNELS_PER_ALERT = 100
-MAX_STORES_PER_ALERT = 25
 MAX_PRICE_USD = Decimal("100000")
+# A blank "only under" box stores this rather than NULL, so every alert
+# carries a real number and the bot never has to special-case a missing cap.
+# High enough that nothing a monitor posts is excluded by it.
+DEFAULT_MAX_PRICE_USD = Decimal("9999.00")
 
 DELIVERY_MODES = ("channel", "dm")
 DEFAULT_DELIVERY = "channel"
@@ -200,30 +208,28 @@ def to_price(raw):
     return value.quantize(Decimal("0.01")), None
 
 
-def dedupe_key(keyword: str, channel_ids, stores, max_price, delivery: str) -> str:
+def dedupe_key(keyword: str, channel_ids, max_price, delivery: str) -> str:
     """A stable signature of one alert, so the same one can't be added twice.
 
-    Sorted and lowercased, so picking Target then Walmart matches picking
+    Sorted and lowercased, so ticking Target then Walmart matches ticking
     Walmart then Target — to a member those are plainly the same alert, and
     being told "you already have that one" is only sensible if it's true
-    regardless of the order the chips were clicked.
+    regardless of the order the boxes were checked.
     """
     parts = [
         keyword.strip().lower(),
         ",".join(str(c) for c in sorted(channel_ids or [])),
-        ",".join(sorted(s.strip().lower() for s in (stores or []))),
         "" if max_price is None else str(max_price),
         delivery,
     ]
     return "|".join(parts)
 
 
-def validate(payload: dict, allowed_channel_ids, allowed_stores) -> tuple:
+def validate(payload: dict, allowed_channel_ids) -> tuple:
     """(cleaned, error) for one submitted alert.
 
-    `allowed_channel_ids` and `allowed_stores` are allowlists built from the
-    configured channels and the live `locations` table. Anything outside them
-    is rejected rather than trimmed away silently: a member whose store chip
+    `allowed_channel_ids` is the configured channel list. Anything outside it
+    is rejected rather than trimmed away silently: a member whose channel
     quietly vanished would think they were covered when they weren't.
     """
     keyword = normalize_keyword(payload.get("keyword"))
@@ -246,39 +252,29 @@ def validate(payload: dict, allowed_channel_ids, allowed_stores) -> tuple:
         if channel_id not in channel_ids:
             channel_ids.append(channel_id)
 
-    raw_stores = payload.get("stores") or []
-    if not isinstance(raw_stores, list) or len(raw_stores) > MAX_STORES_PER_ALERT:
-        return None, "Pick a smaller set of stores."
-    by_lower = {s.strip().lower(): s for s in allowed_stores}
-    stores = []
-    for value in raw_stores:
-        if not isinstance(value, str):
-            return None, "One of those stores isn't valid."
-        match = by_lower.get(value.strip().lower())
-        if match is None:
-            return None, "One of those stores isn't in the store list."
-        if match not in stores:
-            stores.append(match)
-
     max_price, price_error = to_price(payload.get("max_price_usd"))
     if price_error:
         return None, price_error
+    if max_price is None:
+        max_price = DEFAULT_MAX_PRICE_USD
 
-    delivery = str(payload.get("delivery") or DEFAULT_DELIVERY).strip().lower()
-    if delivery not in DELIVERY_MODES:
-        return None, "Pick either a channel ping or a direct message."
+    # Not read from the payload. Direct messages were removed as a choice, so
+    # every alert is a channel ping — honouring a hand-crafted `delivery: dm`
+    # would put back the option the UI no longer offers. The column and its
+    # CHECK stay, so turning DMs back on later is a UI change, not a
+    # migration.
+    delivery = DEFAULT_DELIVERY
 
     return {
         "keyword": keyword,
         "channel_ids": sorted(channel_ids),
-        "stores": stores,
         "max_price_usd": max_price,
         "delivery": delivery,
-        "dedupe_key": dedupe_key(keyword, channel_ids, stores, max_price, delivery),
+        "dedupe_key": dedupe_key(keyword, channel_ids, max_price, delivery),
     }, None
 
 
-_COLUMNS = ("id, keyword, channel_ids, stores, max_price_usd, delivery, "
+_COLUMNS = ("id, keyword, channel_ids, max_price_usd, delivery, "
             "enabled, created_at, last_matched_at")
 
 
@@ -298,13 +294,13 @@ async def add_alert(pool, user_id: int, cleaned: dict) -> tuple:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "INSERT INTO product_subscriptions "
-            "  (user_id, keyword, channel_ids, stores, max_price_usd, "
+            "  (user_id, keyword, channel_ids, max_price_usd, "
             "   delivery, dedupe_key) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7) "
+            "VALUES ($1, $2, $3, $4, $5, $6) "
             "ON CONFLICT (user_id, dedupe_key) DO NOTHING "
             f"RETURNING {_COLUMNS}",
             user_id, cleaned["keyword"], cleaned["channel_ids"],
-            cleaned["stores"], cleaned["max_price_usd"], cleaned["delivery"],
+            cleaned["max_price_usd"], cleaned["delivery"],
             cleaned["dedupe_key"])
     if row is None:
         return None, "You already have that exact alert."
@@ -332,19 +328,3 @@ async def set_enabled(pool, user_id: int, alert_id: int, enabled: bool):
             f"RETURNING {_COLUMNS}",
             alert_id, user_id, bool(enabled))
     return dict(row) if row else None
-
-
-async def store_options(pool) -> list:
-    """Store names for the filter chips, live from the bot's `locations`
-    table — never hardcoded, so a new chain appears on its own.
-
-    `locations` has no CREATE TABLE in either repo (its schema lives only in
-    the live DB, see MEMORY.md), so this is deliberately the same shape as
-    the query the map already runs rather than anything new.
-    """
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT DISTINCT store_type FROM locations "
-            "WHERE store_type IS NOT NULL AND TRIM(store_type) <> '' "
-            "ORDER BY store_type")
-    return [r["store_type"] for r in rows]
