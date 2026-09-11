@@ -51,6 +51,7 @@ import billing
 import collectr_import
 import portfolios
 import tips
+import monitor_alerts
 
 load_dotenv()
 
@@ -219,6 +220,11 @@ async def lifespan(app: FastAPI):
         await billing.ensure_billing_schema(app.state.db)
     except Exception:
         logger.exception("Billing schema ensure failed — paid accounts may be unavailable")
+    try:
+        await monitor_alerts.ensure_monitor_alerts_schema(app.state.db)
+    except Exception:
+        logger.exception("Monitor alerts schema ensure failed — "
+                         "/monitor-alerts-setup may be unavailable")
     scheduler_task = asyncio.create_task(_card_tracker_daily_scheduler(app))
     # Background, never awaited: seeding the catalog must not delay startup or
     # take the app down if PPT is unreachable.
@@ -6102,6 +6108,134 @@ async def api_catalog_backfill(request: Request, user=Depends(require_admin)):
                                               language=language))
     return JSONResponse({"started": True, "sets": limit, "mode": mode,
                          "language": language},
+                        headers={"Cache-Control": "no-store"})
+
+
+# ---- Monitor alert preferences ----
+# Members pick which products should ping them when Zephyr posts a restock.
+# This app only writes the rows; the bot that reads them and sends the pings
+# is a separate, not-yet-built feature (see monitor_alerts.py).
+#
+# Gated on get_current_user, which 403s role-less "sample" sessions: an alert
+# targets a Discord user id in a premium monitor channel, so one saved by an
+# account without the role could never fire. Better to keep the page behind
+# the same door as the thing it controls than to store rows that quietly do
+# nothing.
+
+def _alert_json(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "keyword": row["keyword"],
+        # Snowflakes as strings: a channel id is larger than JavaScript's
+        # safe integer range, and the browser only ever echoes it back.
+        "channel_ids": [str(c) for c in (row["channel_ids"] or [])],
+        "stores": list(row["stores"] or []),
+        "max_price_usd": _portfolio_json(row["max_price_usd"]),
+        "delivery": row["delivery"],
+        "enabled": row["enabled"],
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "last_matched_at": (row["last_matched_at"].isoformat()
+                            if row["last_matched_at"] else None),
+    }
+
+
+@app.get("/monitor-alerts-setup", response_class=HTMLResponse)
+async def monitor_alerts_page(request: Request):
+    user = request.session.get("user")
+    if not user:
+        return login_redirect_or_preview(
+            request, title="Restock Alerts — Nexus Card Co",
+            description="Choose exactly which products ping you when a restock "
+                        "posts — by set, by single card, or by your own keyword.")
+    if is_demo(request):
+        return RedirectResponse("/sample")
+    if not await terms_current(request, user):
+        return RedirectResponse("/terms")
+    return templates.TemplateResponse("monitor_alerts.html", {
+        "request": request,
+        "username": user["username"],
+        "avatar": user.get("avatar"),
+        "user_id": user["id"],
+        "is_admin": int(user["id"]) in ADMIN_USER_IDS,
+        "is_mod": request.session.get("mod", False),
+    })
+
+
+@app.get("/api/monitor-alerts")
+async def api_monitor_alerts_list(request: Request,
+                                  user=Depends(get_current_user)):
+    """This member's alerts, plus the options the form offers.
+
+    Options ride along with the list rather than sitting on their own
+    endpoint: the page can't render a single chip without them, so a second
+    round-trip would only add a way for the two to disagree.
+    """
+    pool = request.app.state.db
+    try:
+        stores = await monitor_alerts.store_options(pool)
+    except Exception:
+        # The store list comes from a bot-owned table with no schema file in
+        # either repo. If it ever moves, the page should still let someone
+        # set a keyword alert rather than failing entirely.
+        logger.exception("Monitor alerts: store list unavailable")
+        stores = []
+    rows = await monitor_alerts.list_alerts(pool, int(user["id"]))
+    return JSONResponse({
+        "alerts": [_alert_json(r) for r in rows],
+        "channels": [{"id": str(c["id"]), "name": c["name"]}
+                     for c in monitor_alerts.monitor_channels()],
+        "stores": stores,
+        "delivery_default": monitor_alerts.DEFAULT_DELIVERY,
+    }, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/monitor-alerts")
+@limiter.limit("60/hour")
+async def api_monitor_alerts_add(request: Request,
+                                 user=Depends(get_current_user)):
+    """Add one alert. Refuses an exact duplicate."""
+    body = await request.json()
+    pool = request.app.state.db
+    allowed_channels = {c["id"] for c in monitor_alerts.monitor_channels()}
+    try:
+        stores = await monitor_alerts.store_options(pool)
+    except Exception:
+        logger.exception("Monitor alerts: store list unavailable on add")
+        stores = []
+    cleaned, error = monitor_alerts.validate(body, allowed_channels, stores)
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    row, error = await monitor_alerts.add_alert(pool, int(user["id"]), cleaned)
+    if error:
+        raise HTTPException(status_code=409, detail=error)
+    logger.info("Monitor alert added by %s: %r", user["id"], cleaned["keyword"][:60])
+    return JSONResponse({"alert": _alert_json(row)},
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/monitor-alerts/{alert_id}/delete")
+@limiter.limit("120/hour")
+async def api_monitor_alerts_delete(request: Request, alert_id: int,
+                                    user=Depends(get_current_user)):
+    removed = await monitor_alerts.delete_alert(
+        request.app.state.db, int(user["id"]), alert_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="That alert is already gone.")
+    return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/monitor-alerts/{alert_id}/toggle")
+@limiter.limit("120/hour")
+async def api_monitor_alerts_toggle(request: Request, alert_id: int,
+                                    user=Depends(get_current_user)):
+    """Pause or resume an alert without losing what it was set to."""
+    body = await request.json()
+    row = await monitor_alerts.set_enabled(
+        request.app.state.db, int(user["id"]), alert_id,
+        bool(body.get("enabled", True)))
+    if row is None:
+        raise HTTPException(status_code=404, detail="That alert is already gone.")
+    return JSONResponse({"alert": _alert_json(row)},
                         headers={"Cache-Control": "no-store"})
 
 

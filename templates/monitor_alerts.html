@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/brand/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/brand/icon-180.png">
+<script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Restock Alerts — Nexus Card Co</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .header-left { display: flex; align-items: center; gap: 12px; }
+  .header-title { font-size: 16px; font-weight: 600; color: #111; }
+  .header-sub { font-size: 12px; color: #999; margin-top: 1px; }
+  .nav { display: flex; gap: 8px; align-items: center; }
+  .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; }
+  .nav a:hover { background: #f4f4f5; }
+  .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-group { position: relative; display: inline-flex; }
+  .nav-group-btn { font-family: inherit; font-size: 12px; color: #555; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+  .nav-group-btn:hover { background: #f4f4f5; }
+  .nav-group-btn.active, .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-caret { font-size: 9px; line-height: 1; }
+  .nav-menu { display: none; position: absolute; top: calc(100% + 4px); right: 0; min-width: 150px; padding: 4px; background: #fff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.10); z-index: 400; }
+  .nav-group.open .nav-menu { display: block; }
+  .nav-menu a { display: block; padding: 6px 10px; border: none; border-radius: 5px; background: none; font-size: 12px; color: #555; text-decoration: none; white-space: nowrap; }
+  .nav-menu a:hover { background: #f4f4f5; }
+  .nav-menu a.active { background: #5865F2; color: #fff; }
+  .main { padding: 24px; max-width: 1200px; margin: 0 auto; }
+
+  /* Stat cards */
+  .stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; margin-bottom: 24px; }
+  .stat-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 14px 16px; }
+  .stat-label { font-size: 12px; color: #888; margin-bottom: 6px; }
+  .stat-value { font-size: 24px; font-weight: 600; color: #111; }
+  .stat-sub { font-size: 12px; color: #aaa; margin-top: 3px; }
+
+  /* Table card */
+  .table-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; overflow: hidden; }
+  .table-header { padding: 14px 20px; border-bottom: 1px solid #e4e4e7; display: flex; align-items: center; justify-content: space-between; }
+  .table-header-title { font-size: 14px; font-weight: 600; color: #111; }
+  .table-scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  thead th { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; padding: 10px 16px; text-align: left; border-bottom: 1px solid #e4e4e7; background: #fafafa; white-space: nowrap; }
+  tbody tr { border-bottom: 1px solid #f0f0f0; transition: background 0.1s; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: #fafafa; }
+  tbody td { padding: 10px 16px; color: #333; vertical-align: middle; }
+  .user-cell { display: flex; align-items: center; gap: 10px; }
+  .avatar { width: 28px; height: 28px; border-radius: 50%; background: #5865F2; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: #fff; flex-shrink: 0; overflow: hidden; }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .username { font-weight: 500; color: #111; }
+  .user-id { font-size: 12px; color: #aaa; }
+  .badge { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 7px; border-radius: 4px; }
+  .badge-new { background: #e8f5e9; color: #2e7d32; }
+  .badge-repeat { background: #e3f2fd; color: #1565c0; }
+  .ip { font-family: monospace; font-size: 12px; color: #666; }
+  .time { font-size: 12px; color: #555; white-space: nowrap; }
+  .time-ago { font-size: 12px; color: #aaa; }
+
+  /* Filter bar */
+  .filter-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .filter-bar input { font-size: 12px; height: 30px; padding: 0 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #111; width: 200px; }
+  .filter-bar select { font-size: 12px; height: 30px; padding: 0 8px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #111; }
+  .count-label { font-size: 12px; color: #999; }
+
+  .empty { text-align: center; padding: 40px; color: #aaa; font-size: 14px; }
+
+  @media (max-width: 640px) {
+    .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px; }
+    .nav { flex-wrap: wrap; gap: 5px; }
+    .nav a, .nav-group-btn { font-size: 12px; padding: 3px 7px; }
+    .nav-menu { left: 0; right: auto; }
+    .main { padding: 12px; }
+    .stat-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 16px; }
+    .stat-card { padding: 10px 12px; }
+    .stat-value { font-size: 20px; }
+    .table-header { flex-direction: column; gap: 10px; padding: 12px 14px; align-items: flex-start; }
+    .filter-bar { width: 100%; }
+    .filter-bar input { width: 100%; }
+    thead th { padding: 8px 10px; font-size: 12px; }
+    tbody td { padding: 8px 10px; font-size: 12px; }
+    .user-cell { gap: 8px; }
+    .avatar { width: 24px; height: 24px; font-size: 12px; }
+    .ip { font-size: 12px; }
+  }
+  /* ── Theme toggle ── */
+  .theme-toggle { display: none; font-size: 16px; background: #f4f4f5; border: 1px solid #ddd; border-radius: 6px; padding: 4px 8px; cursor: pointer; line-height: 1; transition: background 0.15s; flex-shrink: 0; }
+  .theme-toggle:hover { background: #e8e8ea; }
+  /* ── Dark mode ── */
+  html[data-theme="dark"] { color-scheme: dark; }
+  html[data-theme="dark"] body { background: #111113; color: #f0f0f0; }
+  html[data-theme="dark"] .header { background: #1c1c1f; border-bottom-color: #303033; }
+  html[data-theme="dark"] .header-title { color: #f0f0f0; }
+  html[data-theme="dark"] .header-sub { color: #888; }
+  html[data-theme="dark"] .nav a { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .nav a:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .nav-group-btn { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .nav-group-btn:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav-group-btn.active, html[data-theme="dark"] .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .nav-menu { background: #1c1c1f; border-color: #383838; box-shadow: 0 6px 20px rgba(0,0,0,0.45); }
+  html[data-theme="dark"] .nav-menu a { color: #bbbbc5; }
+  html[data-theme="dark"] .nav-menu a:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav-menu a.active { background: #5865F2; color: #fff; }
+  html[data-theme="dark"] .stat-card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .stat-value { color: #f0f0f0; }
+  html[data-theme="dark"] .table-card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .table-header { border-bottom-color: #303033; }
+  html[data-theme="dark"] .table-header-title { color: #f0f0f0; }
+  html[data-theme="dark"] thead th { background: #161618; border-bottom-color: #303033; color: #888; }
+  html[data-theme="dark"] tbody tr { border-bottom-color: #2a2a2d; }
+  html[data-theme="dark"] tbody tr:hover { background: #222226; }
+  html[data-theme="dark"] tbody td { color: #ccc; }
+  html[data-theme="dark"] .username { color: #f0f0f0; }
+  html[data-theme="dark"] .filter-bar input, html[data-theme="dark"] .filter-bar select { background: #252528; border-color: #383838; color: #f0f0f0; }
+  html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
+  html[data-theme="dark"] .theme-toggle:hover { background: #2e2e32; }
+
+  /* ── Restock alerts ── */
+  .main { padding: 24px; max-width: 1180px; margin: 0 auto; }
+  .page-head { margin-bottom: 18px; }
+  .page-title { font-size: 20px; font-weight: 600; color: #111; }
+  .page-sub { font-size: 13px; color: #777; margin-top: 4px; max-width: 62ch;
+              line-height: 1.55; }
+
+  .alerts-grid { display: grid; grid-template-columns: 360px 1fr; gap: 16px;
+                 align-items: start; }
+  .card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px;
+          overflow: hidden; margin-bottom: 16px; }
+  .card-head { padding: 12px 16px; border-bottom: 1px solid #e4e4e7;
+               display: flex; align-items: center; gap: 10px; }
+  .card-title { font-size: 14px; font-weight: 600; color: #111; }
+  .card-body { padding: 14px 16px; }
+  .status { font-size: 12px; color: #999; margin-left: auto; }
+
+  .field { margin-bottom: 16px; }
+  .label { display: block; font-size: 12px; color: #888; margin-bottom: 6px; }
+  .label-soft { color: #bbb; }
+  .field input[type=text] { width: 100%; font-size: 13px; height: 34px;
+    padding: 0 10px; border: 1px solid #ddd; border-radius: 7px;
+    background: #fff; color: #111; font-family: inherit; }
+  .field input:focus { outline: 2px solid #5865F2; outline-offset: -1px; }
+  .hint { font-size: 11.5px; color: #aaa; line-height: 1.5; margin-top: 6px; }
+
+  /* 26 monitor channels would otherwise make the composer taller than the
+     table beside it. */
+  .chip-scroll { max-height: 168px; overflow-y: auto; padding: 2px;
+                 border: 1px solid #eee; border-radius: 8px; }
+  .link-btn { background: none; border: none; padding: 0; margin-left: 6px;
+              font-family: inherit; font-size: 11.5px; color: #5865F2;
+              cursor: pointer; text-decoration: underline; }
+  html[data-theme="dark"] .chip-scroll { border-color: #2a2a2e; }
+  .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { font-family: inherit; font-size: 12px; font-weight: 500;
+          padding: 6px 11px; border-radius: 999px; cursor: pointer;
+          border: 1px solid #ddd; background: #fff; color: #555; }
+  .chip:hover { border-color: #5865F2; }
+  .chip.on { background: #5865F2; border-color: #5865F2; color: #fff; }
+  .chip-none { font-size: 12px; color: #aaa; }
+
+  .seg { display: flex; border: 1px solid #ddd; border-radius: 7px;
+         overflow: hidden; }
+  .seg-btn { flex: 1; font-family: inherit; font-size: 12px; font-weight: 500;
+             padding: 8px 10px; border: none; background: #fff; color: #555;
+             cursor: pointer; }
+  .seg-btn + .seg-btn { border-left: 1px solid #ddd; }
+  .seg-btn.on { background: #5865F2; color: #fff; }
+
+  .btn { font-size: 12px; height: 32px; padding: 0 14px; border: none;
+         border-radius: 7px; background: #5865F2; color: #fff; cursor: pointer;
+         font-weight: 600; font-family: inherit; }
+  .btn:disabled { opacity: .6; cursor: not-allowed; }
+  .btn-block { width: 100%; height: 36px; font-size: 13px; }
+  .btn-quiet { background: #fff; color: #555; border: 1px solid #ddd;
+               font-weight: 500; height: 28px; padding: 0 10px; }
+  .btn-quiet:hover { background: #f4f4f5; }
+  .btn-danger { background: #fff; color: #a33; border: 1px solid #e3c8c8;
+                font-weight: 500; height: 28px; padding: 0 10px; }
+  .btn-danger:hover { background: #fdf2f2; }
+
+  .msg { font-size: 12px; margin-top: 10px; min-height: 16px; }
+  .msg.err { color: #c33; }
+  .msg.ok { color: #2e7d32; }
+  .msg.busy { color: #888; }
+
+  .alert-row { padding: 14px 16px; border-bottom: 1px solid #f1f1f4;
+               display: flex; gap: 14px; align-items: flex-start; }
+  .alert-row:last-child { border-bottom: none; }
+  .alert-row.off { opacity: .55; }
+  .alert-main { flex: 1 1 auto; min-width: 0; }
+  .alert-name { font-size: 14px; font-weight: 600; color: #111;
+                overflow-wrap: anywhere; }
+  .alert-name .kw-note { font-size: 11.5px; font-weight: 400; color: #aaa; }
+  .tag-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+  .tag { font-size: 11px; padding: 3px 8px; border-radius: 999px;
+         background: #f4f4f5; color: #666; border: 1px solid #e7e7ea; }
+  .tag.chan { background: #eef0ff; color: #4550d8; border-color: #dfe3ff; }
+  .alert-side { flex: none; text-align: right; display: flex;
+                flex-direction: column; gap: 6px; align-items: flex-end; }
+  .alert-delivery { font-size: 11px; color: #999; text-transform: uppercase;
+                    letter-spacing: .04em; }
+  .alert-matched { font-size: 11.5px; color: #aaa; }
+  .alert-matched.live { color: #2e7d32; }
+  .alert-acts { display: flex; gap: 6px; }
+
+  .table-wrap { overflow-x: auto; }
+  .alerts-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .alerts-table th { text-align: left; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .04em; color: #888; padding: 9px 12px; white-space: nowrap;
+    border-bottom: 1px solid #e4e4e7; }
+  .alerts-table td { padding: 11px 12px; border-bottom: 1px solid #f1f1f4;
+    vertical-align: middle; }
+  .alerts-table tr:last-child td { border-bottom: none; }
+  .alerts-table tr.off td { opacity: .55; }
+  .alerts-table .num { text-align: right; white-space: nowrap; }
+  .alerts-table .kw-cell { font-weight: 600; color: #111; overflow-wrap: anywhere;
+    min-width: 150px; }
+  .alerts-table .acts { width: 1%; white-space: nowrap; text-align: right; }
+  .alerts-table .acts .btn + .btn { margin-left: 5px; }
+  .muted-cell { color: #bbb; }
+  .matched-live { color: #2e7d32; }
+  .tag.paused { background: #fdf2f2; color: #a33; border-color: #e3c8c8;
+                text-transform: none; letter-spacing: 0; }
+  html[data-theme="dark"] .alerts-table th { color: #8a8a92; border-bottom-color: #303033; }
+  html[data-theme="dark"] .alerts-table td { border-bottom-color: #2a2a2e; }
+  html[data-theme="dark"] .alerts-table .kw-cell { color: #f0f0f0; }
+  html[data-theme="dark"] .muted-cell { color: #66666e; }
+  html[data-theme="dark"] .matched-live { color: #81c784; }
+  html[data-theme="dark"] .tag.paused { background: #3a2626; color: #e08a8a;
+    border-color: #4a3333; }
+  .footnote { margin-top: 4px; padding: 12px 16px; border: 1px dashed #ddd;
+              border-radius: 10px; font-size: 12px; color: #999;
+              line-height: 1.6; }
+  .footnote b { color: #666; }
+
+  @media (max-width: 900px) {
+    .alerts-grid { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 560px) {
+    .main { padding: 14px; }
+    .alert-row { flex-direction: column; }
+    .alert-side { text-align: left; align-items: flex-start; }
+  }
+
+  html[data-theme="dark"] .page-title { color: #f0f0f0; }
+  html[data-theme="dark"] .page-sub { color: #9a9aa2; }
+  html[data-theme="dark"] .card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .card-head { border-bottom-color: #303033; }
+  html[data-theme="dark"] .card-title { color: #f0f0f0; }
+  html[data-theme="dark"] .field input[type=text] { background: #232326;
+    border-color: #38383c; color: #f0f0f0; }
+  html[data-theme="dark"] .chip { background: #232326; border-color: #38383c;
+    color: #bbbbc2; }
+  html[data-theme="dark"] .chip.on { background: #5865F2; border-color: #5865F2;
+    color: #fff; }
+  html[data-theme="dark"] .seg { border-color: #38383c; }
+  html[data-theme="dark"] .seg-btn { background: #232326; color: #bbbbc2; }
+  html[data-theme="dark"] .seg-btn + .seg-btn { border-left-color: #38383c; }
+  html[data-theme="dark"] .seg-btn.on { background: #5865F2; color: #fff; }
+  html[data-theme="dark"] .btn-quiet { background: #232326; border-color: #38383c;
+    color: #bbbbc2; }
+  html[data-theme="dark"] .btn-quiet:hover { background: #2a2a2e; }
+  html[data-theme="dark"] .btn-danger { background: #232326; border-color: #4a3333;
+    color: #e08a8a; }
+  html[data-theme="dark"] .alert-row { border-bottom-color: #2a2a2e; }
+  html[data-theme="dark"] .alert-name { color: #f0f0f0; }
+  html[data-theme="dark"] .tag { background: #26262a; color: #aaaab2;
+    border-color: #333338; }
+  html[data-theme="dark"] .tag.chan { background: #23243a; color: #9aa3ff;
+    border-color: #33355a; }
+  html[data-theme="dark"] .footnote { border-color: #333338; color: #8a8a92; }
+  html[data-theme="dark"] .footnote b { color: #aaaab2; }
+  html[data-theme="dark"] .msg.ok { color: #81c784; }
+
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <div>
+      <div class="header-title">Restock Alerts</div>
+      <div class="header-sub">Choose what pings you</div>
+    </div>
+  </div>
+  <div class="nav">
+    <a href="/">Dashboard</a>
+    <a href="/map">Map</a>
+    <a href="/status">Status</a>
+    <a href="/monitor-alerts-setup" class="active">Restock Alerts</a>
+    <a href="/tips">Tips, Tricks, and Guide</a>
+    <div class="nav-group">
+      <button class="nav-group-btn active" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        <a href="/admin">Visitor Log</a>
+        <a href="/contributors">Contributors</a>
+        <a href="/invite-network">Network</a>
+        <a href="/tracker-admin">Tracker Management</a>
+      </div>
+    </div>
+    <a href="/raffle-wheel">Raffle</a>
+    <div class="nav-group">
+      <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Nexus Playground<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        <a href="/portfolios">Portfolios</a>
+        <a href="/card-tracker">Tracker</a>
+        <a href="/grading-calculator">Grading Calculator</a>
+        <a href="/catalog">Catalog</a>
+        {% if request.session.get('inventory_access', False) %}<a href="/inventory">Inventory</a>{% endif %}
+      </div>
+    </div>
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
+    <a href="/logout">Log out</a>
+  </div>
+</div>
+
+<div class="main">
+
+  <div class="page-head">
+    <div>
+      <div class="page-title">Restock alerts</div>
+      <div class="page-sub">
+        Pick the products you actually care about and get pinged when one
+        restocks. This is on top of the role pings you already get, not
+        instead of them.
+      </div>
+    </div>
+  </div>
+
+  <div class="alerts-grid">
+
+    <!-- Composer -->
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">Add an alert</div>
+      </div>
+      <div class="card-body">
+
+        <div class="field">
+          <label class="label" for="aKeyword">What to watch for</label>
+          <input type="text" id="aKeyword" maxlength="100" autocomplete="off"
+                 placeholder="Prismatic Evolutions, Elite Trainer Box, Charizard…">
+          <div class="hint">
+            Matches anywhere in the product name, and isn't fussy about
+            capitals. A broad word like &ldquo;prismatic&rdquo; catches
+            everything from that set; a fuller name catches just that item.
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="label">Channels</label>
+          <div class="chip-row chip-scroll" id="aChannels"></div>
+          <div class="hint" id="aChannelHint">
+            Leave all unpicked to watch every monitor channel.
+            <button type="button" class="link-btn" id="aChanClear"
+                    onclick="clearChannels()" style="display:none;">Clear</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="label">Stores <span class="label-soft">(optional)</span></label>
+          <div class="chip-row" id="aStores"></div>
+          <div class="hint">Leave unpicked for any store.</div>
+        </div>
+
+        <div class="field">
+          <label class="label" for="aPrice">Only under <span class="label-soft">(optional)</span></label>
+          <input type="text" id="aPrice" inputmode="decimal" maxlength="12"
+                 placeholder="Any price">
+        </div>
+
+        <div class="field">
+          <label class="label">Send it as</label>
+          <div class="seg" id="aDelivery">
+            <button type="button" class="seg-btn on" data-value="channel">Channel ping</button>
+            <button type="button" class="seg-btn" data-value="dm">Direct message</button>
+          </div>
+          <div class="hint">
+            A channel ping mentions you in the alert channel with everyone
+            else it matched. A direct message goes to you privately instead.
+          </div>
+        </div>
+
+        <button class="btn btn-primary btn-block" id="aAddBtn" onclick="addAlert()">
+          Add alert</button>
+        <div class="msg" id="aMsg" role="status" aria-live="polite"></div>
+
+      </div>
+    </div>
+
+    <!-- Existing alerts -->
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">Your alerts</div>
+        <span class="status" id="aCount"></span>
+      </div>
+      <div class="table-wrap">
+        <table class="alerts-table" id="aTable" style="display:none;">
+          <thead>
+            <tr>
+              <th>Watching for</th>
+              <th>Channels</th>
+              <th>Stores</th>
+              <th class="num">Under</th>
+              <th>Sent as</th>
+              <th>Last match</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="aList"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="aEmpty" style="display:none;">
+        Nothing set up yet. Add one on the left and it starts watching straight away.
+      </div>
+    </div>
+
+  </div>
+
+  <div class="footnote">
+    <b>Worth knowing:</b> this is an extra, sharper ping on top of whatever
+    monitor roles you already hold &mdash; those keep working exactly as they
+    do now. Alerts start watching as soon as you add them, and
+    &ldquo;Not matched yet&rdquo; simply means nothing has restocked against
+    it so far.
+  </div>
+
+</div>
+
+
+<script src="/static/csrf.js"></script>
+<script>
+// Restock alerts. Everything here writes rows to product_subscriptions; the
+// bot that reads them and actually pings is a separate feature that does not
+// exist yet, so nothing on this page promises a ping has been sent.
+let channels = [];
+let stores = [];
+let alerts = [];
+const picked = { channels: new Set(), stores: new Set() };
+let delivery = "channel";
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function say(id, text, cls) {
+  const el = document.getElementById(id);
+  el.textContent = text || "";
+  el.className = "msg" + (cls ? " " + cls : "");
+}
+
+async function api(url, opts) {
+  const resp = await fetch(url, opts);
+  if (!resp.ok) {
+    let detail = "HTTP " + resp.status;
+    try { const j = await resp.json(); if (j.detail) detail = j.detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return resp.json();
+}
+
+async function loadAlerts() {
+  try {
+    const data = await api("/api/monitor-alerts");
+    channels = data.channels || [];
+    stores = data.stores || [];
+    alerts = data.alerts || [];
+    delivery = data.delivery_default || "channel";
+    drawChips();
+    drawDelivery();
+    drawAlerts();
+  } catch (e) {
+    say("aMsg", e.message, "err");
+  }
+}
+
+// Chips are addressed by INDEX, never by interpolating a name or a snowflake
+// into an onclick attribute — a store called "Sam's Club" would close the
+// attribute on its apostrophe.
+function drawChips() {
+  const chanBox = document.getElementById("aChannels");
+  chanBox.innerHTML = channels.length
+    ? channels.map((c, i) =>
+        '<button type="button" class="chip' +
+        (picked.channels.has(c.id) ? ' on' : '') +
+        '" onclick="toggleChannel(' + i + ')">' + esc(c.name) + '</button>').join("")
+    : '<span class="chip-none">No monitor channels are set up yet — an alert '
+      + 'will watch every restock until they are.</span>';
+  const hint = document.getElementById("aChannelHint");
+  hint.style.display = channels.length ? "block" : "none";
+  const clearBtn = document.getElementById("aChanClear");
+  const n = picked.channels.size;
+  hint.childNodes[0].nodeValue = n
+    ? " Watching " + n + " of " + channels.length + " channels. "
+    : " Leave all unpicked to watch every monitor channel. ";
+  clearBtn.style.display = n ? "inline" : "none";
+
+  const storeBox = document.getElementById("aStores");
+  storeBox.innerHTML = stores.length
+    ? stores.map((s, i) =>
+        '<button type="button" class="chip' +
+        (picked.stores.has(s) ? ' on' : '') +
+        '" onclick="toggleStore(' + i + ')">' + esc(s) + '</button>').join("")
+    : '<span class="chip-none">No store list available right now.</span>';
+}
+
+function clearChannels() {
+  picked.channels.clear();
+  drawChips();
+}
+
+function toggleChannel(i) {
+  const id = channels[i].id;
+  if (picked.channels.has(id)) picked.channels.delete(id);
+  else picked.channels.add(id);
+  drawChips();
+}
+
+function toggleStore(i) {
+  const name = stores[i];
+  if (picked.stores.has(name)) picked.stores.delete(name);
+  else picked.stores.add(name);
+  drawChips();
+}
+
+function drawDelivery() {
+  document.querySelectorAll("#aDelivery .seg-btn").forEach(btn => {
+    btn.classList.toggle("on", btn.getAttribute("data-value") === delivery);
+    btn.onclick = () => { delivery = btn.getAttribute("data-value"); drawDelivery(); };
+  });
+}
+
+function agoText(iso) {
+  if (!iso) return "Not matched yet";
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return "Matched just now";
+  if (mins < 60) return "Matched " + mins + "m ago";
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return "Matched " + hours + "h ago";
+  return "Matched " + Math.round(hours / 24) + "d ago";
+}
+
+function channelName(id) {
+  const hit = channels.filter(c => c.id === id)[0];
+  return hit ? hit.name : "Channel " + id;
+}
+
+function drawAlerts() {
+  const box = document.getElementById("aList");
+  const table = document.getElementById("aTable");
+  const any = alerts.length > 0;
+  table.style.display = any ? "table" : "none";
+  document.getElementById("aEmpty").style.display = any ? "none" : "block";
+  document.getElementById("aCount").textContent = any
+    ? alerts.length + (alerts.length === 1 ? " alert" : " alerts") : "";
+
+  // Rows are addressed by POSITION in the onclick, never by interpolating a
+  // keyword or a store name — "Sam's Club" would close the attribute on its
+  // apostrophe. The table is redrawn after every change, so an index is
+  // never stale.
+  box.innerHTML = alerts.map((a, i) => {
+    const chans = (a.channel_ids || []).length
+      ? a.channel_ids.map(id => '<span class="tag chan">' + esc(channelName(id)) + '</span>').join(" ")
+      : '<span class="tag chan">Every channel</span>';
+    const shops = (a.stores || []).length
+      ? a.stores.map(x => '<span class="tag">' + esc(x) + '</span>').join(" ")
+      : '<span class="muted-cell">Any</span>';
+    const cap = a.max_price_usd
+      ? "$" + esc(a.max_price_usd) : '<span class="muted-cell">&mdash;</span>';
+    return '<tr class="' + (a.enabled ? '' : 'off') + '">' +
+      '<td class="kw-cell">' + esc(a.keyword) +
+        (a.enabled ? '' : ' <span class="tag paused">Paused</span>') + '</td>' +
+      '<td>' + chans + '</td>' +
+      '<td>' + shops + '</td>' +
+      '<td class="num">' + cap + '</td>' +
+      '<td>' + (a.delivery === "dm" ? "Direct message" : "Channel ping") + '</td>' +
+      '<td class="' + (a.last_matched_at ? 'matched-live' : 'muted-cell') + '">' +
+        esc(agoText(a.last_matched_at)) + '</td>' +
+      '<td class="acts">' +
+        '<button type="button" class="btn btn-quiet" onclick="toggleAlert(' + i + ')">' +
+          (a.enabled ? 'Turn off' : 'Turn on') + '</button>' +
+        '<button type="button" class="btn btn-danger" onclick="removeAlert(' + i + ')">' +
+          'Delete</button>' +
+      '</td>' +
+    '</tr>';
+  }).join("");
+}
+
+async function addAlert() {
+  const btn = document.getElementById("aAddBtn");
+  const keyword = document.getElementById("aKeyword").value;
+  btn.disabled = true;
+  say("aMsg", "Saving…", "busy");
+  try {
+    const data = await api("/api/monitor-alerts", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        keyword: keyword,
+        channel_ids: [...picked.channels],
+        stores: [...picked.stores],
+        max_price_usd: document.getElementById("aPrice").value,
+        delivery: delivery
+      })
+    });
+    alerts.unshift(data.alert);
+    drawAlerts();
+    // Only the keyword clears: someone adding several alerts for the same
+    // stores would otherwise re-pick the same chips every time.
+    document.getElementById("aKeyword").value = "";
+    document.getElementById("aKeyword").focus();
+    say("aMsg", "Added. It starts watching now.", "ok");
+  } catch (e) {
+    say("aMsg", e.message, "err");
+  }
+  btn.disabled = false;
+}
+
+async function toggleAlert(i) {
+  const a = alerts[i];
+  if (!a) return;
+  try {
+    const data = await api("/api/monitor-alerts/" + a.id + "/toggle", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: !a.enabled })
+    });
+    alerts[i] = data.alert;
+    drawAlerts();
+  } catch (e) {
+    say("aMsg", e.message, "err");
+  }
+}
+
+async function removeAlert(i) {
+  const a = alerts[i];
+  if (!a) return;
+  if (!confirm("Remove the alert for " + a.keyword + "?")) return;
+  try {
+    await api("/api/monitor-alerts/" + a.id + "/delete", { method: "POST" });
+    alerts.splice(i, 1);
+    drawAlerts();
+    say("aMsg", "Removed.", "ok");
+  } catch (e) {
+    say("aMsg", e.message, "err");
+  }
+}
+
+document.getElementById("aKeyword").addEventListener("keydown", function (e) {
+  if (e.key === "Enter") addAlert();
+});
+
+loadAlerts();
+</script>
+<script>
+(function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();};upd();})();
+</script>
+<script>
+// Admin Tools dropdown — click the button to open, click anywhere else or press Esc to close.
+function closeNavGroups(){
+  document.querySelectorAll('.nav-group.open').forEach(function(g){
+    g.classList.remove('open');
+    var b = g.querySelector('.nav-group-btn');
+    if (b) b.setAttribute('aria-expanded', 'false');
+  });
+}
+function toggleNavGroup(ev){
+  ev.preventDefault();
+  ev.stopPropagation();
+  var btn = ev.currentTarget, grp = btn.parentElement, wasOpen = grp.classList.contains('open');
+  closeNavGroups();
+  if (!wasOpen){ grp.classList.add('open'); btn.setAttribute('aria-expanded', 'true'); }
+}
+document.addEventListener('click', closeNavGroups);
+document.addEventListener('keydown', function(ev){ if (ev.key === 'Escape') closeNavGroups(); });
+</script>
+</body>
+</html>
+</body>
+</html>

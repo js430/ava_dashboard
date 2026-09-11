@@ -1736,3 +1736,65 @@ chrome line rather than trying to recognise every one. A bare money line must
 NOT be treated as chrome — an item's own value line is the anchor.
 
 ---
+
+## 2026-09-11 — Restock alert preferences: `/monitor-alerts-setup`
+
+**Decided:** A member page where people choose which products ping them when
+Zephyr posts a restock. This app writes rows to `product_subscriptions`; the
+bot that reads them and sends the pings **does not exist yet** and is a
+separate feature in `ava_bot`. Additive to Zephyr's own role pings, which are
+untouched.
+
+**CROSS-REPO: `ava_dashboard` creates and owns a table `ava_bot` will read.**
+That is new — until now this app only owned tables the bot ignores
+(`terms_acceptance`, `dashboard_sessions`, `user_preferences`). The DDL lives
+in `monitor_alerts.py` on the usual startup-ensure pattern. **The vault
+contract at `Reference/data-system.md` still needs this added** — it could
+not be edited from this session (the vault wasn't on `--add-dir`).
+
+**Schema deviates from the handoff spec in three ways, deliberately:**
+- **`tcg TEXT` dropped, `channel_ids BIGINT[]` added.** Scoping to the
+  monitor channel a restock posts in is exact. The proposed game taxonomy was
+  a guess at how Zephyr names products, and the list it came from was defined
+  for the For Sale forum tags — a different feature. Jeffrey's call: pick the
+  channel, type the keyword.
+- **`store_filter TEXT` became `stores TEXT[]`.** A member picking Target and
+  Walmart is one alert, not two. `user_preferences.selected_locations`
+  already stores a Postgres array, so the pattern was proven here.
+- **`dedupe_key` added** — a normalized signature (keyword lowercased,
+  channels and stores sorted) with `UNIQUE (user_id, dedupe_key)`. Duplicates
+  are refused by the index, not by a read-then-write, so two fast clicks
+  can't both land. The bot can ignore this column.
+
+**EMPTY ARRAY MEANS "ANY", NOT "NONE".** `channel_ids = '{}'` is every
+monitor channel; `stores = '{}'` is every store. This is the one piece of
+meaning the bot must share — a matcher treating empty as "matches nothing"
+would silently kill most alerts, since most are unfiltered.
+
+**No per-user cap** (explicit call). Payload sizes are still bounded —
+keyword length, array lengths — but that is input validation, not a limit on
+how many alerts someone may keep.
+
+**`last_matched_at` is the bot's column.** This app only ever reads it, and
+the page shows "Not matched yet" until the matcher exists. **The mockup's
+"matches this week" stat was dropped**: the schema holds one overwritten
+timestamp, so that number has no source and would have been invented.
+
+**Gated on `get_current_user`, which 403s role-less "sample" sessions.** An
+alert targets a Discord user id in a premium monitor channel, so one saved by
+an account without the role could never fire. Paying subscribers are excluded
+for the same reason — no Discord id to ping.
+
+**Channel list comes from `MONITOR_CHANNELS` env** as `id:Label` pairs,
+matching how every other Discord id here is configured (`REQUIRED_ROLE_ID`,
+`MOD_ROLE_IDS`, `INVENTORY_ROLE_IDS`). Not yet populated — until it is, the
+page says so and an alert watches every channel. **Store list is queried live
+from `locations.store_type`**, never hardcoded, so a new chain appears on its
+own; `locations` still has no CREATE TABLE in either repo, so that query
+deliberately mirrors the one the map already runs.
+
+**Nav: main nav, not the "Nexus Playground" dropdown.** That group is the
+card-tools suite the subscription sells; this is a Discord-member restock
+feature and belongs next to Map and Status.
+
+---
