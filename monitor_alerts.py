@@ -152,6 +152,26 @@ DEFAULT_MONITOR_CHANNELS = (
     (1497970692577296434, "Barnes & Noble"),
     (1497968291304706058, "BoxLunch / Hot Topic"),
     (1497969950504128713, "Collector's Cache"),
+    # Second batch. These channel names arrive already readable, so the
+    # labels stay close to them rather than being reinvented — a member
+    # picking "Target - MTG" should see the channel they know.
+    (1496298876884353084, "Online monitor roles"),
+    (1497970557247951070, "P-Bandai"),
+    (1530322165524860958, "Online - Gundam"),
+    (1497968528186409100, "Best Buy - MTG"),
+    (1497968544493604966, "Best Buy - Sports"),
+    (1497969210654064670, "Target - MTG"),
+    (1497969229960577114, "Target - Sports"),
+    (1495553146506969138, "Online - One Piece"),
+    (1497969247417270473, "Target - One Piece"),
+    (1497969727849496637, "Walmart - One Piece"),
+    (1497970885645041685, "Riot Games Store"),
+    (1496688024593895456, "Online - Riftbound"),
+    (1497970016593903687, "Forge and Fire"),
+    (1497970215957430393, "GameStop - One Piece"),
+    (1497969899530752050, "GameNerdz - Pokémon"),
+    (1497968317535621182, "BoxLunch / Hot Topic - One Piece"),
+    (1497968342030614618, "BoxLunch / Hot Topic - Riftbound"),
 )
 
 
