@@ -315,7 +315,7 @@
     <a href="/">Dashboard</a>
     <a href="/map">Map</a>
     <a href="/status">Status</a>
-    <a href="/monitor-alerts-setup" class="active">Restock Alerts</a>
+    <a href="/monitor-alerts-setup" class="active">Monitor Alerts Setup</a>
     <a href="/tips">Tips, Tricks, and Guide</a>
     <div class="nav-group">
       <button class="nav-group-btn active" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
@@ -429,6 +429,56 @@
       </div>
     </div>
 
+  </div>
+
+  <!-- Edit modal -->
+  <div id="editModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); align-items:center; justify-content:center; z-index:1000;">
+    <div class="card" style="max-width:500px; width:90%; margin:auto; box-shadow:0 10px 40px rgba(0,0,0,0.2);">
+      <div class="card-head">
+        <div class="card-title">Edit alert</div>
+        <button type="button" class="btn-quiet" style="margin-left:auto;" onclick="closeEditModal()">✕</button>
+      </div>
+      <div class="card-body">
+
+        <div class="field">
+          <label class="label" for="eKeyword">What to watch for</label>
+          <input type="text" id="eKeyword" maxlength="100" autocomplete="off"
+                 placeholder="Prismatic Evolutions, Elite Trainer Box, Charizard…">
+          <label class="all-row">
+            <input type="checkbox" id="eMatchAll" onchange="toggleEditMatchAll()">
+            <span>Alert me for <strong>everything</strong> &mdash; no keyword</span>
+          </label>
+          <div class="hint" id="eKeywordHint">
+            Matches anywhere in the product name, and isn't fussy about
+            capitals. A broad word like &ldquo;prismatic&rdquo; catches
+            everything from that set; a fuller name catches just that item.
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="label">Channels</label>
+          <div class="chan-list" id="eChannels"></div>
+          <div class="hint" id="eChannelHint">
+            Leave all unticked to watch every monitor channel.
+            <button type="button" class="link-btn" id="eChanClear"
+                    onclick="clearEditChannels()" style="display:none;">Clear</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="label" for="ePrice">Only under <span class="label-soft">(optional)</span></label>
+          <input type="text" id="ePrice" inputmode="decimal" maxlength="12"
+                 placeholder="9999 if left blank">
+          <div class="hint">Left blank, this is set to 9999 &mdash; high enough
+            that nothing gets filtered out by price.</div>
+        </div>
+
+        <button class="btn btn-primary btn-block" id="eUpdateBtn" onclick="updateAlert()">
+          Save changes</button>
+        <div class="msg" id="eMsg" role="status" aria-live="polite"></div>
+
+      </div>
+    </div>
   </div>
 
   <div class="footnote">
@@ -579,6 +629,8 @@ function drawAlerts() {
       '<td class="' + (a.last_matched_at ? 'matched-live' : 'muted-cell') + '">' +
         esc(agoText(a.last_matched_at)) + '</td>' +
       '<td class="acts">' +
+        '<button type="button" class="btn btn-quiet" onclick="openEditModal(' + i + ')">' +
+          'Edit</button>' +
         '<button type="button" class="btn btn-quiet" onclick="toggleAlert(' + i + ')">' +
           (a.enabled ? 'Turn off' : 'Turn on') + '</button>' +
         '<button type="button" class="btn btn-danger" onclick="removeAlert(' + i + ')">' +
@@ -605,10 +657,15 @@ async function addAlert() {
     });
     alerts.unshift(data.alert);
     drawAlerts();
-    // Only the keyword clears: someone adding several alerts for the same
-    // channels would otherwise re-tick the same boxes every time.
+    // Full reset: keyword, match-all, channels, and price all clear so the
+    // form is ready for an unrelated alert rather than carrying over the
+    // last one's filters by accident.
+    document.getElementById("aKeyword").value = "";
     document.getElementById("aMatchAll").checked = false;
     toggleMatchAll();
+    picked.channels.clear();
+    drawChannels();
+    document.getElementById("aPrice").value = "";
     document.getElementById("aKeyword").focus();
     say("aMsg", "Added. It starts watching now.", "ok");
   } catch (e) {
@@ -645,6 +702,116 @@ async function removeAlert(i) {
     say("aMsg", e.message, "err");
   }
 }
+
+// ---- Edit modal ----
+// A separate picked-channels set from the composer's, so opening the editor
+// never disturbs whatever the "Add an alert" form currently has ticked.
+let editIndex = null;
+const editPicked = { channels: new Set() };
+
+function openEditModal(i) {
+  const a = alerts[i];
+  if (!a) return;
+  editIndex = i;
+  editPicked.channels = new Set(a.channel_ids || []);
+
+  document.getElementById("eKeyword").value = a.match_all ? "" : (a.keyword || "");
+  document.getElementById("eMatchAll").checked = !!a.match_all;
+  document.getElementById("ePrice").value =
+    a.max_price_usd ? String(a.max_price_usd) : "";
+  toggleEditMatchAll();
+  drawEditChannels();
+  say("eMsg", "", "");
+  document.getElementById("editModal").style.display = "flex";
+}
+
+function closeEditModal() {
+  document.getElementById("editModal").style.display = "none";
+  editIndex = null;
+}
+
+function drawEditChannels() {
+  const box = document.getElementById("eChannels");
+  box.innerHTML = channels.length
+    ? channels.map((c, i) =>
+        '<label class="chan-row' + (editPicked.channels.has(c.id) ? ' on' : '') + '">' +
+          '<input type="checkbox"' + (editPicked.channels.has(c.id) ? ' checked' : '') +
+            ' onchange="toggleEditChannel(' + i + ')">' +
+          '<span>' + esc(c.name) + '</span>' +
+        '</label>').join("")
+    : '<span class="chip-none">No monitor channels are set up yet — an alert '
+      + 'will watch every restock until they are.</span>';
+
+  const hint = document.getElementById("eChannelHint");
+  hint.style.display = channels.length ? "block" : "none";
+  const clearBtn = document.getElementById("eChanClear");
+  const n = editPicked.channels.size;
+  hint.childNodes[0].nodeValue = n
+    ? " Watching " + n + " of " + channels.length + " channels. "
+    : " Leave all unticked to watch every monitor channel. ";
+  clearBtn.style.display = n ? "inline" : "none";
+}
+
+function toggleEditMatchAll() {
+  const on = document.getElementById("eMatchAll").checked;
+  const box = document.getElementById("eKeyword");
+  box.disabled = on;
+  if (on) box.value = "";
+  box.placeholder = on
+    ? "Every restock in the channels below"
+    : "Prismatic Evolutions, Elite Trainer Box, Charizard…";
+  document.getElementById("eKeywordHint").style.display = on ? "none" : "block";
+}
+
+function clearEditChannels() {
+  editPicked.channels.clear();
+  drawEditChannels();
+}
+
+function toggleEditChannel(i) {
+  const id = channels[i].id;
+  if (editPicked.channels.has(id)) editPicked.channels.delete(id);
+  else editPicked.channels.add(id);
+  drawEditChannels();
+}
+
+async function updateAlert() {
+  if (editIndex === null) return;
+  const a = alerts[editIndex];
+  if (!a) return;
+  const btn = document.getElementById("eUpdateBtn");
+  const keyword = document.getElementById("eKeyword").value;
+  btn.disabled = true;
+  say("eMsg", "Saving…", "busy");
+  try {
+    const data = await api("/api/monitor-alerts/" + a.id, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        keyword: keyword,
+        match_all: document.getElementById("eMatchAll").checked,
+        channel_ids: [...editPicked.channels],
+        max_price_usd: document.getElementById("ePrice").value
+      })
+    });
+    alerts[editIndex] = data.alert;
+    drawAlerts();
+    closeEditModal();
+    say("aMsg", "Alert updated.", "ok");
+  } catch (e) {
+    say("eMsg", e.message, "err");
+  }
+  btn.disabled = false;
+}
+
+document.getElementById("editModal").addEventListener("click", function (e) {
+  if (e.target === this) closeEditModal();
+});
+document.addEventListener("keydown", function (e) {
+  if (e.key === "Escape" &&
+      document.getElementById("editModal").style.display === "flex") {
+    closeEditModal();
+  }
+});
 
 document.getElementById("aKeyword").addEventListener("keydown", function (e) {
   if (e.key === "Enter") addAlert();

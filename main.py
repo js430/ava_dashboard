@@ -6226,6 +6226,26 @@ async def api_monitor_alerts_toggle(request: Request, alert_id: int,
                         headers={"Cache-Control": "no-store"})
 
 
+@app.post("/api/monitor-alerts/{alert_id}")
+@limiter.limit("60/hour")
+async def api_monitor_alerts_update(request: Request, alert_id: int,
+                                    user=Depends(get_current_user)):
+    """Update an alert's keyword, channels, and price cap."""
+    body = await request.json()
+    pool = request.app.state.db
+    allowed_channels = {c["id"] for c in monitor_alerts.monitor_channels()}
+    cleaned, error = monitor_alerts.validate(body, allowed_channels)
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    row, error = await monitor_alerts.update_alert(
+        pool, int(user["id"]), alert_id, cleaned)
+    if error:
+        raise HTTPException(status_code=409, detail=error)
+    logger.info("Monitor alert updated by %s: %r", user["id"], cleaned["keyword"][:60])
+    return JSONResponse({"alert": _alert_json(row)},
+                        headers={"Cache-Control": "no-store"})
+
+
 # ---- Analytics ----
 
 @app.get("/analytics", response_class=HTMLResponse)
