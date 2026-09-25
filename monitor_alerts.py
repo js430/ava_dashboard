@@ -174,6 +174,7 @@ DEFAULT_MONITOR_CHANNELS = (
     (1497968342030614618, "BoxLunch / Hot Topic - Riftbound"),
     (1552830116063744011, "Online - Naruto"),
     (1552830957566951505, "Shopify - Pokémon"),
+    (1553023943642849373, "Online - Lorcana"),
 )
 
 
