@@ -137,6 +137,7 @@
         <a href="/contributors">Contributors</a>
         <a href="/invite-network">Network</a>
         <a href="/tracker-admin">Tracker Management</a>
+        {% if request.session.get('mod', False) %}<a href="/auto-delete-rules">Auto-Delete Rules</a>{% endif %}
       </div>
     </div>
     <a href="/raffle-wheel" class="active">Raffle</a>

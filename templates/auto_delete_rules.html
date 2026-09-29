@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/brand/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/brand/icon-180.png">
+<script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Auto-Delete Rules — Nexus Card Co</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .header-title { font-size: 16px; font-weight: 600; color: #111; }
+  .header-sub { font-size: 12px; color: #999; margin-top: 1px; }
+  .nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; }
+  .nav a:hover { background: #f4f4f5; }
+  .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-group { position: relative; display: inline-flex; }
+  .nav-group-btn { font-family: inherit; font-size: 12px; color: #555; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+  .nav-group-btn:hover { background: #f4f4f5; }
+  .nav-group-btn.active, .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-caret { font-size: 9px; line-height: 1; }
+  .nav-menu { display: none; position: absolute; top: calc(100% + 4px); right: 0; min-width: 170px; padding: 4px; background: #fff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.10); z-index: 400; }
+  .nav-group.open .nav-menu { display: block; }
+  .nav-menu a { display: block; padding: 6px 10px; border: none; border-radius: 5px; background: none; font-size: 12px; color: #555; text-decoration: none; white-space: nowrap; }
+  .nav-menu a:hover { background: #f4f4f5; }
+  .nav-menu a.active { background: #5865F2; color: #fff; }
+  .theme-toggle { font-family: inherit; font-size: 13px; padding: 3px 8px; border: 1px solid #ddd; border-radius: 6px; background: #fff; cursor: pointer; line-height: 1.4; }
+  a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid #5865F2; outline-offset: 2px; }
+
+  .main { padding: 24px; max-width: 1240px; margin: 0 auto; }
+  .page-title { font-size: 20px; font-weight: 600; }
+  .page-sub { font-size: 13px; color: #777; margin-top: 4px; max-width: 70ch; line-height: 1.55; }
+  .notice { margin: 16px 0 18px; padding: 11px 14px; border-radius: 10px; background: #fff8e6; border: 1px solid #f0dfaa; color: #6b5210; font-size: 12.5px; line-height: 1.6; }
+  .notice b { color: #4d3a08; }
+
+  .grid { display: grid; grid-template-columns: minmax(0, 470px) minmax(0, 1fr); gap: 16px; align-items: start; }
+  .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; overflow: hidden; }
+  .card-head { padding: 12px 16px; border-bottom: 1px solid #e4e4e7; display: flex; align-items: center; gap: 10px; }
+  .card-title { font-size: 14px; font-weight: 600; }
+  .card-status { margin-left: auto; font-size: 12px; color: #999; }
+  .card-body { padding: 14px 16px; }
+
+  .field { margin-bottom: 16px; }
+  .label { display: block; font-size: 12px; color: #666; margin-bottom: 5px; font-weight: 500; }
+  .label-soft { color: #aaa; font-weight: 400; }
+  .hint { font-size: 11.5px; color: #999; line-height: 1.5; margin-top: 6px; }
+  input[type=text], input[type=datetime-local], textarea { width: 100%; font-family: inherit; font-size: 13px; padding: 8px 10px; border: 1px solid #ddd; border-radius: 8px; background: #fff; color: #111; }
+  textarea { resize: vertical; min-height: 64px; line-height: 1.5; }
+  input:focus, textarea:focus { border-color: #5865F2; }
+
+  /* Group builder */
+  .group { border: 1px dashed #d4d4da; border-radius: 10px; padding: 11px 12px 12px; }
+  .group-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .group-name { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: #888; }
+  .or-sep { text-align: center; font-size: 11px; font-weight: 700; letter-spacing: .1em; color: #999; margin: 8px 0; }
+  .sub-label { font-size: 12px; color: #666; margin: 8px 0 4px; }
+  .chipbox { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 8px; border: 1px solid #ddd; border-radius: 8px; background: #fff; cursor: text; min-height: 38px; }
+  .chipbox:focus-within { border-color: #5865F2; }
+  .chipbox input { flex: 1 1 110px; min-width: 90px; border: none; padding: 3px 2px; font-size: 13px; background: transparent; color: inherit; border-radius: 0; }
+  .chipbox input:focus-visible { outline: none; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; padding: 2px 4px 2px 9px; border-radius: 999px; background: #eef0ff; color: #4650c4; max-width: 100%; overflow-wrap: anywhere; }
+  .chip.no { background: #fdecea; color: #b42318; }
+  .chip button { font: inherit; line-height: 1; border: none; background: none; color: inherit; cursor: pointer; padding: 2px 5px; border-radius: 999px; opacity: .7; }
+  .chip button:hover { opacity: 1; }
+  .sentence { margin-top: 10px; padding: 10px 12px; background: #f1f2ff; border-radius: 8px; font-size: 12.5px; line-height: 1.6; color: #333; }
+  .sentence b { font-weight: 600; color: #3540b5; }
+
+  .tag-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tag-chip { font-family: inherit; font-size: 12px; padding: 5px 11px; border: 1px solid #ddd; border-radius: 999px; background: #fff; color: #555; cursor: pointer; }
+  .tag-chip:hover { border-color: #5865F2; }
+  .tag-chip.on { background: #5865F2; border-color: #5865F2; color: #fff; }
+  .tag-chip.stale { border-style: dashed; }
+
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .conv { font-size: 11.5px; color: #888; margin-top: 5px; font-variant-numeric: tabular-nums; }
+  .relist { margin-top: 10px; padding: 9px 12px; background: #f4f4f5; border-radius: 8px; font-size: 12.5px; color: #444; line-height: 1.55; }
+
+  .warns { margin-bottom: 14px; padding: 10px 12px 10px 14px; border-radius: 8px; background: #fff8e6; border: 1px solid #f0dfaa; font-size: 12.5px; line-height: 1.55; color: #6b5210; }
+  .warns-title { font-weight: 600; margin-bottom: 3px; }
+  .warns ul { padding-left: 18px; }
+
+  .btn { font-family: inherit; font-size: 12.5px; padding: 8px 14px; border-radius: 8px; border: 1px solid #ddd; background: #fff; color: #444; cursor: pointer; white-space: nowrap; }
+  .btn:hover { background: #f4f4f5; }
+  .btn-primary { background: #5865F2; color: #fff; border-color: #5865F2; font-weight: 600; }
+  .btn-primary:hover { background: #4752d4; }
+  .btn-danger { color: #b42318; border-color: #ecc9c5; }
+  .btn-danger:hover { background: #fdf2f1; }
+  .btn:disabled { opacity: .55; cursor: default; }
+  .btn-sm { font-size: 11.5px; padding: 5px 10px; }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .msg { font-size: 12.5px; margin-top: 10px; line-height: 1.55; min-height: 18px; }
+  .msg.ok { color: #16794c; }
+  .msg.err { color: #b42318; }
+  .msg.busy { color: #777; }
+  .editing-note { margin-bottom: 14px; padding: 9px 12px; border-radius: 8px; background: #eef0ff; color: #3540b5; font-size: 12.5px; line-height: 1.55; }
+
+  /* Rule list */
+  .rule { padding: 14px 16px; border-bottom: 1px solid #f0f0f2; }
+  .rule:last-child { border-bottom: none; }
+  .rule.ended { opacity: .7; }
+  .rule-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .rule-name { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+  .rule-name.untitled { color: #999; font-weight: 500; }
+  .pill { display: inline-block; font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+  .pill.live { background: #eaf6ef; color: #16794c; }
+  .pill.scheduled { background: #eef0ff; color: #4650c4; }
+  .pill.ended { background: #f2f2f4; color: #888; }
+  .pill.warn { background: #fff3d6; color: #8a5a00; }
+  .pill.draft { background: #f2f2f4; color: #666; }
+  .rule-sentence { margin-top: 6px; font-size: 12.5px; line-height: 1.6; color: #444; }
+  .rule-sentence b { font-weight: 600; color: #3540b5; }
+  .rule-meta { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 11.5px; color: #888; }
+  .rule-meta b { color: #555; font-weight: 500; }
+  .rule-acts { margin-top: 10px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .empty { padding: 34px 16px; text-align: center; color: #999; font-size: 13px; line-height: 1.6; }
+
+  /* Test box */
+  .test-row { display: grid; gap: 10px; }
+  .verdict { padding: 10px 12px; border-radius: 8px; font-size: 12.5px; line-height: 1.55; margin-top: 12px; }
+  .verdict.hit { background: #fdecea; color: #8f2a1f; }
+  .verdict.miss { background: #eaf6ef; color: #16794c; }
+  .test-item { padding: 9px 0; border-bottom: 1px solid #f0f0f2; font-size: 12.5px; line-height: 1.55; }
+  .test-item:last-child { border-bottom: none; }
+  .test-item .why { color: #888; font-size: 11.5px; margin-top: 2px; }
+  .test-item b { font-weight: 600; }
+
+  @media (max-width: 980px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  @media (max-width: 560px) {
+    .main { padding: 14px; }
+    .header { padding: 10px 14px; }
+    .two { grid-template-columns: 1fr; }
+  }
+
+  /* Dark mode */
+  [data-theme="dark"] body { background: #17171b; color: #e8e8ea; }
+  [data-theme="dark"] .header { background: #1e1e24; border-bottom-color: #2c2c34; }
+  [data-theme="dark"] .header-title, [data-theme="dark"] .page-title, [data-theme="dark"] .card-title, [data-theme="dark"] .rule-name { color: #e8e8ea; }
+  [data-theme="dark"] .card { background: #1e1e24; border-color: #2c2c34; }
+  [data-theme="dark"] .card-head { border-bottom-color: #2c2c34; }
+  [data-theme="dark"] .nav a, [data-theme="dark"] .nav-group-btn, [data-theme="dark"] .btn,
+  [data-theme="dark"] .theme-toggle, [data-theme="dark"] .tag-chip { background: #24242b; border-color: #33333c; color: #c9c9d1; }
+  [data-theme="dark"] .nav a.active, [data-theme="dark"] .nav-group-btn.active, [data-theme="dark"] .nav-group.open .nav-group-btn { background: #5865F2; border-color: #5865F2; color: #fff; }
+  [data-theme="dark"] .btn-primary { background: #5865F2; border-color: #5865F2; color: #fff; }
+  [data-theme="dark"] .btn-danger { color: #f0907c; border-color: #4a3333; }
+  [data-theme="dark"] .tag-chip.on { background: #5865F2; border-color: #5865F2; color: #fff; }
+  [data-theme="dark"] .nav-menu { background: #24242b; border-color: #33333c; }
+  [data-theme="dark"] .nav-menu a { color: #c9c9d1; background: none; border: none; }
+  [data-theme="dark"] .nav-menu a.active { background: #5865F2; color: #fff; }
+  [data-theme="dark"] input[type=text], [data-theme="dark"] input[type=datetime-local], [data-theme="dark"] textarea, [data-theme="dark"] .chipbox { background: #24242b; border-color: #33333c; color: #e8e8ea; }
+  [data-theme="dark"] input[type=datetime-local] { color-scheme: dark; }
+  [data-theme="dark"] .label, [data-theme="dark"] .sub-label { color: #b4b4bc; }
+  [data-theme="dark"] .page-sub, [data-theme="dark"] .group-name, [data-theme="dark"] .conv,
+  [data-theme="dark"] .rule-meta, [data-theme="dark"] .hint, [data-theme="dark"] .test-item .why { color: #9a9aa4; }
+  [data-theme="dark"] .rule-name.untitled { color: #8a8a94; }
+  [data-theme="dark"] .group { border-color: #3a3a44; }
+  [data-theme="dark"] .chip { background: #262a4a; color: #a3abff; }
+  [data-theme="dark"] .chip.no { background: #3a2422; color: #f0907c; }
+  [data-theme="dark"] .sentence { background: #23243a; color: #d0d0da; }
+  [data-theme="dark"] .sentence b, [data-theme="dark"] .rule-sentence b { color: #a3abff; }
+  [data-theme="dark"] .rule-sentence, [data-theme="dark"] .relist { color: #c0c0c8; }
+  [data-theme="dark"] .relist { background: #24242b; }
+  [data-theme="dark"] .rule, [data-theme="dark"] .test-item { border-bottom-color: #2a2a31; }
+  [data-theme="dark"] .rule-meta b { color: #b4b4bc; }
+  [data-theme="dark"] .notice, [data-theme="dark"] .warns { background: #2f2716; border-color: #4a3d1c; color: #e3b75c; }
+  [data-theme="dark"] .notice b { color: #f0cc7c; }
+  [data-theme="dark"] .editing-note { background: #23243a; color: #a3abff; }
+  [data-theme="dark"] .pill.live { background: #16301f; color: #7ad3a3; }
+  [data-theme="dark"] .pill.scheduled { background: #262a4a; color: #a3abff; }
+  [data-theme="dark"] .pill.ended, [data-theme="dark"] .pill.draft { background: #2a2a31; color: #999; }
+  [data-theme="dark"] .pill.warn { background: #3a2f14; color: #e3b75c; }
+  [data-theme="dark"] .verdict.hit { background: #3a2422; color: #f0907c; }
+  [data-theme="dark"] .verdict.miss { background: #16301f; color: #7ad3a3; }
+  [data-theme="dark"] .msg.ok { color: #7ad3a3; }
+  [data-theme="dark"] .msg.err { color: #f0907c; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="header-title">Auto-Delete Rules</div>
+    <div class="header-sub">Decide which For Sale posts are removed automatically</div>
+  </div>
+  <div class="nav">
+    <a href="/">Dashboard</a>
+    <a href="/map">Map</a>
+    <a href="/status">Status</a>
+    <a href="/monitor-alerts-setup">Monitor Alerts Setup</a>
+    <a href="/tips">Tips, Tricks, and Guide</a>
+    {% set can_view_network = is_admin or request.session.get('mod', False) or request.session.get('all_mods', False) %}
+    {% if can_view_network %}
+    <div class="nav-group">
+      <button class="nav-group-btn active" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        {% if is_admin %}<a href="/admin">Visitor Log</a>{% endif %}
+        {% if is_admin %}<a href="/contributors">Contributors</a>{% endif %}
+        <a href="/invite-network">Network</a>
+        <a href="/tracker-admin">Tracker Management</a>
+        {% if request.session.get('mod', False) %}<a href="/auto-delete-rules" class="active">Auto-Delete Rules</a>{% endif %}
+      </div>
+    </div>
+    {% endif %}
+    {% if is_admin %}<a href="/raffle-wheel">Raffle</a>{% endif %}
+    <div class="nav-group">
+      <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Nexus Playground<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        <a href="/portfolios">Portfolios</a>
+        <a href="/card-tracker">Tracker</a>
+        <a href="/grading-calculator">Grading Calculator</a>
+        <a href="/catalog">Catalog</a>
+        {% if request.session.get('inventory_access', False) %}<a href="/inventory">Inventory</a>{% endif %}
+      </div>
+    </div>
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
+    <a href="/logout">Log out</a>
+  </div>
+</div>
+
+<div class="main">
+
+  <div class="page-head">
+    <div class="page-title">Auto-delete rules</div>
+    <div class="page-sub">
+      A rule removes a new For Sale post when its title or first message contains the
+      words you list, and sends the seller a message saying why and when they can post again.
+    </div>
+  </div>
+
+  <div class="notice">
+    <b>Rules only check brand-new posts.</b> A new rule won't remove posts that are already up,
+    and ending or deleting a rule won't bring back posts it already removed. Changes apply to the
+    very next new post &mdash; nothing needs restarting. In Search Of is never touched.
+  </div>
+
+  <div class="msg err" id="loadMsg" role="alert"></div>
+
+  <div class="grid">
+
+    <!-- Editor -->
+    <div class="col">
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title" id="edTitle">New rule</div>
+          <button type="button" class="btn btn-sm" id="edCancel" style="margin-left:auto;display:none;" onclick="resetEditor()">Cancel edit</button>
+        </div>
+        <div class="card-body">
+
+          <div id="edNote" class="editing-note" style="display:none;"></div>
+
+          <div class="field">
+            <label class="label" for="rName">Name <span class="label-soft">(optional &mdash; only mods see this)</span></label>
+            <input type="text" id="rName" maxlength="100" autocomplete="off" placeholder="e.g. 30th Anniversary hold" oninput="refresh()">
+          </div>
+
+          <div class="field">
+            <div class="label">What to look for</div>
+            <div id="groups"></div>
+            <div class="btn-row" style="margin-top:10px;">
+              <button type="button" class="btn btn-sm" onclick="addGroup()">+ Add another group (or)</button>
+            </div>
+            <div class="hint">
+              A post is removed if <b>any</b> group matches. A group matches when the post has
+              <b>every</b> word in the first box and <b>none</b> of the words in the second. Capital letters
+              don't matter, and a word matches inside longer words &mdash; <code>30th</code> catches
+              &ldquo;Pokemon 30Th Anniversary&rdquo;. Press Enter or comma to add a word.
+            </div>
+            <div class="sentence" id="sentence" aria-live="polite"></div>
+          </div>
+
+          <div class="field">
+            <div class="label">Only for these tags <span class="label-soft">(leave empty for any tag)</span></div>
+            <div class="tag-chips" id="tagChips"></div>
+          </div>
+
+          <div class="field">
+            <div class="label">When it's on <span class="label-soft">(all times are Eastern)</span></div>
+            <div class="two">
+              <div>
+                <label class="label" for="rStart">Starts</label>
+                <input type="datetime-local" id="rStart" oninput="refresh()">
+                <div class="conv" id="convStart"></div>
+              </div>
+              <div>
+                <label class="label" for="rEnd">Ends</label>
+                <input type="datetime-local" id="rEnd" oninput="refresh()">
+                <div class="conv" id="convEnd"></div>
+              </div>
+            </div>
+            <div class="relist" id="relist"></div>
+            <div class="hint">
+              Sellers are told the end time is when they can post again, so it defaults to
+              11:59 PM &mdash; an earlier time lets someone told &ldquo;October 16&rdquo; who posts that morning get removed again.
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="label" for="rReason">Message to sellers <span class="label-soft">(optional)</span></label>
+            <textarea id="rReason" maxlength="500" placeholder="e.g. Proxy and fake cards aren't allowed in For Sale" oninput="refresh()"></textarea>
+            <div class="hint">
+              Shown to the seller in the removal message. Leave it empty for new-release holds and
+              the standard new-release wording is used. Fill it in for anything else &mdash; otherwise
+              someone removed for posting fakes is told they were selling a new set.
+            </div>
+          </div>
+
+          <div class="warns" id="warns" style="display:none;" role="status"></div>
+
+          <div class="btn-row">
+            <button type="button" class="btn btn-primary" id="edSave" onclick="saveRule()">Save rule</button>
+          </div>
+          <div class="msg" id="edMsg" role="status" aria-live="polite"></div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- List + test -->
+    <div class="col">
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">Your rules</div>
+          <span class="card-status" id="ruleCount"></span>
+        </div>
+        <div id="ruleList"></div>
+        <div class="empty" id="ruleEmpty" style="display:none;">
+          No rules yet. Build one on the left and it starts on the date you pick.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title">Test a post</div></div>
+        <div class="card-body">
+          <div class="hint" style="margin-top:0;margin-bottom:12px;">
+            Paste a post's title and first message to see which rules would remove it &mdash; before
+            anyone's listing is deleted. It gives the same answer the bot does. The rule in the editor
+            is included even though it isn't saved.
+          </div>
+          <div class="test-row">
+            <div>
+              <label class="label" for="tTitle">Post title</label>
+              <input type="text" id="tTitle" autocomplete="off" placeholder="e.g. Pokemon 30th Anniversary Ditto ETB">
+            </div>
+            <div>
+              <label class="label" for="tBody">First message <span class="label-soft">(optional)</span></label>
+              <textarea id="tBody" placeholder="Paste the opening message of the post"></textarea>
+            </div>
+            <div>
+              <div class="label">Post tag <span class="label-soft">(optional)</span></div>
+              <div class="tag-chips" id="testTags"></div>
+            </div>
+            <div class="btn-row"><button type="button" class="btn btn-primary" onclick="runTest()">Check this post</button></div>
+          </div>
+          <div id="testOut"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<script src="/static/csrf.js"></script>
+<script>
+// Auto-delete rules editor. Everything here writes rows to
+// forum_auto_delete_rules; the bot reads them on each new For Sale post.
+// The test box mirrors the bot's matcher (normalize -> substring), so its
+// answer is the bot's answer.
+const TZ = "America/New_York";
+const MAX_TERM = 100;
+
+let rules = [];
+let tagOptions = [];
+let groups = [];                 // [{all: [], none: []}] — the editor's working copy
+const pickedTags = new Set();    // editor tag filter
+const testTags = new Set();      // test-box post tags
+let editingId = null;
+let saving = false;
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+function say(id, text, cls) {
+  const el = document.getElementById(id);
+  el.textContent = text || "";
+  el.className = "msg" + (cls ? " " + cls : "");
+}
+async function api(url, opts) {
+  const resp = await fetch(url, opts);
+  let data = {};
+  try { data = await resp.json(); } catch (e) {}
+  if (!resp.ok) throw new Error(data.detail || "Something went wrong.");
+  return data;
+}
+function postJson(url, body) {
+  return api(url, { method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body || {}) });
+}
+
+// ── Text handling: the bot's own normalisation ───────────────────────────
+function cleanTerm(s) {
+  return String(s || "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+}
+function norm(s) {
+  return String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+// ── Eastern time ─────────────────────────────────────────────────────────
+const etFormat = new Intl.DateTimeFormat("en-US", {
+  timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+function etParts(date) {
+  const o = {};
+  etFormat.formatToParts(date).forEach(p => { if (p.type !== "literal") o[p.type] = Number(p.value); });
+  return o;
+}
+// "2026-10-16T23:59" typed as Eastern wall-clock time -> the real instant.
+function easternToInstant(str) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(str || "");
+  if (!m) return null;
+  const want = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  let guess = want;
+  for (let i = 0; i < 2; i++) {
+    const p = etParts(new Date(guess));
+    guess += want - Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute);
+  }
+  return new Date(guess);
+}
+function pad2(n) { return String(n).padStart(2, "0"); }
+function toEasternInput(date) {
+  const p = etParts(date);
+  return p.year + "-" + pad2(p.month) + "-" + pad2(p.day) + "T" + pad2(p.hour) + ":" + pad2(p.minute);
+}
+function fmtEastern(date) {
+  return new Intl.DateTimeFormat("en-US", { timeZone: TZ, month: "short", day: "numeric",
+    year: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" }).format(date);
+}
+function fmtRelist(date) {
+  const day = new Intl.DateTimeFormat("en-US", { timeZone: TZ, month: "long", day: "numeric", year: "numeric" }).format(date);
+  const time = new Intl.DateTimeFormat("en-US", { timeZone: TZ, hour: "numeric", minute: "2-digit" }).format(date);
+  return day + " " + time;
+}
+function fmtUtc(date) {
+  return date.toISOString().slice(0, 16).replace("T", " ") + " UTC";
+}
+function defaultTimes() {
+  const now = new Date();
+  const later = new Date(now.getTime() + 30 * 86400000);
+  const p = etParts(later);
+  return { start: toEasternInput(now),
+           end: p.year + "-" + pad2(p.month) + "-" + pad2(p.day) + "T23:59" };
+}
+
+// ── Plain-English description of a rule ──────────────────────────────────
+function joinWords(list, word) {
+  if (list.length < 2) return list.join("");
+  if (list.length === 2) return list[0] + " " + word + " " + list[1];
+  return list.slice(0, -1).join(", ") + ", " + word + " " + list[list.length - 1];
+}
+function boldTerms(terms) { return terms.map(t => "<b>“" + esc(t) + "”</b>"); }
+function describe(gs, tags) {
+  const parts = gs.filter(g => g.all.length).map(g => {
+    let s = joinWords(boldTerms(g.all), "and");
+    if (g.none.length) s += " but not " + joinWords(boldTerms(g.none), "or");
+    return s;
+  });
+  if (!parts.length) return "";
+  let out = "Removes posts that mention " + parts.join(", or mention ") + ".";
+  if (tags.length) out += " Only posts tagged " + joinWords(tags.map(t => "<b>" + esc(t) + "</b>"), "or") + ".";
+  return out;
+}
+
+// ── The matcher (mirrors the bot) ────────────────────────────────────────
+function postText(title, body) { return norm(title + " \u0000 " + body); }
+function matchGroup(g, text) {
+  const all = g.all.map(norm), none = g.none.map(norm);
+  if (!all.length || all.concat(none).some(t => !t)) return { ok: false, why: "isn't usable" };
+  const missing = g.all.filter((t, i) => !text.includes(all[i]));
+  const blocked = g.none.filter((t, i) => text.includes(none[i]));
+  if (missing.length) return { ok: false, why: "is missing " + missing.map(t => "“" + t + "”").join(", ") };
+  if (blocked.length) return { ok: false, why: "contains " + blocked.map(t => "“" + t + "”").join(", ") };
+  return { ok: true, terms: g.all };
+}
+function matchRule(r, text, postTagList) {
+  if (r.usable === false) return { ok: false, why: ["the bot can't use this rule, so it skips it"] };
+  const whys = [];
+  let hit = null;
+  r.groups.forEach((g, i) => {
+    const m = matchGroup(g, text);
+    if (m.ok && !hit) hit = { index: i, terms: m.terms };
+    else if (!m.ok) whys.push("Group " + (i + 1) + " " + m.why);
+  });
+  if (!hit) return { ok: false, why: whys };
+  if (r.tags.length) {
+    const lower = r.tags.map(t => t.toLowerCase());
+    if (!postTagList.some(t => lower.includes(t.toLowerCase()))) {
+      return { ok: false, why: ["words match, but the post needs one of the tags: " + r.tags.join(", ")] };
+    }
+  }
+  return { ok: true, group: hit.index + 1, terms: hit.terms };
+}
+
+// ── Editor: groups and chips ─────────────────────────────────────────────
+function blankGroup() { return { all: [], none: [] }; }
+
+function commitTerm(list, raw, chipbox) {
+  const term = cleanTerm(raw);
+  if (!term) return false;
+  if (term.length > MAX_TERM) { say("edMsg", "Keep each word under " + MAX_TERM + " characters.", "err"); return false; }
+  if (list.some(t => t.toLowerCase() === term.toLowerCase())) return false;
+  list.push(term);
+  chipbox.insertBefore(makeChip(list, term, chipbox), chipbox.querySelector("input"));
+  refresh();
+  return true;
+}
+function makeChip(list, term, chipbox) {
+  const chip = document.createElement("span");
+  chip.className = "chip" + (chipbox.dataset.kind === "none" ? " no" : "");
+  const label = document.createElement("span");
+  label.textContent = term;
+  const x = document.createElement("button");
+  x.type = "button";
+  x.textContent = "×";
+  x.setAttribute("aria-label", "Remove " + term);
+  x.addEventListener("click", ev => {
+    ev.stopPropagation();
+    const at = Array.prototype.indexOf.call(chipbox.querySelectorAll(".chip"), chip);
+    if (at > -1) list.splice(at, 1);
+    chip.remove();
+    refresh();
+    chipbox.querySelector("input").focus();
+  });
+  chip.appendChild(label);
+  chip.appendChild(x);
+  return chip;
+}
+function makeChipBox(list, kind, label) {
+  const box = document.createElement("div");
+  box.className = "chipbox";
+  box.dataset.kind = kind;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.autocomplete = "off";
+  input.setAttribute("aria-label", label);
+  input.placeholder = list.length ? "" : (kind === "none" ? "e.g. birthday" : "e.g. 30th");
+  // The input goes in first: chips are inserted *before* it, which throws if
+  // it isn't a child yet (and left the editor blank when editing a rule).
+  box.appendChild(input);
+  list.forEach(t => box.insertBefore(makeChip(list, t, box), input));
+  box.addEventListener("click", () => input.focus());
+  input.addEventListener("keydown", ev => {
+    if (ev.key === "Enter" || ev.key === ",") {
+      ev.preventDefault();
+      if (commitTerm(list, input.value, box)) input.value = "";
+    } else if (ev.key === "Backspace" && !input.value && list.length) {
+      list.pop();
+      const chips = box.querySelectorAll(".chip");
+      chips[chips.length - 1].remove();
+      refresh();
+    }
+  });
+  input.addEventListener("input", () => {
+    if (input.value.indexOf(",") === -1) return;
+    const parts = input.value.split(",");
+    const rest = parts.pop();
+    parts.forEach(p => commitTerm(list, p, box));
+    input.value = rest;
+  });
+  input.addEventListener("blur", () => {
+    if (commitTerm(list, input.value, box)) input.value = "";
+  });
+  return box;
+}
+function drawGroups() {
+  const host = document.getElementById("groups");
+  host.innerHTML = "";
+  groups.forEach((g, i) => {
+    if (i > 0) {
+      const or = document.createElement("div");
+      or.className = "or-sep";
+      or.textContent = "OR";
+      host.appendChild(or);
+    }
+    const wrap = document.createElement("div");
+    wrap.className = "group";
+    const head = document.createElement("div");
+    head.className = "group-head";
+    const name = document.createElement("span");
+    name.className = "group-name";
+    name.textContent = "Group " + (i + 1);
+    head.appendChild(name);
+    if (groups.length > 1) {
+      const rm = document.createElement("button");
+      rm.type = "button";
+      rm.className = "btn btn-sm";
+      rm.textContent = "Remove group";
+      rm.addEventListener("click", () => { groups.splice(i, 1); drawGroups(); refresh(); });
+      head.appendChild(rm);
+    }
+    wrap.appendChild(head);
+    const l1 = document.createElement("div");
+    l1.className = "sub-label";
+    l1.textContent = "Post must contain ALL of";
+    wrap.appendChild(l1);
+    wrap.appendChild(makeChipBox(g.all, "all", "Words the post must contain, group " + (i + 1)));
+    const l2 = document.createElement("div");
+    l2.className = "sub-label";
+    l2.textContent = "…and NONE of (optional)";
+    wrap.appendChild(l2);
+    wrap.appendChild(makeChipBox(g.none, "none", "Words the post must not contain, group " + (i + 1)));
+    host.appendChild(wrap);
+  });
+}
+function addGroup() {
+  groups.push(blankGroup());
+  drawGroups();
+  refresh();
+  const boxes = document.querySelectorAll("#groups .group:last-child .chipbox input");
+  if (boxes[0]) boxes[0].focus();
+}
+// Words typed but not yet turned into chips still count when saving.
+function flushPending() {
+  document.querySelectorAll("#groups .chipbox").forEach(box => {
+    const input = box.querySelector("input");
+    const groupEl = box.closest(".group");
+    const gi = Array.prototype.indexOf.call(document.querySelectorAll("#groups .group"), groupEl);
+    if (gi < 0 || !input.value) return;
+    if (commitTerm(box.dataset.kind === "none" ? groups[gi].none : groups[gi].all, input.value, box)) input.value = "";
+  });
+}
+
+// ── Editor: tags ─────────────────────────────────────────────────────────
+function drawTagChips(hostId, picked, onToggle, includeStale) {
+  const host = document.getElementById(hostId);
+  const names = tagOptions.slice();
+  if (includeStale) picked.forEach(t => { if (!names.some(n => n.toLowerCase() === t.toLowerCase())) names.push(t); });
+  host.innerHTML = "";
+  names.forEach(name => {
+    const b = document.createElement("button");
+    b.type = "button";
+    const stale = !tagOptions.some(n => n.toLowerCase() === name.toLowerCase());
+    b.className = "tag-chip" + (picked.has(name) ? " on" : "") + (stale ? " stale" : "");
+    b.textContent = name + (stale ? " (not on the list)" : "");
+    b.setAttribute("aria-pressed", picked.has(name) ? "true" : "false");
+    b.addEventListener("click", () => { onToggle(name); });
+    host.appendChild(b);
+  });
+}
+function toggleEditorTag(name) {
+  if (pickedTags.has(name)) pickedTags.delete(name); else pickedTags.add(name);
+  drawTagChips("tagChips", pickedTags, toggleEditorTag, true);
+  refresh();
+}
+function toggleTestTag(name) {
+  if (testTags.has(name)) testTags.delete(name); else testTags.add(name);
+  drawTagChips("testTags", testTags, toggleTestTag, false);
+}
+
+// ── Editor: checks ───────────────────────────────────────────────────────
+function editorDates() {
+  return { start: easternToInstant(document.getElementById("rStart").value),
+           end: easternToInstant(document.getElementById("rEnd").value) };
+}
+function blockers() {
+  const out = [];
+  groups.forEach((g, i) => {
+    if (!g.all.length) out.push("Group " + (i + 1) + " needs at least one word it must contain. A group with only “none of” words would match almost every post.");
+  });
+  const d = editorDates();
+  if (!d.start) out.push("Pick a start date and time.");
+  if (!d.end) out.push("Pick an end date and time.");
+  if (d.start && d.end && d.end <= d.start) out.push("The end time has to come after the start time.");
+  return out;
+}
+function warnings() {
+  const out = [];
+  const seen = new Set();
+  groups.forEach(g => g.all.concat(g.none).forEach(t => {
+    const n = norm(t);
+    if (n && n.length <= 2 && !seen.has(n)) {
+      seen.add(n);
+      out.push("“" + t + "” is very short — it appears in a huge number of titles.");
+    }
+  }));
+  // Group B never catches anything group A misses when B must contain all of
+  // A's words and is at least as strict about A's excluded words.
+  groups.forEach((b, bi) => groups.forEach((a, ai) => {
+    if (ai === bi || !a.all.length || !b.all.length) return;
+    const ballSet = new Set(b.all.map(norm)), bnoneSet = new Set(b.none.map(norm));
+    const covers = a.all.every(t => ballSet.has(norm(t))) && a.none.every(t => bnoneSet.has(norm(t)));
+    if (!covers) return;
+    const identical = b.all.length === a.all.length && b.none.length === a.none.length;
+    if (identical && bi < ai) return;
+    out.push("Group " + (bi + 1) + " never catches anything Group " + (ai + 1) + " doesn't already catch.");
+  }));
+  const d = editorDates();
+  if (d.end && d.end < new Date()) out.push("The end time has already passed, so this rule won't do anything.");
+  return out;
+}
+
+function refresh() {
+  const tags = Array.from(pickedTags);
+  document.getElementById("sentence").innerHTML =
+    describe(groups, tags) || "Add the words to look for and the rule is described here.";
+
+  const d = editorDates();
+  const conv = (id, date) => {
+    document.getElementById(id).textContent = date ? "= " + fmtUtc(date) : "";
+  };
+  conv("convStart", d.start);
+  conv("convEnd", d.end);
+  document.getElementById("relist").textContent = d.end
+    ? "Sellers will be told: “You can list it again from " + fmtRelist(d.end) + ".”"
+    : "Pick an end time to see what sellers will be told.";
+
+  const w = warnings();
+  const box = document.getElementById("warns");
+  if (w.length) {
+    box.style.display = "block";
+    box.innerHTML = '<div class="warns-title">Worth a second look</div><ul>' +
+      w.map(x => "<li>" + esc(x) + "</li>").join("") + "</ul>";
+  } else {
+    box.style.display = "none";
+    box.innerHTML = "";
+  }
+}
+
+// ── Editor: load / reset / save ──────────────────────────────────────────
+function fillEditor(rule) {
+  const t = defaultTimes();
+  editingId = rule ? rule.id : null;
+  groups = rule && rule.groups.length
+    ? rule.groups.map(g => ({ all: g.all.slice(), none: g.none.slice() }))
+    : [blankGroup()];
+  pickedTags.clear();
+  if (rule) rule.tags.forEach(x => pickedTags.add(x));
+  document.getElementById("rName").value = rule ? rule.name : "";
+  document.getElementById("rStart").value = rule ? toEasternInput(new Date(rule.start)) : t.start;
+  document.getElementById("rEnd").value = rule ? toEasternInput(new Date(rule.end)) : t.end;
+  document.getElementById("rReason").value = rule ? rule.reason : "";
+  document.getElementById("edTitle").textContent = rule ? "Edit rule" : "New rule";
+  document.getElementById("edCancel").style.display = rule ? "inline-block" : "none";
+  document.getElementById("edSave").textContent = rule ? "Save changes" : "Save rule";
+  const note = document.getElementById("edNote");
+  if (rule) {
+    let text = "Editing " + (rule.name ? "“" + rule.name + "”" : "an unnamed rule") + ".";
+    if (rule.legacy) text += " This is an old single-word rule — saving it switches it to the new format.";
+    if (!rule.usable && !rule.legacy) text += " The bot can't use this rule as stored, so fix it and save.";
+    note.textContent = text;
+    note.style.display = "block";
+  } else {
+    note.style.display = "none";
+  }
+  drawGroups();
+  drawTagChips("tagChips", pickedTags, toggleEditorTag, true);
+  refresh();
+}
+function resetEditor() {
+  fillEditor(null);
+  say("edMsg", "", "");
+}
+function editRule(id) {
+  const rule = rules.find(r => r.id === id);
+  if (!rule) return;
+  fillEditor(rule);
+  say("edMsg", "", "");
+  document.getElementById("edTitle").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function saveRule() {
+  if (saving) return;
+  flushPending();
+  const problems = blockers();
+  if (problems.length) { say("edMsg", problems[0], "err"); return; }
+  const w = warnings();
+  if (w.length && !confirm("Before saving:\n\n• " + w.join("\n• ") + "\n\nSave this rule anyway?")) return;
+
+  saving = true;
+  const btn = document.getElementById("edSave");
+  btn.disabled = true;
+  say("edMsg", "Saving…", "busy");
+  try {
+    const url = editingId ? "/api/auto-delete-rules/" + editingId : "/api/auto-delete-rules";
+    await postJson(url, {
+      name: document.getElementById("rName").value,
+      groups: groups.map(g => ({ all: g.all, none: g.none })),
+      tags: Array.from(pickedTags),
+      start: document.getElementById("rStart").value,
+      end: document.getElementById("rEnd").value,
+      reason: document.getElementById("rReason").value
+    });
+    const wasEdit = !!editingId;
+    await loadRules();
+    resetEditor();
+    say("edMsg", wasEdit ? "Saved. It applies to the next new post." : "Rule added. It applies to new posts from its start time.", "ok");
+  } catch (e) {
+    say("edMsg", e.message, "err");
+  }
+  saving = false;
+  btn.disabled = false;
+}
+
+// ── Rule list ────────────────────────────────────────────────────────────
+const STATUS_LABEL = { live: "Live", scheduled: "Scheduled", ended: "Ended" };
+
+function drawRules() {
+  const host = document.getElementById("ruleList");
+  document.getElementById("ruleEmpty").style.display = rules.length ? "none" : "block";
+  document.getElementById("ruleCount").textContent = rules.length
+    ? rules.length + (rules.length === 1 ? " rule" : " rules") : "";
+  host.innerHTML = rules.map((r, i) => {
+    const sentence = r.usable === false
+      ? "The bot can't use this rule as stored, so it is skipped. Edit it to fix it."
+      : describe(r.groups, []);
+    const tags = r.tags.length ? esc(r.tags.join(", ")) : "Any tag";
+    const who = r.created_by_name || (r.created_by ? "User " + r.created_by : "Unknown");
+    const when = r.status === "scheduled"
+      ? "<span><b>Starts</b> " + esc(fmtEastern(new Date(r.start))) + "</span>" : "";
+    return '<div class="rule ' + esc(r.status) + '">' +
+      '<div class="rule-top">' +
+        '<span class="rule-name' + (r.name ? "" : " untitled") + '">' + esc(r.name || "Untitled rule") + "</span>" +
+        '<span class="pill ' + esc(r.status) + '">' + esc(STATUS_LABEL[r.status] || r.status) + "</span>" +
+        (r.legacy ? '<span class="pill draft">Old format</span>' : "") +
+        (r.usable === false ? '<span class="pill warn">Not working</span>' : "") +
+      "</div>" +
+      '<div class="rule-sentence">' + sentence + "</div>" +
+      '<div class="rule-meta">' + when +
+        "<span><b>Ends</b> " + esc(fmtEastern(new Date(r.end))) + "</span>" +
+        "<span><b>Tags</b> " + tags + "</span>" +
+        "<span><b>Seller message</b> " + (r.reason ? "Custom" : "Standard new-release") + "</span>" +
+        "<span><b>Created by</b> " + esc(who) + "</span>" +
+      "</div>" +
+      '<div class="rule-acts">' +
+        '<button type="button" class="btn btn-sm" data-act="edit" data-i="' + i + '">Edit</button>' +
+        (r.status === "live" ? '<button type="button" class="btn btn-sm" data-act="end" data-i="' + i + '">End now</button>' : "") +
+        '<button type="button" class="btn btn-sm btn-danger" data-act="delete" data-i="' + i + '">Delete</button>' +
+      "</div>" +
+    "</div>";
+  }).join("");
+}
+
+document.getElementById("ruleList").addEventListener("click", ev => {
+  const b = ev.target.closest("[data-act]");
+  if (!b) return;
+  const rule = rules[Number(b.dataset.i)];
+  if (!rule) return;
+  if (b.dataset.act === "edit") editRule(rule.id);
+  else if (b.dataset.act === "end") endRule(rule);
+  else if (b.dataset.act === "delete") deleteRule(rule);
+});
+
+async function endRule(rule) {
+  const label = rule.name ? "“" + rule.name + "”" : "this rule";
+  if (!confirm("End " + label + " now?\n\nIt stops matching new posts straight away and stays in the list as Ended. Posts it already removed stay removed.")) return;
+  try {
+    await postJson("/api/auto-delete-rules/" + rule.id + "/end");
+    await loadRules();
+    if (editingId === rule.id) resetEditor();
+  } catch (e) { say("loadMsg", e.message, "err"); }
+}
+async function deleteRule(rule) {
+  const label = rule.name ? "“" + rule.name + "”" : "this rule";
+  if (!confirm("Delete " + label + "?\n\nIt stops matching new posts immediately and its history is gone. Posts it already removed stay removed. To keep its history, use End now instead.")) return;
+  try {
+    await postJson("/api/auto-delete-rules/" + rule.id + "/delete");
+    await loadRules();
+    if (editingId === rule.id) resetEditor();
+  } catch (e) { say("loadMsg", e.message, "err"); }
+}
+
+async function loadRules() {
+  try {
+    const data = await api("/api/auto-delete-rules");
+    rules = data.rules || [];
+    tagOptions = data.tags || [];
+    say("loadMsg", "", "");
+    drawRules();
+    drawTagChips("tagChips", pickedTags, toggleEditorTag, true);
+    drawTagChips("testTags", testTags, toggleTestTag, false);
+  } catch (e) {
+    say("loadMsg", e.message, "err");
+  }
+}
+
+// ── Test box ─────────────────────────────────────────────────────────────
+function runTest() {
+  flushPending();
+  const title = document.getElementById("tTitle").value;
+  const body = document.getElementById("tBody").value;
+  const out = document.getElementById("testOut");
+  if (!title.trim() && !body.trim()) { out.innerHTML = '<div class="verdict miss">Type a post title first.</div>'; return; }
+  const text = postText(title, body);
+  const postTagList = Array.from(testTags);
+
+  const rows = rules.map(r => ({ rule: r, label: r.name || "Untitled rule", status: r.status }));
+  if (groups.some(g => g.all.length)) {
+    const d = editorDates();
+    const status = !d.start || !d.end ? "draft"
+      : (new Date() < d.start ? "scheduled" : new Date() < d.end ? "live" : "ended");
+    rows.push({ rule: { groups: groups, tags: Array.from(pickedTags), usable: true, end: d.end ? d.end.toISOString() : null },
+                label: "The rule in the editor (not saved)", status: status, draft: true });
+  }
+  rows.forEach(row => { row.result = matchRule(row.rule, text, postTagList); });
+  rows.sort((a, b) => (b.result.ok - a.result.ok));
+
+  const removing = rows.filter(r => r.result.ok && r.status === "live" && !r.draft);
+  let verdict;
+  if (removing.length) {
+    const latest = removing.map(r => new Date(r.rule.end)).sort((a, b) => b - a)[0];
+    verdict = '<div class="verdict hit"><b>This post would be removed</b> by ' + removing.length +
+      (removing.length === 1 ? " live rule" : " live rules") +
+      ". The seller would be told they can list again from " + esc(fmtRelist(latest)) + ".</div>";
+  } else {
+    verdict = '<div class="verdict miss"><b>No live rule would remove this post.</b></div>';
+  }
+  const items = rows.map(row => {
+    const r = row.result;
+    const state = row.draft ? "Draft" : (STATUS_LABEL[row.status] || row.status);
+    const pill = '<span class="pill ' + (row.draft ? "draft" : esc(row.status)) + '">' + esc(state) + "</span>";
+    let line, why = "";
+    if (r.ok) {
+      line = "<b>Matches</b> — group " + r.group + " (" + esc(r.terms.join(", ")) + ")";
+      if (!row.draft && row.status !== "live") why = "It isn't live, so it wouldn't remove anything right now.";
+    } else {
+      line = "Doesn't match";
+      why = r.why.join(" · ");
+    }
+    return '<div class="test-item"><div>' + esc(row.label) + " " + pill + " — " + line + "</div>" +
+      (why ? '<div class="why">' + esc(why) + "</div>" : "") + "</div>";
+  }).join("");
+  out.innerHTML = verdict + (items ? '<div style="margin-top:8px;">' + items + "</div>" : "");
+}
+
+// ── Nav + theme ──────────────────────────────────────────────────────────
+function toggleNavGroup(e) {
+  const group = e.currentTarget.closest(".nav-group");
+  document.querySelectorAll(".nav-group").forEach(g => { if (g !== group) g.classList.remove("open"); });
+  group.classList.toggle("open");
+  e.stopPropagation();
+}
+document.addEventListener("click", () => {
+  document.querySelectorAll(".nav-group").forEach(g => g.classList.remove("open"));
+});
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+  const next = cur === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem("theme", next); } catch (e) {}
+  document.getElementById("themeToggle").textContent = next === "dark" ? "☀️" : "🌙";
+}
+
+(function init() {
+  if (document.documentElement.getAttribute("data-theme") === "dark") {
+    document.getElementById("themeToggle").textContent = "☀️";
+  }
+  fillEditor(null);
+  loadRules();
+})();
+</script>
+</body>
+</html>
