@@ -172,6 +172,9 @@ DEFAULT_MONITOR_CHANNELS = (
     (1497969899530752050, "GameNerdz - Pokémon"),
     (1497968317535621182, "BoxLunch / Hot Topic - One Piece"),
     (1497968342030614618, "BoxLunch / Hot Topic - Riftbound"),
+    (1552830116063744011, "Online - Naruto"),
+    (1552830957566951505, "Shopify - Pokémon"),
+    (1553023943642849373, "Online - Lorcana"),
 )
 
 
@@ -368,3 +371,36 @@ async def set_enabled(pool, user_id: int, alert_id: int, enabled: bool):
             f"RETURNING {_COLUMNS}",
             alert_id, user_id, bool(enabled))
     return dict(row) if row else None
+
+
+async def update_alert(pool, user_id: int, alert_id: int, cleaned: dict) -> tuple:
+    """(row, error). Updates an alert with cleaned/validated fields.
+
+    Returns None, error if the alert isn't this member's or if they're trying
+    to change it to be identical to another alert they already have.
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "UPDATE product_subscriptions "
+            "SET keyword = $3, match_all = $4, channel_ids = $5, "
+            "    max_price_usd = $6, dedupe_key = $7 "
+            "WHERE id = $1 AND user_id = $2 "
+            f"RETURNING {_COLUMNS}",
+            alert_id, user_id, cleaned["keyword"], cleaned["match_all"],
+            cleaned["channel_ids"], cleaned["max_price_usd"],
+            cleaned["dedupe_key"])
+    if row is None:
+        return None, "That alert is already gone."
+
+    # Check if this update created a duplicate (same user + dedupe_key)
+    # by seeing if another row exists with the same dedupe_key.
+    async with pool.acquire() as conn:
+        dup = await conn.fetchval(
+            "SELECT id FROM product_subscriptions "
+            "WHERE user_id = $1 AND dedupe_key = $2 AND id != $3 "
+            "LIMIT 1",
+            user_id, cleaned["dedupe_key"], alert_id)
+    if dup is not None:
+        return None, "You already have that exact alert."
+
+    return dict(row), None
