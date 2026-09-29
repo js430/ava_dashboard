@@ -3,6 +3,64 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-09-29 — Auto-delete rules editor (`/auto-delete-rules`): dashboard writes rows, bot owns the table
+
+**Decided:** a mod-only page to manage For Sale auto-delete rules, under Admin
+Tools. It reads/writes `forum_auto_delete_rules`, which **`ava_bot` creates,
+migrates and enforces** — this repo never issues CREATE/ALTER for it (the
+hand-off spec was explicit: two apps altering one table drift apart). If the
+table isn't there yet the API returns a plain-English 503 instead of a stack
+trace. Built from the bot-side hand-off spec (artifact linked in the PR).
+Not yet run against a real database — see "Not verified" below.
+
+**Gate is `require_server_mod` (admins + `MOD_ROLE_IDS`), not the wider
+`all_mods` group.** Same door as Tracker Management. A rule silently deletes
+members' listings, so it belongs behind the narrower mod gate; role managers
+who can see the invite network can't use it. The nav link is shown only when
+`session["mod"]` is set (admins carry that flag too), so a role manager never
+sees a link that would 403.
+
+**Tag list is an env-overridable constant, not read from Discord.** The
+forum's tags live only in the bot's code, and this app has no Discord bot
+token. `DEFAULT_TAGS` (the 8 the spec lists) with an `AUTO_DELETE_TAGS`
+override — the same pattern as `MONITOR_CHANNELS`. **Rejected:** free-text
+tags (one misspelling and a rule quietly matches nothing) and adding a bot
+token here just for this. If the forum gains a tag, it's a Railway edit here.
+
+**Times are typed and read as Eastern on the server, stored UTC.** The browser
+sends wall-clock strings and `parse_eastern()` applies `America/New_York`, so
+the stored instant never depends on the mod's own timezone. Default end is
+11:59 PM: sellers are told the end time is when they can relist, and the live
+rules end at 5:49 PM, so someone told "October 16" who posts that morning
+gets removed again.
+
+**Validation refuses what the bot would silently skip** (group with no
+"must contain" word, blank term, unknown/blank tag, end <= start). The
+softer cases are warnings the mod confirms: very short words, a redundant
+group, an end time already past. Redundancy is checked more strictly than the
+spec's wording: group B is redundant only if its "all" words include A's *and*
+it excludes at least everything A excludes — otherwise a `30th` group with
+`none: [birthday]` would wrongly flag a `30th`+`ditto` group that still
+catches "30th ditto birthday".
+
+**Old `keyword` rows show as one group and convert on save.** Saving writes
+`conditions` and leaves `keyword` and `created_by` alone (the bot only reads
+`keyword` when `conditions` is empty).
+
+**End now vs Delete.** End now only applies to a rule that's live right now
+(setting end to "now" on a scheduled one would land before its start) and keeps
+history; Delete removes the row. Neither restores posts already removed, and
+the page says so.
+
+**Not verified:** never run against live Postgres or the real bot. Exercised
+with a mock server that reuses the real `validate()`/`rule_json()` and the
+page's own JS (31 checks on the matcher, sentence, Eastern conversion and
+warnings), plus a browser pass at desktop and phone width in light and dark.
+Column names come from the hand-off spec, not a live `pg_dump`. The
+`data-system.md` contract in the vault doesn't list this table yet.
+
+---
+
 ## 2026-08-04 — Catalog: grid view with card images, from PPT's own image URLs
 
 **Decided:** `/catalog` gets a list/grid toggle. Grid tiles show the card

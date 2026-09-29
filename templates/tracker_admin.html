@@ -119,6 +119,7 @@
         {% if is_admin %}<a href="/contributors">Contributors</a>{% endif %}
         <a href="/invite-network">Network</a>
         <a href="/tracker-admin" class="active">Tracker Management</a>
+        {% if request.session.get('mod', False) %}<a href="/auto-delete-rules">Auto-Delete Rules</a>{% endif %}
       </div>
     </div>
     {% endif %}

@@ -52,6 +52,7 @@ import collectr_import
 import portfolios
 import tips
 import monitor_alerts
+import auto_delete_rules
 
 load_dotenv()
 
@@ -6226,6 +6227,128 @@ async def api_monitor_alerts_toggle(request: Request, alert_id: int,
                         headers={"Cache-Control": "no-store"})
 
 
+# ---- Auto-delete rules (server mods) ----
+# Mods manage the For Sale forum's auto-delete rules here. The rules live in
+# forum_auto_delete_rules, a table ava_bot owns and enforces — this app only
+# writes rows (see auto_delete_rules.py). Nothing here creates the table.
+#
+# Gated on require_server_mod, the same door as Tracker Management: admins and
+# MOD_ROLE_IDS holders, not the wider all_mods group. A rule silently deletes
+# members' listings, so it belongs behind the narrower of the two mod gates.
+
+_RULES_UNAVAILABLE = ("The rules list isn't available yet — the bot creates it "
+                      "the next time it restarts. Try again after that.")
+
+
+async def _read_rule_body(request: Request):
+    try:
+        return await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="That request didn't look right.")
+
+
+@app.get("/auto-delete-rules", response_class=HTMLResponse)
+async def auto_delete_rules_page(request: Request):
+    user = request.session.get("user")
+    if not user:
+        return login_redirect_or_preview(request)
+    if not await terms_current(request, user):
+        return RedirectResponse("/terms")
+    require_server_mod(request)
+    return templates.TemplateResponse("auto_delete_rules.html", {
+        "request": request,
+        "username": user["username"],
+        "avatar": user.get("avatar"),
+        "user_id": user["id"],
+        "is_admin": int(user["id"]) in ADMIN_USER_IDS,
+        "is_mod": request.session.get("mod", False),
+    })
+
+
+@app.get("/api/auto-delete-rules")
+async def api_auto_delete_rules_list(request: Request,
+                                     user=Depends(require_server_mod)):
+    """Every rule, plus the tag names the form offers. Tags ride along with
+    the list for the same reason the alert channels do: the form can't render
+    without them, and a second round-trip is one more way to disagree."""
+    try:
+        rules = await auto_delete_rules.list_rules(request.app.state.db)
+    except auto_delete_rules.RulesUnavailable:
+        raise HTTPException(status_code=503, detail=_RULES_UNAVAILABLE)
+    return JSONResponse({
+        "rules": rules,
+        "tags": auto_delete_rules.for_sale_tags(),
+        "now": datetime.now(ZoneInfo("UTC")).isoformat(),
+    }, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/auto-delete-rules")
+@limiter.limit("60/hour")
+async def api_auto_delete_rules_add(request: Request,
+                                    user=Depends(require_server_mod)):
+    body = await _read_rule_body(request)
+    cleaned, error = auto_delete_rules.validate(
+        body, auto_delete_rules.for_sale_tags())
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    try:
+        rule = await auto_delete_rules.create_rule(
+            request.app.state.db, int(user["id"]), cleaned)
+    except auto_delete_rules.RulesUnavailable:
+        raise HTTPException(status_code=503, detail=_RULES_UNAVAILABLE)
+    logger.info("Auto-delete rule %s created by %s", rule["id"], user["id"])
+    return JSONResponse({"rule": rule}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/auto-delete-rules/{rule_id}")
+@limiter.limit("120/hour")
+async def api_auto_delete_rules_update(request: Request, rule_id: int,
+                                       user=Depends(require_server_mod)):
+    body = await _read_rule_body(request)
+    cleaned, error = auto_delete_rules.validate(
+        body, auto_delete_rules.for_sale_tags())
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    try:
+        rule = await auto_delete_rules.update_rule(
+            request.app.state.db, rule_id, cleaned)
+    except auto_delete_rules.RulesUnavailable:
+        raise HTTPException(status_code=503, detail=_RULES_UNAVAILABLE)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="That rule is already gone.")
+    logger.info("Auto-delete rule %s edited by %s", rule_id, user["id"])
+    return JSONResponse({"rule": rule}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/auto-delete-rules/{rule_id}/end")
+@limiter.limit("120/hour")
+async def api_auto_delete_rules_end(request: Request, rule_id: int,
+                                    user=Depends(require_server_mod)):
+    """End a live rule right now, keeping it (and its history) in the list."""
+    try:
+        rule, error = await auto_delete_rules.end_rule_now(
+            request.app.state.db, rule_id)
+    except auto_delete_rules.RulesUnavailable:
+        raise HTTPException(status_code=503, detail=_RULES_UNAVAILABLE)
+    if error:
+        raise HTTPException(status_code=409, detail=error)
+    logger.info("Auto-delete rule %s ended by %s", rule_id, user["id"])
+    return JSONResponse({"rule": rule}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/auto-delete-rules/{rule_id}/delete")
+@limiter.limit("120/hour")
+async def api_auto_delete_rules_delete(request: Request, rule_id: int,
+                                       user=Depends(require_server_mod)):
+    try:
+        removed = await auto_delete_rules.delete_rule(
+            request.app.state.db, rule_id)
+    except auto_delete_rules.RulesUnavailable:
+        raise HTTPException(status_code=503, detail=_RULES_UNAVAILABLE)
+    if not removed:
+        raise HTTPException(status_code=404, detail="That rule is already gone.")
+    logger.info("Auto-delete rule %s deleted by %s", rule_id, user["id"])
+    return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
 @app.post("/api/monitor-alerts/{alert_id}")
 @limiter.limit("60/hour")
 async def api_monitor_alerts_update(request: Request, alert_id: int,
