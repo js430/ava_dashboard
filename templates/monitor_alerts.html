@@ -500,6 +500,7 @@
 // exist yet, so nothing on this page promises a ping has been sent.
 let channels = [];
 let alerts = [];
+let defaultPrice = 9999;   // what a blank "Only under" box is stored as; the API sends the real one
 const picked = { channels: new Set() };
 
 function esc(s) {
@@ -528,6 +529,7 @@ async function loadAlerts() {
     const data = await api("/api/monitor-alerts");
     channels = data.channels || [];
     alerts = data.alerts || [];
+    if (Number(data.default_max_price) > 0) defaultPrice = Number(data.default_max_price);
     drawChannels();
     drawAlerts();
   } catch (e) {
@@ -632,6 +634,8 @@ function drawAlerts() {
       '<td class="acts">' +
         '<button type="button" class="btn btn-quiet" onclick="openEditModal(' + i + ')">' +
           'Edit</button>' +
+        '<button type="button" class="btn btn-quiet" title="Copy this alert into the Add an alert form" ' +
+          'onclick="duplicateAlert(' + i + ')">Duplicate</button>' +
         '<button type="button" class="btn btn-quiet" onclick="toggleAlert(' + i + ')">' +
           (a.enabled ? 'Turn off' : 'Turn on') + '</button>' +
         '<button type="button" class="btn btn-danger" onclick="removeAlert(' + i + ')">' +
@@ -673,6 +677,28 @@ async function addAlert() {
     say("aMsg", e.message, "err");
   }
   btn.disabled = false;
+}
+
+// A straight copy would be refused ("You already have that exact alert"), so
+// Duplicate fills the Add form with this alert's settings and lets the member
+// change what they need before adding. It overwrites whatever was in the form.
+function duplicateAlert(i) {
+  const a = alerts[i];
+  if (!a) return;
+  const keyword = document.getElementById("aKeyword");
+  document.getElementById("aMatchAll").checked = !!a.match_all;
+  keyword.value = a.match_all ? "" : (a.keyword || "");
+  toggleMatchAll();
+  picked.channels = new Set(a.channel_ids || []);
+  drawChannels();
+  // A cap at the default is the same as leaving the box blank, so show it blank.
+  const cap = Number(a.max_price_usd);
+  document.getElementById("aPrice").value = !a.max_price_usd || cap === defaultPrice
+    ? "" : String(a.max_price_usd).replace(/\.00$/, "");
+  say("aMsg", "Copied into the form. Change what you need, then add it.", "");
+  const calm = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  keyword.scrollIntoView({ behavior: calm ? "auto" : "smooth", block: "center" });
+  if (!keyword.disabled) { keyword.focus(); keyword.select(); }
 }
 
 async function toggleAlert(i) {
