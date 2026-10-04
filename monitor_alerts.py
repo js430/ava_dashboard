@@ -175,6 +175,7 @@ DEFAULT_MONITOR_CHANNELS = (
     (1552830116063744011, "Online - Naruto"),
     (1552830957566951505, "Shopify - Pokémon"),
     (1553023943642849373, "Online - Lorcana"),
+    (1556413548656337047, "Online - DBZ"),
 )
 
 
