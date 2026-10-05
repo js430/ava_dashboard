@@ -7433,8 +7433,10 @@ async def get_map_data(
         restocks = await conn.fetch(
             """
             SELECT
-                rr.location,
-                rr.store_name,
+                -- The matched store's own name, so each restock lands on the
+                -- right map pin even if the record's text differs from it.
+                l.location   AS location,
+                l.store_type AS store_name,
                 rr.channel_name,
                 rr.date AT TIME ZONE 'America/New_York' AS local_date
             FROM restock_reports rr
