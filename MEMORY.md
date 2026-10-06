@@ -3,6 +3,26 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-10-05 — Dashboard/map state buttons: fixed list, no "Other"
+
+**Decided:** the state buttons on the dashboard (`index.html`) and store map
+(`map.html`) are exactly VA, DC, MD, PA, FL, IL, TX, from `STATE_GROUPS` in
+each template. VA holds `VA` (NOVA), `CVA`, `TW` and `WVA` (Western VA); MD
+holds `Charm`, `CMD`, `SEMD`, `WMD`; the rest are one region each. This mirrors
+ava_bot's `AREAS` -> `REGIONS` -> state map in `constants.py`.
+
+**The "Other" fallback was removed.** It used to collect any region code not
+in `STATE_GROUPS`, which is why PA/TX/FL/IL showed up as "Other". PA wasn't in
+the requested list but was kept, by the maintainer's call: the bot runs PA as
+a live state, and without "Other" its locations would have had no button.
+
+**Consequence: a new state is a two-file edit here.** When the bot adds an
+area, add its code to `STATE_LABELS` in main.py (or the API rejects it) and to
+`STATE_GROUPS` in BOTH `index.html` and `map.html`, or it has no button. A
+code outside `STATE_GROUPS` is hidden on purpose, never bucketed.
+
+---
+
 ## 2026-09-29 — Auto-delete rules editor (`/auto-delete-rules`): dashboard writes rows, bot owns the table
 
 **Decided:** a mod-only page to manage For Sale auto-delete rules, under Admin
