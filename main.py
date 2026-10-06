@@ -490,8 +490,77 @@ STATE_LABELS = {
     "Charm":"Charm MD",
     "TW":   "Tidewater",
     "WVA":  "Western VA",
+    "PA":   "Pennsylvania",
+    "TX":   "Texas",
+    "FL":   "Florida",
+    "IL":   "Illinois",
 }
 VALID_REGIONS = frozenset(STATE_LABELS.keys())
+
+# ---- Store identity (shared DB with ava_bot) ----
+# ava_bot stores `location_id` (-> locations.id) on restock_reports and
+# command_logs so two regions can each have e.g. an "Arlington" Target without
+# their history mixing. Joins use it when present; rows without one (older
+# records, online callouts) match by name, but only when that name belongs to
+# a single location. Until the bot has added the column, the original
+# name-only joins are used — so this app can deploy before or after the bot.
+_LOCATION_ID_STATE = {"ready": False, "checked_at": 0.0}
+_LOCATION_ID_RECHECK_S = 600
+
+
+async def _location_ids_ready(conn) -> bool:
+    if _LOCATION_ID_STATE["ready"]:
+        return True
+    now = time.monotonic()
+    if _LOCATION_ID_STATE["checked_at"] and now - _LOCATION_ID_STATE["checked_at"] < _LOCATION_ID_RECHECK_S:
+        return False
+    _LOCATION_ID_STATE["checked_at"] = now
+    try:
+        n = await conn.fetchval(
+            "SELECT COUNT(DISTINCT table_name) FROM information_schema.columns "
+            "WHERE column_name = 'location_id' AND table_name IN ('restock_reports', 'command_logs')"
+        )
+    except Exception:
+        return False
+    _LOCATION_ID_STATE["ready"] = (n == 2)
+    return _LOCATION_ID_STATE["ready"]
+
+
+_UNIQUE_LOCATION_NAMES = (
+    "(SELECT LOWER(TRIM(store_type)) AS st, LOWER(TRIM(location)) AS loc, MIN(id) AS id "
+    "FROM locations GROUP BY 1, 2 HAVING COUNT(*) = 1)"
+)
+
+
+def _restock_locations_join(ids_ready: bool, kind: str = "JOIN") -> str:
+    """JOIN from restock_reports (alias rr) to locations (alias l)."""
+    if not ids_ready:
+        return (
+            f"{kind} locations l "
+            "ON LOWER(TRIM(l.location)) = LOWER(TRIM(rr.location)) "
+            "AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(rr.store_name))"
+        )
+    return (
+        f"LEFT JOIN {_UNIQUE_LOCATION_NAMES} lu ON rr.location_id IS NULL "
+        "AND lu.st = LOWER(TRIM(rr.store_name)) AND lu.loc = LOWER(TRIM(rr.location)) "
+        f"{kind} locations l ON l.id = COALESCE(rr.location_id, lu.id)"
+    )
+
+
+def _cmdlog_locations_join(ids_ready: bool, kind: str = "JOIN") -> str:
+    """JOIN from command_logs (alias cl, location = "location|store") to locations (l)."""
+    if not ids_ready:
+        return (
+            f"{kind} locations l "
+            "ON LOWER(TRIM(l.location)) = LOWER(TRIM(SPLIT_PART(cl.location, '|', 1))) "
+            "AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(SPLIT_PART(cl.location, '|', 2)))"
+        )
+    return (
+        f"LEFT JOIN {_UNIQUE_LOCATION_NAMES} lu ON cl.location_id IS NULL "
+        "AND lu.loc = LOWER(TRIM(SPLIT_PART(cl.location, '|', 1))) "
+        "AND lu.st = LOWER(TRIM(SPLIT_PART(cl.location, '|', 2))) "
+        f"{kind} locations l ON l.id = COALESCE(cl.location_id, lu.id)"
+    )
 
 # ---- Card Scanner Constants ----
 MAX_IMAGE_BYTES = 3 * 1024 * 1024 + 500_000  # ~3.5 MB raw
@@ -6887,6 +6956,7 @@ async def get_contributor_regions(request: Request, region: str, period: str = "
     since = _contributors_period_since(period)
 
     async with request.app.state.db.acquire() as conn:
+        ids_ready = await _location_ids_ready(conn)
         rows = await conn.fetch(
             """
             WITH restock_pts_cte AS (
@@ -6894,9 +6964,7 @@ async def get_contributor_regions(request: Request, region: str, period: str = "
                     SUM(CASE WHEN rr.store_name IN ('Target','Walmart','5 Below','Barnes and Noble','Best Buy') THEN 1 ELSE 0.5 END) AS restock_pts,
                     COUNT(*) AS restock_count
                 FROM restock_reports rr
-                JOIN locations l
-                  ON LOWER(TRIM(l.location)) = LOWER(TRIM(rr.location))
-                  AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(rr.store_name))
+                """ + _restock_locations_join(ids_ready) + """
                 WHERE rr.date >= $1
                   AND l.state = $2
                   AND rr.channel_name NOT IN ('online-restock-information','other-online-restocks','pokemon-center-drops')
@@ -6907,9 +6975,7 @@ async def get_contributor_regions(request: Request, region: str, period: str = "
                     SUM(CASE WHEN EXTRACT(DOW FROM cl.timestamp AT TIME ZONE 'America/New_York') IN (0,6) THEN 0.05 ELSE 0.1 END) AS empty_pts,
                     COUNT(*) AS empty_count
                 FROM command_logs cl
-                JOIN locations l
-                  ON LOWER(TRIM(l.location)) = LOWER(TRIM(SPLIT_PART(cl.location, '|', 1)))
-                  AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(SPLIT_PART(cl.location, '|', 2)))
+                """ + _cmdlog_locations_join(ids_ready) + """
                 WHERE cl.command_used = 'empty'
                   AND cl.timestamp >= $1
                   AND l.state = $2
@@ -7248,6 +7314,7 @@ async def get_restocks(
     since = now - timedelta(days=days)
 
     async with request.app.state.db.acquire() as conn:
+        ids_ready = await _location_ids_ready(conn)
         rows = await conn.fetch(
             """
             SELECT
@@ -7257,9 +7324,7 @@ async def get_restocks(
                 rr.date AT TIME ZONE 'America/New_York' AS local_date,
                 l.state
             FROM restock_reports rr
-            LEFT JOIN locations l
-              ON LOWER(TRIM(l.location)) = LOWER(TRIM(rr.location))
-              AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(rr.store_name))
+            """ + _restock_locations_join(ids_ready, "LEFT JOIN") + """
             WHERE rr.date >= $1
             AND rr.non_tcg = FALSE
             AND (rr.channel_name IS NULL OR rr.channel_name NOT IN (
@@ -7353,6 +7418,7 @@ async def get_map_data(
         else:        return "Evening"
 
     async with request.app.state.db.acquire() as conn:
+        ids_ready = await _location_ids_ready(conn)
         locations = await conn.fetch(
             """
             SELECT location, store_type, location_link
@@ -7368,14 +7434,14 @@ async def get_map_data(
         restocks = await conn.fetch(
             """
             SELECT
-                rr.location,
-                rr.store_name,
+                -- The matched store's own name, so each restock lands on the
+                -- right map pin even if the record's text differs from it.
+                l.location   AS location,
+                l.store_type AS store_name,
                 rr.channel_name,
                 rr.date AT TIME ZONE 'America/New_York' AS local_date
             FROM restock_reports rr
-            JOIN locations l
-              ON LOWER(TRIM(l.location)) = LOWER(TRIM(rr.location))
-              AND LOWER(TRIM(l.store_type)) = LOWER(TRIM(rr.store_name))
+            """ + _restock_locations_join(ids_ready) + """
             WHERE l.state = $2
               AND rr.date >= $1
               AND (rr.channel_name IS NULL OR rr.channel_name NOT IN (

@@ -1882,3 +1882,11 @@ card-tools suite the subscription sells; this is a Discord-member restock
 feature and belongs next to Map and Status.
 
 ---
+
+## 2026-10-05 — Restock joins use ava_bot's `location_id`; PA/TX/FL regions
+
+Cross-repo change (decision logged in ava_bot MEMORY.md, "Store identity: `location_id` on activity records"). ava_bot now writes `location_id` (-> locations.id) on restock_reports and command_logs, so two regions can each have an "Arlington" Target without their history mixing.
+
+- The four restock/command-log joins to `locations` (admin regional contributors leaderboard ×2, /api/restocks, the store map's restock query) go through `_restock_locations_join` / `_cmdlog_locations_join`: by id when the row has one; id-less rows (older records, online) match by name only when that name belongs to a single location, so an old record of a shared name isn't counted for both regions. Plain equality joins (no OR) so Postgres can hash-join.
+- **Deploy-order safe:** `_location_ids_ready` checks information_schema for the columns (re-checked every 10 min until present) and uses the original name-only joins until the bot has added them — following this repo's "never assume a column exists" rule.
+- `STATE_LABELS` / `VALID_REGIONS` gain PA (Pennsylvania), TX (Texas), FL (Florida) — those regions were rejected with 400 before. Rejected deriving the list from `SELECT DISTINCT state` for now: the labels are display text the bot doesn't store.
