@@ -333,11 +333,17 @@ function initMap() {
   loadRegions();
 }
 
-// State → region code mapping (display order)
+// State → region codes (display order). Mirrors ava_bot's AREAS/REGIONS, where
+// every area belongs to exactly one state; a region code not listed here has
+// no button (main.py's VALID_REGIONS rejects unknown codes anyway).
 const STATE_GROUPS = [
   { label: "VA", codes: ["VA", "CVA", "TW", "WVA"] },
   { label: "DC", codes: ["DC"] },
   { label: "MD", codes: ["Charm", "CMD", "SEMD", "WMD"] },
+  { label: "PA", codes: ["PA"] },
+  { label: "FL", codes: ["FL"] },
+  { label: "IL", codes: ["IL"] },
+  { label: "TX", codes: ["TX"] },
 ];
 
 let regionByCode = {};   // code → label, populated after fetch
@@ -368,21 +374,6 @@ async function loadRegions() {
       }
       stateGroup.appendChild(btn);
     });
-
-    // Fallback: any codes not in STATE_GROUPS as an "Other" state
-    const knownCodes = new Set(STATE_GROUPS.flatMap(g => g.codes));
-    const otherCodes = regions.filter(r => !knownCodes.has(r.code)).map(r => r.code);
-    if (otherCodes.length) {
-      const btn = document.createElement("button");
-      btn.textContent = "Other";
-      const otherGrp = { label: "Other", codes: otherCodes };
-      btn.onclick = function() { setState(otherGrp, this); };
-      if (!firstState) {
-        btn.classList.add("active");
-        firstState = otherGrp;
-      }
-      stateGroup.appendChild(btn);
-    }
 
     if (firstState) setState(firstState, stateGroup.querySelector("button.active"), true);
 
