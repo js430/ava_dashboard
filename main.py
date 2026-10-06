@@ -493,6 +493,7 @@ STATE_LABELS = {
     "PA":   "Pennsylvania",
     "TX":   "Texas",
     "FL":   "Florida",
+    "IL":   "Illinois",
 }
 VALID_REGIONS = frozenset(STATE_LABELS.keys())
 
