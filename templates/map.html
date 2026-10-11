@@ -171,7 +171,7 @@
     <a href="/">Dashboard</a>
     <a href="/map" class="active">Map</a>
     <a href="/status">Status</a>
-    <a href="/monitor-alerts-setup">Monitor Alerts Setup</a>
+    {% if not region_limited %}<a href="/monitor-alerts-setup">Monitor Alerts Setup</a>{% endif %}
     <a href="/tips">Tips, Tricks, and Guide</a>
     {% set can_view_network = is_admin or request.session.get('mod', False) or request.session.get('all_mods', False) %}
     {% if can_view_network %}
@@ -422,6 +422,9 @@ function setState(grp, btn, initial = false) {
 
 // ---- Data loading ----
 async function loadMapData() {
+  // Until /api/regions answers, currentRegion is only the "VA" placeholder —
+  // which a region-limited viewer isn't allowed to ask for.
+  if (!regionsLoaded) return;
   document.getElementById("statusBar").textContent = "Loading locations…";
   try {
     const resp = await fetch(`/api/map?region=${currentRegion}&window=${currentWindow}`);

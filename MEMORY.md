@@ -3,6 +3,45 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-10-10 — Regional viewers: Texas roles see the dashboard, map and status for TX only
+
+**Decided:** holders of the Texas, Houston, Austin and Dallas roles who are
+NOT members can use `/`, `/map` and `/status`, limited to `TX`, with the
+restock lookback of the Active role (`ACTIVE_ROLE_ID`, default
+1493352786761613443, via `LOOKBACK_ROLE_WEEKS`). Mapping is
+`REGION_ACCESS_ROLES` (`role_id:REGION`, `|` for several), defaulting to those
+four roles -> TX, so another state is a Railway edit.
+
+**They stay `is_demo()` sessions — the design is fail-closed.** Only the
+three pages and their six APIs (`/api/regions`, `/api/restocks`,
+`/api/locations`, `/api/map`, `/api/preferences` GET/POST, `/api/status`)
+use the new `get_dashboard_user`; each must limit itself with
+`allowed_regions()` / `check_region()`. Every other member page and API still
+refuses them. **Rejected:** making them members with a region filter on top —
+that opens every member page unless each is individually blocked. **Never
+switch another endpoint to `get_dashboard_user` without adding the region
+limit to it.**
+
+**The filter is server-side because `/api/restocks` returns every region and
+the page filters by state.** For regional viewers it's an inner join with
+`l.state = ANY(...)`, so restocks not matched to a store (which the page
+labels VA) are excluded. Their joins never match by a store name two
+locations share, even before ava_bot's `location_id` exists (Arlington VA vs
+Arlington TX). Members' queries are unchanged.
+
+**Precedence:** member (or admin) beats a Texas role; the deny list beats
+both. `session["regions"]` is cleared at every login, so access ends at the
+next login after the role is removed — the same session-lifetime caveat as
+every other role check here.
+
+**Not verified:** never run against live Postgres or real Discord. Covered
+by an end-to-end test of the real app (faked login, recording fake DB, real
+sessions/CSRF): 65 checks across the TX viewer, a member with a TX role, a
+plain non-member, a deny-listed TX holder, and every SQL variant parsed as
+Postgres with and without `location_id`.
+
+---
+
 ## 2026-10-05 — Dashboard/map state buttons: fixed list, no "Other"
 
 **Decided:** the state buttons on the dashboard (`index.html`) and store map
