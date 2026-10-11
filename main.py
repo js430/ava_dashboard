@@ -491,7 +491,9 @@ STATE_LABELS = {
     "TW":   "Tidewater",
     "WVA":  "Western VA",
     "PA":   "Pennsylvania",
-    "TX":   "Texas",
+    "TX":   "Austin",
+    "DAL":  "Dallas",
+    "HOU":  "Houston",
     "FL":   "Florida",
     "IL":   "Illinois",
 }
