@@ -497,6 +497,47 @@ STATE_LABELS = {
 }
 VALID_REGIONS = frozenset(STATE_LABELS.keys())
 
+# ---- Regional viewers ----
+# REGION_ACCESS_ROLES: role_id:REGION pairs, comma separated; one role may list
+# several regions with "|" (e.g. "123:FL|TX"). A holder WITHOUT the member role
+# may use the dashboard, map and status pages, but only for those regions, and
+# as if they held ACTIVE_ROLE_ID (its restock lookback). Everything else stays
+# at the non-member level: they remain is_demo() sessions, so every other
+# member page and API keeps refusing them. Defaults: the Texas state and city
+# roles -> TX. A member, or an admin, who also holds one keeps full access.
+REGION_ACCESS_ROLES: dict[str, frozenset] = {}
+for _pair in os.getenv(
+        "REGION_ACCESS_ROLES",
+        "1556394043506688121:TX,1557528075674067046:TX,"
+        "1557526579926663338:TX,1557526527128768572:TX").split(","):
+    _rid, _, _codes = _pair.strip().partition(":")
+    _ok = frozenset(c.strip() for c in _codes.split("|") if c.strip() in VALID_REGIONS)
+    if _rid.strip() and _ok:
+        REGION_ACCESS_ROLES[_rid.strip()] = _ok
+    elif _pair.strip():
+        logger.warning("REGION_ACCESS_ROLES: skipping %r — needs role_id:REGION "
+                       "with a known region code", _pair.strip()[:60])
+ACTIVE_ROLE_ID = os.getenv("ACTIVE_ROLE_ID", "1493352786761613443").strip()
+
+
+def allowed_regions(request: Request):
+    """None means every region (a member or admin). Otherwise the only region
+    codes this session may see — empty for an ordinary non-member, so a falsy
+    result always means "no live data". Read from the session, which login
+    sets; a role change takes effect at the next login, as for every role."""
+    if not is_demo(request):
+        return None
+    return frozenset(r for r in request.session.get("regions") or ()
+                     if r in VALID_REGIONS)
+
+
+def check_region(request: Request, region: str) -> None:
+    """403 when a regional viewer asks for a region outside their access."""
+    allowed = allowed_regions(request)
+    if allowed is not None and region not in allowed:
+        raise HTTPException(status_code=403,
+                            detail="Your access doesn't include that region.")
+
 # ---- Store identity (shared DB with ava_bot) ----
 # ava_bot stores `location_id` (-> locations.id) on restock_reports and
 # command_logs so two regions can each have e.g. an "Arlington" Target without
@@ -561,6 +602,25 @@ def _cmdlog_locations_join(ids_ready: bool, kind: str = "JOIN") -> str:
         "AND lu.st = LOWER(TRIM(SPLIT_PART(cl.location, '|', 2))) "
         f"{kind} locations l ON l.id = COALESCE(cl.location_id, lu.id)"
     )
+
+
+# Region-limited reads (regional viewers) never match a record by a name that
+# two locations share, even before the bot has added location_id — otherwise
+# e.g. an Arlington, VA Target's history could land on an Arlington, TX Target.
+def _restock_locations_join_strict(ids_ready: bool) -> str:
+    if ids_ready:
+        return _restock_locations_join(True)
+    return (f"JOIN {_UNIQUE_LOCATION_NAMES} lu ON lu.st = LOWER(TRIM(rr.store_name)) "
+            "AND lu.loc = LOWER(TRIM(rr.location)) JOIN locations l ON l.id = lu.id")
+
+
+def _cmdlog_locations_join_strict(ids_ready: bool) -> str:
+    if ids_ready:
+        return _cmdlog_locations_join(True)
+    return (f"JOIN {_UNIQUE_LOCATION_NAMES} lu "
+            "ON lu.loc = LOWER(TRIM(SPLIT_PART(cl.location, '|', 1))) "
+            "AND lu.st = LOWER(TRIM(SPLIT_PART(cl.location, '|', 2))) "
+            "JOIN locations l ON l.id = lu.id")
 
 # ---- Card Scanner Constants ----
 MAX_IMAGE_BYTES = 3 * 1024 * 1024 + 500_000  # ~3.5 MB raw
@@ -810,6 +870,18 @@ def get_current_user(request: Request):
     return user
 
 
+def get_dashboard_user(request: Request):
+    """get_current_user, but also lets a regional viewer through. ONLY for the
+    APIs behind the dashboard, map and status pages, and each of those must
+    limit its results with allowed_regions()/check_region()."""
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if is_demo(request) and not allowed_regions(request):
+        raise HTTPException(status_code=403, detail="Live data requires the member role.")
+    return user
+
+
 def get_current_discord_user(request: Request):
     """Any real Discord identity — full member OR role-less demo account —
     but not an anonymous guest. For features open to the whole Discord
@@ -1035,7 +1107,8 @@ async def index(request: Request):
             "guest_catalog_visible_sets": GUEST_CATALOG_VISIBLE_SETS,
             **await _membership_offer(),
         })
-    if is_demo(request):
+    limited = allowed_regions(request)
+    if limited is not None and not limited:
         return RedirectResponse("/sample")
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
@@ -1049,6 +1122,7 @@ async def index(request: Request):
         "is_admin": is_admin,
         "is_mod": request.session.get("mod", False),
         "max_position": max_position,
+        "region_limited": limited is not None,
     })
 
 @app.get("/sample", response_class=HTMLResponse)
@@ -1654,8 +1728,18 @@ async def callback(request: Request, code: str = None, error: str = None, state:
     request.session["mod"] = bool(MOD_ROLE_IDS & set(member_roles)) or is_admin_user
     request.session["all_mods"] = bool(ALL_MODS_ROLE_IDS & set(member_roles)) or is_admin_user
     request.session["inventory_access"] = bool(INVENTORY_ROLE_IDS & set(member_roles)) or is_admin_user
+    # Regional viewers: only for non-members (a member already sees every
+    # region). Always cleared first, so access ends at the next login once the
+    # role is gone. Deny-listed users were refused above and never get here.
+    request.session.pop("regions", None)
+    region_access = sorted({code for rid in member_roles
+                            for code in REGION_ACCESS_ROLES.get(rid, ())})
     if is_member:
         request.session["max_position"] = _get_max_position(member_roles)
+    elif region_access:
+        request.session["regions"] = region_access
+        request.session["max_position"] = _get_max_position(
+            list(member_roles) + [ACTIVE_ROLE_ID])
 
     ip_address = get_real_ip(request)
     try:
@@ -1669,12 +1753,14 @@ async def callback(request: Request, code: str = None, error: str = None, state:
                 user["username"],
                 ip_address
             )
+        tier = ("member" if is_member else
+                "regions " + ",".join(region_access) if region_access else "sample")
         logger.info(f"Dashboard login: {user['username']} ({user['id']}) from {ip_address} "
-                    f"[{'member' if is_member else 'sample'}]")
+                    f"[{tier}]")
     except Exception as e:
         logger.error(f"Failed to log dashboard session: {e}")
 
-    return RedirectResponse("/" if is_member else "/sample")
+    return RedirectResponse("/" if is_member or region_access else "/sample")
 
 @app.get("/logout")
 async def logout(request: Request):
@@ -6711,7 +6797,8 @@ async def status_page(request: Request):
             request, title="Store Status — Nexus Card Co",
             description="Live restock status for tracked stores in the DMV. "
                         "Sign in with Discord to view it.")
-    if is_demo(request):
+    limited = allowed_regions(request)
+    if limited is not None and not limited:
         return RedirectResponse("/sample-status")
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
@@ -6723,11 +6810,21 @@ async def status_page(request: Request):
         "user_id": user["id"],
         "is_admin": is_admin,
         "is_mod": request.session.get("mod", False),
+        "region_limited": limited is not None,
     })
 
 @app.get("/api/status")
-async def get_status(request: Request, user=Depends(get_current_user)):
+async def get_status(request: Request, user=Depends(get_dashboard_user)):
+    limited = allowed_regions(request)
     async with request.app.state.db.acquire() as conn:
+        # A regional viewer only sees stores that resolve to a location in
+        # their regions; a member's query is unchanged.
+        if limited is None:
+            region_join, region_filter, args = "", "", ()
+        else:
+            region_join = _cmdlog_locations_join_strict(await _location_ids_ready(conn))
+            region_filter = "AND l.state = ANY($1::text[])"
+            args = (sorted(limited),)
         rows = await conn.fetch(
             """
             SELECT DISTINCT ON (cl.location)
@@ -6737,6 +6834,7 @@ async def get_status(request: Request, user=Depends(get_current_user)):
                 cl.timestamp AT TIME ZONE 'America/New_York' AS local_time,
                 COALESCE(u.username, ds.username) AS username
             FROM command_logs cl
+            """ + region_join + """
             LEFT JOIN users u ON u.user_id = cl.user_id
             LEFT JOIN LATERAL (
                 SELECT username FROM dashboard_sessions
@@ -6747,8 +6845,10 @@ async def get_status(request: Request, user=Depends(get_current_user)):
             WHERE cl.location IS NOT NULL
               AND cl.location LIKE '%|%'
               AND cl.command_used IN ('empty', 'remain', 'restock', 'hope')
+              """ + region_filter + """
             ORDER BY cl.location, cl.timestamp DESC
-            """
+            """,
+            *args
         )
     return JSONResponse([
         {
@@ -7034,7 +7134,8 @@ async def map_page(request: Request):
             request, title="Store Map — Nexus Card Co",
             description="An interactive map of tracked stores across the DMV. "
                         "Sign in with Discord to view it.")
-    if is_demo(request):
+    limited = allowed_regions(request)
+    if limited is not None and not limited:
         return RedirectResponse("/sample-map")
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
@@ -7047,6 +7148,7 @@ async def map_page(request: Request):
         "is_admin": is_admin,
         "is_mod": request.session.get("mod", False),
         "google_maps_api_key": GOOGLE_MAPS_API_KEY,
+        "region_limited": limited is not None,
     })
 
 def _may_view_invite_network(request: Request) -> bool:
@@ -7280,8 +7382,9 @@ async def api_grading_scan(request: Request, user=Depends(get_current_user_or_gu
 @app.get("/api/regions")
 async def get_regions(
     request: Request,
-    user=Depends(get_current_user)
+    user=Depends(get_dashboard_user)
 ):
+    limited = allowed_regions(request)
     async with request.app.state.db.acquire() as conn:
         rows = await conn.fetch(
             "SELECT DISTINCT state FROM locations WHERE state IS NOT NULL ORDER BY state"
@@ -7289,6 +7392,8 @@ async def get_regions(
     regions = []
     for r in rows:
         code = r["state"]
+        if limited is not None and code not in limited:
+            continue
         label = STATE_LABELS.get(code, code)
         regions.append({"code": code, "label": label})
     return JSONResponse(regions)
@@ -7297,7 +7402,7 @@ async def get_regions(
 async def get_restocks(
     days: int = 7,
     request: Request = None,
-    user=Depends(get_current_user)
+    user=Depends(get_dashboard_user)
 ):
     # Map slider positions to allowed day values
     _POSITION_DAYS = {1:7,2:14,3:21,4:28,5:35,6:42,7:49,8:56,9:91,10:120,11:150,12:180}
@@ -7313,8 +7418,18 @@ async def get_restocks(
     now = datetime.now(eastern)
     since = now - timedelta(days=days)
 
+    # This endpoint returns every region and the page filters by state, so a
+    # regional viewer's rows are cut down HERE: only restocks matched to a
+    # store in their regions (an unmatched one would otherwise default to VA).
+    limited = allowed_regions(request)
     async with request.app.state.db.acquire() as conn:
         ids_ready = await _location_ids_ready(conn)
+        if limited is None:
+            join, region_filter, args = _restock_locations_join(ids_ready, "LEFT JOIN"), "", (since,)
+        else:
+            join = _restock_locations_join_strict(ids_ready)
+            region_filter = "AND l.state = ANY($2::text[])"
+            args = (since, sorted(limited))
         rows = await conn.fetch(
             """
             SELECT
@@ -7324,7 +7439,7 @@ async def get_restocks(
                 rr.date AT TIME ZONE 'America/New_York' AS local_date,
                 l.state
             FROM restock_reports rr
-            """ + _restock_locations_join(ids_ready, "LEFT JOIN") + """
+            """ + join + """
             WHERE rr.date >= $1
             AND rr.non_tcg = FALSE
             AND (rr.channel_name IS NULL OR rr.channel_name NOT IN (
@@ -7332,9 +7447,10 @@ async def get_restocks(
                 'other-online-restocks',
                 'pokemon-center-drops'
             ))
+            """ + region_filter + """
             ORDER BY rr.date ASC
             """,
-            since
+            *args
         )
 
     def time_slot(dt):
@@ -7365,10 +7481,11 @@ async def get_restocks(
 async def get_locations(
     request: Request,
     region: str = "VA",
-    user=Depends(get_current_user)
+    user=Depends(get_dashboard_user)
 ):
     if region not in VALID_REGIONS:
         raise HTTPException(status_code=400, detail="Invalid region")
+    check_region(request, region)
     state = region
 
     async with request.app.state.db.acquire() as conn:
@@ -7395,10 +7512,11 @@ async def get_map_data(
     request: Request,
     region: str = "VA",
     window: str = "day",
-    user=Depends(get_current_user)
+    user=Depends(get_dashboard_user)
 ):
     if region not in VALID_REGIONS:
         raise HTTPException(status_code=400, detail="Invalid region")
+    check_region(request, region)
     if window not in ("day", "week"):
         window = "day"
     state = region
@@ -7441,7 +7559,8 @@ async def get_map_data(
                 rr.channel_name,
                 rr.date AT TIME ZONE 'America/New_York' AS local_date
             FROM restock_reports rr
-            """ + _restock_locations_join(ids_ready) + """
+            """ + (_restock_locations_join(ids_ready) if allowed_regions(request) is None
+                   else _restock_locations_join_strict(ids_ready)) + """
             WHERE l.state = $2
               AND rr.date >= $1
               AND (rr.channel_name IS NULL OR rr.channel_name NOT IN (
@@ -7489,10 +7608,11 @@ async def get_map_data(
 async def get_preferences(
     request: Request,
     region: str = "VA",
-    user=Depends(get_current_user)
+    user=Depends(get_dashboard_user)
 ):
     if region not in VALID_REGIONS:
         raise HTTPException(status_code=400, detail="Invalid region")
+    check_region(request, region)
     async with request.app.state.db.acquire() as conn:
         row = await conn.fetchrow(
             """
@@ -7508,7 +7628,7 @@ async def get_preferences(
 @app.post("/api/preferences")
 async def save_preferences(
     request: Request,
-    user=Depends(get_current_user)
+    user=Depends(get_dashboard_user)
 ):
     body = await request.json()
     region = body.get("region", "VA")
@@ -7516,6 +7636,7 @@ async def save_preferences(
 
     if region not in VALID_REGIONS:
         raise HTTPException(status_code=400, detail="Invalid region")
+    check_region(request, region)
     if not isinstance(selected, list):
         raise HTTPException(status_code=400, detail="Invalid payload")
     if len(selected) > 500:
