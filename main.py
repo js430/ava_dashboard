@@ -496,6 +496,7 @@ STATE_LABELS = {
     "HOU":  "Houston",
     "FL":   "Florida",
     "IL":   "Illinois",
+    "CO":   "Colorado",
 }
 VALID_REGIONS = frozenset(STATE_LABELS.keys())
 
