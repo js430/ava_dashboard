@@ -537,7 +537,7 @@ function renderSidebar(data){
     const checked=items.filter(i=>selectedLocs.has(`${store}||${i.location}`)).length;
     const safeStore=store.replace(/'/g,"\\'");
     html+=`<div class="store-group">
-      <button class="store-group-toggle" onclick="toggleSidebarGroup('${safeStore}')">
+      <button class="store-group-toggle" data-store="${esc(store)}" onclick="toggleSidebarGroup('${safeStore}')">
         <span class="sg-chevron${isOpen?' open':''}">&#9654;</span>${esc(store)}
         <span class="sg-count">${checked}/${items.length}</span>
         <span class="sg-actions">
@@ -576,7 +576,9 @@ function toggleSidebarGroup(store){
 function toggleLocation(compoundKey,checked){
   if(checked) selectedLocs.add(compoundKey); else selectedLocs.delete(compoundKey);
   document.querySelectorAll('.store-group-toggle').forEach(btn=>{
-    const store=btn.childNodes[1]?.textContent?.trim();
+    // From data-store: childNodes[1] is the ▶ chevron, not the store name, so
+    // the count never changed when ticking single boxes.
+    const store=btn.dataset.store;
     if(!store) return;
     const items=Object.keys(locationMeta).filter(k=>k.startsWith(store+'||'));
     const span=btn.querySelector('.sg-count');
