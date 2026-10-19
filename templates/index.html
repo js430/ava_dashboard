@@ -390,8 +390,11 @@ let currentState = null;
 const SLOTS           = ["Morning","Afternoon","Evening"];
 const SLOT_S          = ["AM","PM","Eve"];
 const DOW_ORDER       = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
-const STORE_ORDER     = ["Target","Walmart","Best Buy","5 Below","Barnes and Noble"];
-const EXCLUDED_STORES = ["Costco","Sams Club"];
+// Spelled exactly as ava_bot writes locations.store_type. Only stores listed
+// here get a sidebar group, so a store missing from this list can't be shown.
+const STORE_ORDER     = ["Target","Walmart","Best Buy","5 Below","Barnes and Noble",
+                         "Costco","Sam's Club","BJ's Wholesale Club"];
+const EXCLUDED_STORES = [];
 const PERIOD_LABELS = {
   1:"This week", 2:"2 weeks",  3:"3 weeks",  4:"4 weeks",
   5:"5 weeks",   6:"6 weeks",  7:"7 weeks",  8:"8 weeks",
@@ -688,7 +691,7 @@ function render(){
   locs.forEach(loc=>{ if(!groups[loc.store]) groups[loc.store]=[]; groups[loc.store].push(loc); });
   const spanCols=showSlots?dayList.length*3:dayList.length;
 
-  STORE_ORDER.forEach(storeName=>{
+  STORE_ORDER.forEach((storeName,storeIdx)=>{
     const group=groups[storeName];
     if(!group||!group.length) return;
     const isOpen=expandedStores.has(storeName);
@@ -697,9 +700,11 @@ function render(){
       return s+SLOTS.reduce((ss,sl)=>ss+d[sl].length,0);
     },0),0);
 
-    html+=`<tr class='store-group-header' onclick='toggleStore(${JSON.stringify(storeName)})'>
+    // By index, not name: the apostrophe in "Sam's Club" would end this
+    // single-quoted attribute early.
+    html+=`<tr class='store-group-header' onclick='toggleStore(STORE_ORDER[${storeIdx}])'>
       <td colspan='${spanCols+2}'><div class='store-header-inner'>
-        <span class='store-header-name'>${storeName}</span>
+        <span class='store-header-name'>${esc(storeName)}</span>
         <span class='store-header-count'>${group.length} loc · ${totalRestocks} restocks</span>
         <span class='store-chevron${isOpen?" open":""}'>&#9654;</span>
       </div></td></tr>`;
