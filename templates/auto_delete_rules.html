@@ -266,7 +266,11 @@
               A post is removed if <b>any</b> group matches. A group matches when the post has
               <b>every</b> word in the first box and <b>none</b> of the words in the second. Capital letters
               don't matter, and a word matches inside longer words &mdash; <code>30th</code> catches
-              &ldquo;Pokemon 30Th Anniversary&rdquo;. Press Enter or comma to add a word.
+              &ldquo;Pokemon 30Th Anniversary&rdquo;. Dashes count as spaces, so <code>mini tin</code> catches
+              &ldquo;mini-tin&rdquo;. Put <code>*</code> between words to allow up to 3 other words there,
+              within one line or list item &mdash; <code>30th * mini tin</code> catches &ldquo;30th Celebration
+              Mini Tins&rdquo; but not &ldquo;30th ETB, Paldea mini tin&rdquo;. Order matters, so add
+              <code>mini tin * 30th</code> for the reverse. Press Enter or comma to add a word.
             </div>
             <div class="sentence" id="sentence" aria-live="polite"></div>
           </div>
@@ -407,7 +411,15 @@ function cleanTerm(s) {
   return String(s || "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
 }
 function norm(s) {
-  return String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
+  return String(s || "").toLowerCase().replace(/[-‐–—]/g, " ").replace(/\s+/g, " ").trim();
+}
+// A search word as the bot reads it, with "*" gaps as "a * b". "" or null
+// when the bot would refuse it (and skip the whole rule).
+function normTerm(s) {
+  const n = norm(s);
+  if (!n.includes("*")) return n;
+  const parts = n.split("*").map(p => p.trim());
+  return parts.every(p => p) ? parts.join(" * ") : null;
 }
 
 // ── Eastern time ─────────────────────────────────────────────────────────
@@ -476,12 +488,25 @@ function describe(gs, tags) {
 }
 
 // ── The matcher (mirrors the bot) ────────────────────────────────────────
-function postText(title, body) { return norm(title + " \u0000 " + body); }
+// Lines are kept ("\n") so a "*" gap stays inside one line or list item;
+// plain words see line breaks as spaces. NUL separates title from message.
+const GAP_WORDS = 3;
+const GAP_CHAR = "[^ \\n\\u0000,;/|+&•]";
+function normLines(s) {
+  return String(s || "").split(/\r\n|\r|\n/).map(norm).filter(Boolean).join("\n");
+}
+function postText(title, body) { return normLines(title) + " \u0000 " + normLines(body); }
+function escRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+function contains(text, term) {
+  if (!term.includes("*")) return text.replace(/\n/g, " ").includes(term);
+  const gap = GAP_CHAR + "*(?: " + GAP_CHAR + "+){0," + GAP_WORDS + "} " + GAP_CHAR + "*";
+  return new RegExp(term.split(" * ").map(escRe).join(gap)).test(text);
+}
 function matchGroup(g, text) {
-  const all = g.all.map(norm), none = g.none.map(norm);
+  const all = g.all.map(normTerm), none = g.none.map(normTerm);
   if (!all.length || all.concat(none).some(t => !t)) return { ok: false, why: "isn't usable" };
-  const missing = g.all.filter((t, i) => !text.includes(all[i]));
-  const blocked = g.none.filter((t, i) => text.includes(none[i]));
+  const missing = g.all.filter((t, i) => !contains(text, all[i]));
+  const blocked = g.none.filter((t, i) => contains(text, none[i]));
   if (missing.length) return { ok: false, why: "is missing " + missing.map(t => "“" + t + "”").join(", ") };
   if (blocked.length) return { ok: false, why: "contains " + blocked.map(t => "“" + t + "”").join(", ") };
   return { ok: true, terms: g.all };
@@ -509,8 +534,15 @@ function matchRule(r, text, postTagList) {
 function blankGroup() { return { all: [], none: [] }; }
 
 function commitTerm(list, raw, chipbox) {
-  const term = cleanTerm(raw);
+  let term = cleanTerm(raw);
   if (!term) return false;
+  if (!normTerm(term)) {
+    say("edMsg", term.includes("*")
+      ? "Put a word on both sides of each * — like “30th * mini tin”."
+      : "“" + term + "” is only dashes, and dashes count as spaces.", "err");
+    return false;
+  }
+  if (term.includes("*")) term = term.split("*").map(p => p.trim()).join(" * ");
   if (term.length > MAX_TERM) { say("edMsg", "Keep each word under " + MAX_TERM + " characters.", "err"); return false; }
   if (list.some(t => t.toLowerCase() === term.toLowerCase())) return false;
   list.push(term);
@@ -681,18 +713,20 @@ function warnings() {
   const out = [];
   const seen = new Set();
   groups.forEach(g => g.all.concat(g.none).forEach(t => {
-    const n = norm(t);
-    if (n && n.length <= 2 && !seen.has(n)) {
-      seen.add(n);
-      out.push("“" + t + "” is very short — it appears in a huge number of titles.");
-    }
+    // Each side of a "*" is checked on its own: "a * b" is as loose as "a".
+    (normTerm(t) || "").split(" * ").forEach(n => {
+      if (n && n.length <= 2 && !seen.has(n)) {
+        seen.add(n);
+        out.push("“" + (n === norm(t) ? t : n) + "” is very short — it appears in a huge number of titles.");
+      }
+    });
   }));
   // Group B never catches anything group A misses when B must contain all of
   // A's words and is at least as strict about A's excluded words.
   groups.forEach((b, bi) => groups.forEach((a, ai) => {
     if (ai === bi || !a.all.length || !b.all.length) return;
-    const ballSet = new Set(b.all.map(norm)), bnoneSet = new Set(b.none.map(norm));
-    const covers = a.all.every(t => ballSet.has(norm(t))) && a.none.every(t => bnoneSet.has(norm(t)));
+    const ballSet = new Set(b.all.map(normTerm)), bnoneSet = new Set(b.none.map(normTerm));
+    const covers = a.all.every(t => ballSet.has(normTerm(t))) && a.none.every(t => bnoneSet.has(normTerm(t)));
     if (!covers) return;
     const identical = b.all.length === a.all.length && b.none.length === a.none.length;
     if (identical && bi < ai) return;
