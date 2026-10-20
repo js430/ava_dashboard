@@ -16,6 +16,11 @@ NONE of the terms in `none`:
     {"any": [{"all": ["30th", "ditto"], "none": ["birthday"]},
              {"all": ["greninja ex box"]}]}
 
+Dashes count as spaces, and a "*" between words stands for up to 3 other
+words in the same line or list item: "30th * mini tin" catches "30th
+Celebration Mini Tins". A "*" with no word on one side is refused here,
+because the bot would skip the whole rule.
+
 WHY THE CHECKS BELOW EXIST. The bot skips a rule it cannot use and logs it
 once, so the mod who saved a broken rule never finds out. Every check in
 `validate()` is one the bot would silently swallow. The one that matters most:
@@ -63,6 +68,7 @@ DEFAULT_TAGS = ("Pokemon", "One Piece", "Riftbound", "DBZ", "Sports",
 
 _SPACES = re.compile(r"\s+")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+_DASHES = re.compile(r"[-‐–—]")   # the bot reads these as spaces
 
 _COLUMNS = ("id, name, conditions, keyword, tags, start_date, end_date, "
             "reason, created_by, created_at")
@@ -94,6 +100,24 @@ def clean_term(raw) -> str:
     return _SPACES.sub(" ", _CONTROL.sub(" ", str(raw or ""))).strip()
 
 
+def term_problem(term: str):
+    """Why the bot would refuse a cleaned term, or None. A refused term makes
+    it skip the whole rule. Mirrors ava_bot's utils/autodelete_rules._term."""
+    norm = _SPACES.sub(" ", _DASHES.sub(" ", term)).strip()
+    if not norm:
+        return "is only dashes, and dashes count as spaces"
+    if "*" in norm and not all(p.strip() for p in norm.split("*")):
+        return "needs a word on both sides of each * — like “30th * mini tin”"
+    return None
+
+
+def _gap_spacing(term: str) -> str:
+    """"30th*mini tin" -> "30th * mini tin", so the editor shows it plainly."""
+    if "*" not in term:
+        return term
+    return " * ".join(p.strip() for p in term.split("*"))
+
+
 def _clean_terms(raw, empty_message: str, allow_empty: bool):
     """(terms, error) for one `all` / `none` list."""
     if raw is None:
@@ -106,6 +130,10 @@ def _clean_terms(raw, empty_message: str, allow_empty: bool):
         term = clean_term(item)
         if not term:
             return None, "One of the words is blank. Remove it or type something."
+        problem = term_problem(term)
+        if problem:
+            return None, f"“{term[:30]}” {problem}."
+        term = _gap_spacing(term)
         if len(term) > MAX_TERM_LEN:
             return None, f"“{term[:30]}…” is too long for a search word."
         if term.lower() not in seen:
@@ -229,7 +257,8 @@ def _read_conditions(row: dict) -> tuple:
             none = [t for t in (raw.get("none") or []) if isinstance(t, str)]
             groups.append({"all": must, "none": none})
         usable = bool(groups) and all(
-            g["all"] and all(clean_term(t) for t in g["all"] + g["none"])
+            g["all"] and all(clean_term(t) and not term_problem(clean_term(t))
+                             for t in g["all"] + g["none"])
             for g in groups)
         return groups, False, usable
     keyword = clean_term(row.get("keyword"))

@@ -1949,3 +1949,11 @@ Cross-repo change (decision logged in ava_bot MEMORY.md, "Store identity: `locat
 - The four restock/command-log joins to `locations` (admin regional contributors leaderboard ×2, /api/restocks, the store map's restock query) go through `_restock_locations_join` / `_cmdlog_locations_join`: by id when the row has one; id-less rows (older records, online) match by name only when that name belongs to a single location, so an old record of a shared name isn't counted for both regions. Plain equality joins (no OR) so Postgres can hash-join.
 - **Deploy-order safe:** `_location_ids_ready` checks information_schema for the columns (re-checked every 10 min until present) and uses the original name-only joins until the bot has added them — following this repo's "never assume a column exists" rule.
 - `STATE_LABELS` / `VALID_REGIONS` gain PA (Pennsylvania), TX (Texas), FL (Florida) — those regions were rejected with 400 before. Rejected deriving the list from `SELECT DISTINCT state` for now: the labels are display text the bot doesn't store.
+
+## 2026-10-20 — Auto-delete rule editor: "*" gaps and dashes
+
+Cross-repo change (decision logged in ava_bot MEMORY.md, "Auto-delete rules: "*" gaps and dashes as spaces"). The bot now reads a "*" between words as up to 3 other words within one line or list item, and dashes as spaces.
+
+- `term_problem()` refuses what the bot would skip: a "*" with no word on one side, or a term that's only dashes. Saved terms get canonical `a * b` spacing (`_gap_spacing`). `_read_conditions` marks stored rules with such terms unusable, matching the bot.
+- "Test a post" (templates/auto_delete_rules.html) mirrors the bot: `norm` turns dashes into spaces, `postText` keeps line breaks, `contains` builds the same gap regex (`GAP_CHAR` excludes space, newline, NUL and `, ; / | + & •`). The chip input rejects bad "*" placement immediately; the short-word warning checks each side of a "*". The hint explains "*" and dashes.
+- Parity: 6,000 random posts/terms gave identical results here and in the bot; both refuse the same terms.
