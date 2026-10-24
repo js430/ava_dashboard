@@ -1957,3 +1957,9 @@ Cross-repo change (decision logged in ava_bot MEMORY.md, "Auto-delete rules: "*"
 - `term_problem()` refuses what the bot would skip: a "*" with no word on one side, or a term that's only dashes. Saved terms get canonical `a * b` spacing (`_gap_spacing`). `_read_conditions` marks stored rules with such terms unusable, matching the bot.
 - "Test a post" (templates/auto_delete_rules.html) mirrors the bot: `norm` turns dashes into spaces, `postText` keeps line breaks, `contains` builds the same gap regex (`GAP_CHAR` excludes space, newline, NUL and `, ; / | + & •`). The chip input rejects bad "*" placement immediately; the short-word warning checks each side of a "*". The hint explains "*" and dashes.
 - Parity: 6,000 random posts/terms gave identical results here and in the bot; both refuse the same terms.
+
+## 2026-10-24 — Online restock channel renamed: `retailers-online-restocks`
+
+Cross-repo change (decision logged in ava_bot MEMORY.md, "Batch 2 of the code review"). The bot's online restock channel was renamed from `online-restock-information` to `retailers-online-restocks`. `restock_reports.channel_name` holds the channel's name when the restock was saved, so online restocks since the rename slipped past every "leave out online channels" filter. Jeffrey: add the new name everywhere.
+- All 5 `channel_name NOT IN (...)` lists in main.py now also leave out `retailers-online-restocks`; the old name stays for older rows.
+- Same change in the bot (daily summary, all 9 leaderboard queries), so both still leave out the same channels.
