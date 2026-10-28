@@ -291,7 +291,7 @@ def login_redirect_or_preview(request: Request, title: str = None, description: 
     tags rendered directly (no redirect followed); anyone else gets the
     normal login redirect, unchanged."""
     if _is_link_preview_bot(request):
-        return templates.TemplateResponse("og_preview.html", {
+        return templates.TemplateResponse(request, "og_preview.html", {
             "request": request,
             "base_url": PUBLIC_BASE_URL,
             "og_title": title or OG_TITLE,
@@ -682,8 +682,17 @@ EXTRACT_PROMPT = (
 )
 
 
+# The type check before this only reads the upload's own data-URL label, which
+# the sender controls, so Pillow must enforce the same four formats itself.
+# Otherwise a "JPEG" that is really a PSD/TIFF/FPX reaches those decoders.
+_PILLOW_FORMATS = ("JPEG", "PNG", "GIF", "WEBP")
+
+
 def _compress_card_image(data: bytes) -> tuple[bytes, str]:
-    img = Image.open(io.BytesIO(data)).convert("RGB")
+    try:
+        img = Image.open(io.BytesIO(data), formats=_PILLOW_FORMATS).convert("RGB")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Unsupported image type")
     w, h = img.size
     if w > MAX_DIMENSION or h > MAX_DIMENSION:
         img.thumbnail((MAX_DIMENSION, MAX_DIMENSION), Image.LANCZOS)
@@ -1099,7 +1108,7 @@ async def index(request: Request):
         # place Open Graph tags can live — without it the dashboard link unfurls
         # in Discord as whatever the OAuth redirect chain ends on. Signed-in
         # users never see it; every other route still redirects to /login.
-        return templates.TemplateResponse("landing.html", {
+        return templates.TemplateResponse(request, "landing.html", {
             "request": request,
             "base_url": PUBLIC_BASE_URL,
             "og_title": OG_TITLE,
@@ -1116,7 +1125,7 @@ async def index(request: Request):
         return RedirectResponse("/terms")
     is_admin = int(user["id"]) in ADMIN_USER_IDS
     max_position = 12 if is_admin else request.session.get("max_position", 1)
-    return templates.TemplateResponse("index.html", {
+    return templates.TemplateResponse(request, "index.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
@@ -1139,7 +1148,7 @@ async def sample_page(request: Request):
     is_staff = int(user["id"]) in ADMIN_USER_IDS or request.session.get("mod", False)
     if not is_demo(request) and not is_staff:
         return RedirectResponse("/")
-    return templates.TemplateResponse("sample.html", {
+    return templates.TemplateResponse(request, "sample.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
@@ -1156,7 +1165,7 @@ async def sample_status_page(request: Request):
     is_staff = int(user["id"]) in ADMIN_USER_IDS or request.session.get("mod", False)
     if not is_demo(request) and not is_staff:
         return RedirectResponse("/status")
-    return templates.TemplateResponse("sample_status.html", {
+    return templates.TemplateResponse(request, "sample_status.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
@@ -1174,7 +1183,7 @@ async def sample_map_page(request: Request):
     is_staff = int(user["id"]) in ADMIN_USER_IDS or request.session.get("mod", False)
     if not is_demo(request) and not is_staff:
         return RedirectResponse("/map")
-    return templates.TemplateResponse("sample_map.html", {
+    return templates.TemplateResponse(request, "sample_map.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
@@ -1190,7 +1199,7 @@ async def terms_page(request: Request):
     if await terms_current(request, user):
         return RedirectResponse("/")
     from datetime import date
-    return templates.TemplateResponse("terms.html", {
+    return templates.TemplateResponse(request, "terms.html", {
         "request": request,
         "current_date": date.today().strftime("%B %d, %Y")
     })
@@ -1233,7 +1242,7 @@ async def guest_entry(request: Request):
     use — Grading Calculator, Card Catalog, and the read-only Card Tracker
     trial (require_trial_viewer allows guests too)."""
     request.session["guest"] = True
-    return templates.TemplateResponse("guest_home.html", {
+    return templates.TemplateResponse(request, "guest_home.html", {
         "request": request,
         "guest_scan_daily_limit": GUEST_SCAN_DAILY_LIMIT,
         **await _membership_offer(),
@@ -1310,7 +1319,7 @@ async def _send_login_email(to_email: str, link: str) -> bool:
 @app.get("/signin", response_class=HTMLResponse)
 async def signin_page(request: Request):
     """Email entry point for a non-Discord subscription account."""
-    return templates.TemplateResponse("signin.html", {
+    return templates.TemplateResponse(request, "signin.html", {
         "request": request,
         "account_email": request.session.get("account_email"),
         "stripe_ready": billing.stripe_configured(),
@@ -1364,7 +1373,7 @@ async def account_verify(request: Request, token: str = ""):
     """Consume a magic link and start a local-account session."""
     account = await billing.consume_login_token(request.app.state.db, token)
     if not account:
-        return templates.TemplateResponse("signin.html", {
+        return templates.TemplateResponse(request, "signin.html", {
             "request": request,
             "error": "That link has expired or was already used. Request a new one.",
             "stripe_ready": billing.stripe_configured(),
@@ -1390,7 +1399,7 @@ async def account_page(request: Request):
     # regardless; this only keeps the page honest about it.
     trial_available = bool(STRIPE_TRIAL_DAYS) and not entitled and not \
         await billing.account_has_used_trial(request.app.state.db, account_id)
-    return templates.TemplateResponse("account.html", {
+    return templates.TemplateResponse(request, "account.html", {
         "request": request,
         "account_email": request.session.get("account_email", ""),
         "entitled": entitled,
@@ -1775,7 +1784,7 @@ async def logout(request: Request):
 async def admin_page(request: Request, user=Depends(get_current_user)):
     if int(user["id"]) not in ADMIN_USER_IDS:
         raise HTTPException(status_code=403, detail="Not authorized")
-    return templates.TemplateResponse("admin.html", {
+    return templates.TemplateResponse(request, "admin.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
@@ -1984,7 +1993,7 @@ async def raffle_wheel_page(request: Request):
         return RedirectResponse("/terms")
     if int(user["id"]) not in ADMIN_USER_IDS:
         raise HTTPException(status_code=403, detail="Not authorized")
-    return templates.TemplateResponse("raffle_wheel.html", {
+    return templates.TemplateResponse(request, "raffle_wheel.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
@@ -2168,7 +2177,7 @@ async def inventory_page(request: Request):
     is_admin_user = int(user["id"]) in ADMIN_USER_IDS
     if not is_admin_user and not request.session.get("inventory_access", False):
         raise HTTPException(status_code=403, detail="Not authorized")
-    return templates.TemplateResponse("inventory.html", {
+    return templates.TemplateResponse(request, "inventory.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
@@ -2331,7 +2340,7 @@ async def card_tracker_page(request: Request):
                             "with Discord to build your portfolio.")
     if user and is_demo(request):
         return RedirectResponse("/sample-card-tracker")
-    return templates.TemplateResponse("card_tracker.html", {
+    return templates.TemplateResponse(request, "card_tracker.html", {
         "request": request,
         "username": (user or subscriber)["username"],
         "avatar": user.get("avatar") if user else None,
@@ -2370,7 +2379,7 @@ async def sample_card_tracker_page(request: Request):
             request, title="Card Tracker Trial — Nexus Card Co",
             description="See the Card Tracker in action with a live sample portfolio. "
                         "Sign in with Discord or continue as a guest to try it.")
-    return templates.TemplateResponse("sample_card_tracker.html", {
+    return templates.TemplateResponse(request, "sample_card_tracker.html", {
         "request": request,
         **await _viewer_context(request, user),
         # The upsell copy quotes the portfolio size; passing it keeps that
@@ -2979,7 +2988,7 @@ async def api_card_tracker_backdate_status(request: Request, user=Depends(requir
 
 @app.get("/tracker-admin", response_class=HTMLResponse)
 async def tracker_admin_page(request: Request, user=Depends(require_server_mod)):
-    return templates.TemplateResponse("tracker_admin.html", {
+    return templates.TemplateResponse(request, "tracker_admin.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
@@ -3167,7 +3176,7 @@ async def portfolios_page(request: Request):
                             "cards and sealed product are performing over time.")
     if user and is_demo(request):
         return RedirectResponse("/sample-card-tracker")
-    return templates.TemplateResponse("portfolios.html", {
+    return templates.TemplateResponse(request, "portfolios.html", {
         "request": request,
         "username": (user or subscriber)["username"],
         "avatar": user.get("avatar") if user else None,
@@ -4477,7 +4486,7 @@ async def tips_page(request: Request):
                         "Sign in with Discord to read and contribute.")
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
-    return templates.TemplateResponse("tips.html", {
+    return templates.TemplateResponse(request, "tips.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
@@ -4937,7 +4946,7 @@ async def grading_calculator_page(request: Request):
             request, title="Grading Calculator — Nexus Card Co",
             description="Estimate a card's graded value across PSA, BGS, CGC, and more. "
                         "Sign in with Discord or continue as a guest to use it.")
-    return templates.TemplateResponse("grading_calculator.html", {
+    return templates.TemplateResponse(request, "grading_calculator.html", {
         "request": request,
         **await _viewer_context(request, user, allow_account=True),
         "sources": price_sources.configured_sources(),
@@ -5904,7 +5913,7 @@ async def catalog_page(request: Request):
             request, title="Card Catalog — Nexus Card Co",
             description="Browse every stocked Pokémon and One Piece set with live prices. "
                         "Sign in with Discord or continue as a guest to use it.")
-    return templates.TemplateResponse("catalog.html", {
+    return templates.TemplateResponse(request, "catalog.html", {
         "default_costs": {k: str(v) for k, v in portfolios.DEFAULT_SEALED_COST.items()},
         "request": request,
         **await _viewer_context(request, user, allow_account=True),
@@ -6309,7 +6318,7 @@ async def monitor_alerts_page(request: Request):
         return RedirectResponse("/sample")
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
-    return templates.TemplateResponse("monitor_alerts.html", {
+    return templates.TemplateResponse(request, "monitor_alerts.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
@@ -6412,7 +6421,7 @@ async def auto_delete_rules_page(request: Request):
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
     require_server_mod(request)
-    return templates.TemplateResponse("auto_delete_rules.html", {
+    return templates.TemplateResponse(request, "auto_delete_rules.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
@@ -6537,7 +6546,7 @@ async def analytics_page(request: Request):
         return RedirectResponse("/terms")
     if int(user["id"]) not in ADMIN_USER_IDS:
         raise HTTPException(status_code=403, detail="Not authorized")
-    return templates.TemplateResponse("analytics.html", {
+    return templates.TemplateResponse(request, "analytics.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
@@ -6805,7 +6814,7 @@ async def status_page(request: Request):
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
     is_admin = int(user["id"]) in ADMIN_USER_IDS
-    return templates.TemplateResponse("status.html", {
+    return templates.TemplateResponse(request, "status.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
@@ -6874,7 +6883,7 @@ async def contributors_page(request: Request):
         return RedirectResponse("/terms")
     if int(user["id"]) not in ADMIN_USER_IDS:
         raise HTTPException(status_code=403, detail="Not authorized")
-    return templates.TemplateResponse("contributors.html", {
+    return templates.TemplateResponse(request, "contributors.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
@@ -7142,7 +7151,7 @@ async def map_page(request: Request):
     if not await terms_current(request, user):
         return RedirectResponse("/terms")
     is_admin = int(user["id"]) in ADMIN_USER_IDS
-    return templates.TemplateResponse("map.html", {
+    return templates.TemplateResponse(request, "map.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
@@ -7191,7 +7200,7 @@ async def invite_network_page(request: Request):
     is_admin = int(user["id"]) in ADMIN_USER_IDS
     if not _may_view_invite_network(request):
         raise HTTPException(status_code=403, detail="Not authorized")
-    return templates.TemplateResponse("invite_network.html", {
+    return templates.TemplateResponse(request, "invite_network.html", {
         "request": request,
         "username": user["username"],
         "avatar": user.get("avatar"),
@@ -7347,6 +7356,8 @@ async def api_grading_scan(request: Request, user=Depends(get_current_user_or_gu
         parsed = await _claude_identify(anthropic_client, image_bytes, media_type)
     except json.JSONDecodeError:
         return JSONResponse({"error": "Could not read the card — try a clearer photo."}, status_code=422)
+    except HTTPException:
+        raise  # e.g. "Unsupported image type" from _compress_card_image
     except Exception:
         logger.exception("Claude API error during card scan")
         return JSONResponse({"error": "Failed to process image — please try again."}, status_code=500)
