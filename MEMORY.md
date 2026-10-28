@@ -3,6 +3,44 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-10-27 — Security dependency updates: Starlette 1.x, FastAPI 0.162, Pillow 13
+
+**Decided:** patched every dependency with a known advisory (pip-audit: 95
+entries -> 0). Pillow 11.2.1 -> 13.0.0, Starlette 0.37.2 -> 1.10.0 (which
+forces FastAPI 0.111.0 -> 0.162.0), Jinja2 3.1.4 -> 3.1.6, python-dotenv
+1.0.1 -> 1.2.4. Everything else stays pinned where it was: no advisories, and
+smaller is safer. There is no Node or PHP in this repo or in ava_bot (no
+package.json/composer.json/.php), and the two CDN scripts (Chart.js 4.4.1,
+vis-network 9.1.9) have no OSV advisories. ava_bot's requirements audit clean.
+
+**Starlette 1.x removed `TemplateResponse(name, {"request": request})`.** Every
+page 500'd until all 28 calls passed `request` first. Always use
+`templates.TemplateResponse(request, "page.html", {...})`. The new form also
+works on old Starlette, so the change was safe on its own.
+
+**Python must stay >= 3.11.** Pillow 13 and Starlette >= 1.8 require it; the
+Dockerfile's `python:3.11-slim` satisfies that. Don't downgrade the image.
+
+**FastAPI no longer pulls in python-multipart.** The app never parses forms
+(uploads arrive as base64 JSON), so it is simply gone. If a route ever adds
+`Form`/`UploadFile`/`request.form()`, add `python-multipart` explicitly.
+
+**Uploads: Pillow now only decodes JPEG/PNG/GIF/WEBP** (`_PILLOW_FORMATS` in
+`_compress_card_image`). The `ALLOWED_MEDIA_TYPES` check reads the sender's own
+data-URL label, so a file labelled JPEG could still reach Pillow's PSD/TIFF/FPX
+decoders, which is where most of the Pillow CVEs live. Anything else is now a
+400 "Unsupported image type", and the scan route lets that through instead of
+reporting it as an AI-service failure.
+
+**Verified against the real app** (fake DB + faked Discord login, Python
+3.11): all 69 GET routes behave identically old vs new; security headers,
+CSRF, cookie flags, static files and 404 unchanged; 12 rendered pages
+byte-identical; rate limiter, JSON writes, Texas regional access (65 checks)
+and image handling pass; uvicorn boots and serves with the Dockerfile's flags.
+**Not verified:** a live Postgres, real Discord/Stripe/Anthropic calls.
+
+---
+
 ## 2026-10-10 — Regional viewers: Texas roles see the dashboard, map and status for TX only
 
 **Decided:** holders of the Texas, Houston, Austin and Dallas roles who are
