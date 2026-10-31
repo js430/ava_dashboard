@@ -178,28 +178,31 @@
   table.rows th.right, table.rows td.right { text-align: right; }
   /* Scratch list. Lives in sessionStorage only: it dies with the tab, is
      never sent anywhere, and has no row in any table. */
-  /* Docked to the right and always on screen, empty or not: it used to be
-     hidden until something was in it, which meant nothing on the page hinted
-     that the Compare buttons led anywhere. */
-  .scratch-bar { position: fixed; right: 16px; top: 92px; z-index: 60;
-                 width: 288px; max-width: calc(100vw - 32px);
-                 background: #1f2024; color: #fff; border-radius: 10px;
-                 box-shadow: 0 6px 24px rgba(0,0,0,.3); font-size: 13px;
+  /* A slide-out drawer, closed by default and opened from the Tally button
+     in the tab row, so it never sits on top of the results. visibility keeps
+     the closed drawer out of the keyboard tab order. */
+  .scratch-bar { position: fixed; top: 0; right: 0; bottom: 0; z-index: 70;
+                 width: 320px; max-width: 100vw;
+                 background: #1f2024; color: #fff;
+                 box-shadow: -8px 0 24px rgba(0,0,0,.3); font-size: 13px;
                  display: flex; flex-direction: column;
-                 max-height: calc(100vh - 112px); }
-  /* Only shift the page once there is genuinely room beside a 1280px column;
-     below that the panel floats over the edge and can be collapsed away. */
-  @media (min-width: 1640px) {
-    body.scratch-open .main { margin-right: 320px; }
+                 transform: translateX(100%); visibility: hidden;
+                 transition: transform .2s ease, visibility 0s linear .2s; }
+  .scratch-bar.open { transform: none; visibility: visible; transition: transform .2s ease; }
+  .scratch-backdrop { position: fixed; inset: 0; z-index: 69; background: rgba(0,0,0,.25); }
+  @media (prefers-reduced-motion: reduce) {
+    .scratch-bar, .scratch-bar.open { transition: none; }
   }
   .scratch-empty { padding: 10px 12px; font-size: 12px; opacity: .65;
                    line-height: 1.5; }
   .scratch-head { display: flex; align-items: center; gap: 10px;
-                  padding: 10px 12px; cursor: pointer; }
+                  padding: 12px 12px 12px 14px; }
   .scratch-total { margin-left: auto; font-variant-numeric: tabular-nums; }
-  .scratch-body { display: none; border-top: 1px solid #33343a;
+  .scratch-close { width: 28px; height: 28px; border-radius: 6px; flex: none;
+                   border: 1px solid #43444c; background: #2a2b31; color: #fff;
+                   cursor: pointer; font-size: 16px; line-height: 1; }
+  .scratch-body { border-top: 1px solid #33343a;
                   overflow-y: auto; flex: 1 1 auto; min-height: 0; }
-  .scratch-bar.open .scratch-body { display: block; }
   /* Stacked, not side by side: at 288px a name column sharing the row with
      quantity, price and remove gets about 90px and wraps a product name over
      four lines. */
@@ -365,15 +368,108 @@
   html[data-theme="dark"] .rarity-chip { background: #2a2a2d; color: #bbbbc5; }
   html[data-theme="dark"] .setrow:hover { background: #232326; }
   html[data-theme="dark"] .pager, html[data-theme="dark"] .note { border-top-color: #303033; }
+  /* While newer results load, the current ones stay put and dim slightly —
+     only if the reload takes over ~150ms, so fast searches never flicker. */
+  #cardRows, #cardGrid { transition: opacity .1s; }
+  body.cards-loading #cardRows, body.cards-loading #cardGrid { opacity: .5; transition: opacity .15s .15s; }
+
+  /* Tab row extras: the Tally drawer's button sits at the far right. */
+  .cat-tabs { flex-wrap: wrap; }
+  .cat-tab .tab-count { margin-left: 6px; font-size: 11px; font-weight: 600; opacity: .8;
+                        font-variant-numeric: tabular-nums; }
+  .tally-tab { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+  /* + Trade: same plain-until-used look as + Tally. */
+  .btn-trade { background: #fff; color: #333; border: 1px solid #ddd; font-weight: 400; margin-left: 4px; }
+  .btn-trade:hover { background: #f4f4f5; }
+  .btn-trade.on { background: #16794c; color: #fff; border-color: #16794c; font-weight: 600; }
+  html[data-theme="dark"] .btn-trade { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .btn-trade.on { background: #1f8a5a; color: #fff; border-color: #1f8a5a; }
+
+  /* "Add to which side?" menu, anchored under the clicked + Trade button. */
+  .trade-menu { position: absolute; z-index: 80; width: 200px; padding: 6px;
+                background: #fff; border: 1px solid #ddd; border-radius: 8px;
+                box-shadow: 0 6px 20px rgba(0,0,0,.12); }
+  .trade-menu-title { font-size: 11px; color: #888; padding: 4px 8px 6px;
+                      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trade-menu button { display: block; width: 100%; text-align: left; font-family: inherit;
+                       font-size: 12.5px; padding: 7px 8px; border: none; border-radius: 5px;
+                       background: none; color: #222; cursor: pointer; }
+  .trade-menu button:hover, .trade-menu button:focus-visible { background: #f1f2ff; }
+  html[data-theme="dark"] .trade-menu { background: #1c1c1f; border-color: #383838; }
+  html[data-theme="dark"] .trade-menu button { color: #e8e8ea; }
+  html[data-theme="dark"] .trade-menu button:hover,
+  html[data-theme="dark"] .trade-menu button:focus-visible { background: #2a2b40; }
+
+  /* Trade calculator */
+  .trade-summary { padding: 16px; }
+  .trade-headline { font-size: 16px; font-weight: 600; color: #111; }
+  .trade-bar { display: flex; height: 10px; border-radius: 999px; overflow: hidden;
+               background: #f0f0f2; margin: 12px 0 8px; }
+  .trade-bar span { display: block; height: 100%; }
+  .trade-bar .mine { background: #5865F2; }
+  .trade-bar .theirs { background: #16794c; }
+  .trade-legend { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+                  font-size: 12px; color: #555; font-variant-numeric: tabular-nums; }
+  .trade-legend b { color: #111; }
+  .trade-legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+                       margin-right: 5px; vertical-align: 1px; }
+  .trade-legend .dot.mine { background: #5865F2; }
+  .trade-legend .dot.theirs { background: #16794c; }
+  .trade-notes { margin-top: 10px; font-size: 11.5px; color: #888; line-height: 1.55; }
+  .trade-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 760px) { .trade-sides { grid-template-columns: 1fr; } }
+  .trade-side .card-title small { font-weight: 400; color: #999; margin-left: 6px; font-size: 12px; }
+  .trade-side .status { font-size: 14px; font-weight: 600; color: #111;
+                        font-variant-numeric: tabular-nums; margin-left: auto; }
+  .trade-empty { padding: 18px 16px; font-size: 12.5px; color: #999; line-height: 1.55; }
+  .trade-row { padding: 11px 16px; border-bottom: 1px solid #f1f1f4; }
+  .trade-row:last-child { border-bottom: none; }
+  .trade-name { font-size: 13px; font-weight: 600; color: #111; overflow-wrap: anywhere; }
+  .trade-sub { font-size: 11.5px; color: #999; margin-top: 1px; }
+  .trade-ctl { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .trade-printing { font-family: inherit; font-size: 12px; height: 28px; max-width: 100%;
+                    border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #111; }
+  .trade-chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #f2f2f4; color: #666; }
+  .trade-qty { display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
+  .trade-qty button, .trade-x { width: 24px; height: 24px; border-radius: 5px; border: 1px solid #ddd;
+                                background: #fff; color: #444; cursor: pointer; line-height: 1; }
+  .trade-value { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: #888; }
+  .trade-value input { width: 84px; height: 28px; font-family: inherit; font-size: 12.5px; padding: 0 7px;
+                       border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #111;
+                       font-variant-numeric: tabular-nums; }
+  .trade-value input.edited { border-color: #d39b1f; background: #fffbea; }
+  .trade-value input.bad { border-color: #c33; }
+  .trade-line { margin-left: auto; font-size: 13px; font-weight: 600; color: #111;
+                font-variant-numeric: tabular-nums; }
+  .trade-line.none { color: #c27a00; font-weight: 500; }
+  .trade-was { display: block; margin-top: 5px; font-size: 11.5px; color: #a07000; }
+  .trade-was.warn { color: #c27a00; }
+  .trade-was button { font: inherit; color: #5865F2; background: none; border: none; padding: 0;
+                      cursor: pointer; text-decoration: underline; }
+  .trade-foot { padding: 10px 16px; border-top: 1px solid #f1f1f4; }
+  html[data-theme="dark"] .trade-headline, html[data-theme="dark"] .trade-legend b,
+  html[data-theme="dark"] .trade-name, html[data-theme="dark"] .trade-line,
+  html[data-theme="dark"] .trade-side .status { color: #f0f0f0; }
+  html[data-theme="dark"] .trade-bar { background: #2a2a2e; }
+  html[data-theme="dark"] .trade-legend { color: #b0b0b8; }
+  html[data-theme="dark"] .trade-row, html[data-theme="dark"] .trade-foot { border-color: #2a2a2e; }
+  html[data-theme="dark"] .trade-printing, html[data-theme="dark"] .trade-value input,
+  html[data-theme="dark"] .trade-qty button, html[data-theme="dark"] .trade-x {
+    background: #252528; border-color: #383838; color: #e8e8ea; }
+  html[data-theme="dark"] .trade-value input.edited { background: #3a3116; border-color: #a07000; }
+  html[data-theme="dark"] .trade-chip { background: #2a2a2e; color: #aaa; }
 </style>
 <script src="/static/csrf.js"></script>
 </head>
 <body>
-<div class="scratch-bar" id="scratchBar">
-  <div class="scratch-head" onclick="toggleScratch()">
+<div class="scratch-backdrop" id="scratchBackdrop" hidden onclick="setScratchOpen(false)"></div>
+<div class="scratch-bar" id="scratchBar" role="dialog" aria-label="Quick tally">
+  <div class="scratch-head">
     <b id="scratchCount">Quick tally</b>
     <span class="scratch-total" id="scratchTotal"></span>
-    <span id="scratchCaret">&#9652;</span>
+    <button type="button" class="scratch-close" id="scratchClose"
+            onclick="setScratchOpen(false)" aria-label="Close the tally">&times;</button>
   </div>
   <div class="scratch-body" id="scratchBody"></div>
   <div class="scratch-empty" id="scratchEmpty">
@@ -386,6 +482,13 @@
     <button type="button" onclick="clearScratch()">Clear list</button>
   </div>
 </div>
+{% if not is_guest %}
+<div class="trade-menu" id="tradeMenu" role="menu" hidden>
+  <div class="trade-menu-title" id="tradeMenuTitle">Add to trade</div>
+  <button type="button" role="menuitem" onclick="tradeMenuPick('mine')">Add to your side</button>
+  <button type="button" role="menuitem" onclick="tradeMenuPick('theirs')">Add to their side</button>
+</div>
+{% endif %}
 
 
 <div class="header">
@@ -442,6 +545,12 @@
             aria-selected="true" onclick="setSection('singles')">Singles</button>
     <button type="button" id="tabSealed" class="cat-tab" role="tab"
             aria-selected="false" onclick="setSection('sealed')">Sealed product</button>
+    {% if not is_guest %}
+    <button type="button" id="tabTrade" class="cat-tab" role="tab"
+            aria-selected="false" onclick="setSection('trade')">Trade<span class="tab-count" id="tradeTabCount"></span></button>
+    <button type="button" id="tallyBtn" class="cat-tab tally-tab" aria-expanded="false"
+            aria-controls="scratchBar" onclick="toggleScratch()">Tally</button>
+    {% endif %}
   </div>
 
   <div class="catalog-grid" id="singlesSection">
@@ -754,6 +863,32 @@
   </div>
 
   {% if not is_guest %}
+  <!-- Trade calculator: two sides valued at market. Lives in this browser
+       only (localStorage); nothing here is sent to the server. -->
+  <div id="tradeSection" style="display:none;">
+    <div class="card trade-summary" id="tradeSummary" aria-live="polite"></div>
+    <div class="trade-sides">
+      <section class="card trade-side">
+        <div class="card-head">
+          <span class="card-title">Your side<small>you give</small></span>
+          <span class="status" id="tradeTotal_mine"></span>
+        </div>
+        <div id="tradeList_mine"></div>
+        <div class="trade-foot"><button type="button" class="btn btn-sm btn-trade" onclick="clearTradeSide('mine')">Clear your side</button></div>
+      </section>
+      <section class="card trade-side">
+        <div class="card-head">
+          <span class="card-title">Their side<small>you get</small></span>
+          <span class="status" id="tradeTotal_theirs"></span>
+        </div>
+        <div id="tradeList_theirs"></div>
+        <div class="trade-foot"><button type="button" class="btn btn-sm btn-trade" onclick="clearTradeSide('theirs')">Clear their side</button></div>
+      </section>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if not is_guest %}
   <!-- Add a sealed product to one of your portfolios. Anchored at body level
        for the same reason as the column picker: the table scrolls. -->
   <div class="picker" id="pfPicker" style="display:none" role="dialog" aria-modal="false">
@@ -842,7 +977,6 @@ try {
 // screen, which it usually isn't by the time you have a few in the list.
 const SCRATCH_KEY = 'catalogScratch';
 const SCRATCH_MAX = 100;
-const SCRATCH_OPEN_KEY = 'catalogScratchOpen';
 let scratch = [];
 
 function loadScratch(){
@@ -914,24 +1048,35 @@ function clearScratch(){
 
 function toggleScratch(){
   const bar = document.getElementById('scratchBar');
-  setScratchOpen(!bar.classList.contains('open'));
-  try { sessionStorage.setItem(SCRATCH_OPEN_KEY,
-                               bar.classList.contains('open') ? '1' : '0'); } catch(e){}
+  if (bar) setScratchOpen(!bar.classList.contains('open'));
 }
 
+// A drawer now, always closed on page load: it opens only when asked for.
 function setScratchOpen(open){
   const bar = document.getElementById('scratchBar');
   // Guarded because this runs during init: if the panel ever ends up after
   // this script again, the page must still load its cards.
   if (!bar) return;
+  const wasOpen = bar.classList.contains('open');
   bar.classList.toggle('open', open);
-  document.body.classList.toggle('scratch-open', open);
-  document.getElementById('scratchCaret').innerHTML = open ? '&#9652;' : '&#9662;';
+  document.getElementById('scratchBackdrop').hidden = !open;
+  const btn = document.getElementById('tallyBtn');
+  if (btn) btn.setAttribute('aria-expanded', String(open));
+  if (open && !wasOpen) document.getElementById('scratchClose').focus();
+  // Hand focus back to the button that opened it, if focus was inside.
+  if (!open && wasOpen && bar.contains(document.activeElement) && btn) btn.focus();
 }
+
+// The tab-row button carries the running total, so the drawer can stay shut.
+function updateTallyButton(units, total){
+  const btn = document.getElementById('tallyBtn');
+  if (btn) btn.textContent = units ? 'Tally · ' + units + ' · ' + scratchMoney(total) : 'Tally';
+}
+
 
 function scratchMoney(v){
   const n = Number(v);
-  return isFinite(n) ? '$' + n.toFixed(2) : '';
+  return isFinite(n) ? money(n) : '';   // same $1,234.56 style as the rest of the page
 }
 
 function renderScratch(){
@@ -943,7 +1088,8 @@ function renderScratch(){
     document.getElementById('scratchTotal').textContent = '';
     document.getElementById('scratchBody').innerHTML = '';
     document.getElementById('scratchNote').textContent = '';
-    empty.style.display = bar.classList.contains('open') ? 'block' : 'none';
+    empty.style.display = 'block';
+    updateTallyButton(0, 0);
     markScratchButtons();
     return;
   }
@@ -959,6 +1105,7 @@ function renderScratch(){
   document.getElementById('scratchCount').textContent =
     units + (units === 1 ? ' item' : ' items');
   document.getElementById('scratchTotal').textContent = scratchMoney(total);
+  updateTallyButton(units, total);
 
   // Addressed by POSITION, not by key. A key goes through JSON.stringify into
   // an onclick="..." attribute as "sealed:9" — double quotes, inside a
@@ -1001,6 +1148,7 @@ function markScratchButtons(){
     btn.classList.toggle('on', at > -1);
     btn.textContent = at > -1 ? 'Tally (' + scratch[at].qty + ')' : '+ Tally';
   });
+  markTradeButtons();
 }
 
 function scratchButtonHtml(key){
@@ -1029,6 +1177,313 @@ function onScratchClick(btn){
       price: r.market_price });
   }
 }
+
+// ── Trade calculator ────────────────────────────────────────────────────
+// Two sides of a trade, valued at market. localStorage: kept on this device
+// until cleared, never sent to the server. Like the tally, prices are
+// SNAPSHOTS from when each item was added. Any value can be overwritten (for
+// condition, a graded copy, a price agreed in person); the line remembers it
+// was changed and can go back to market.
+const TRADE_KEY = 'catalogTrade';
+const TRADE_MAX = 100;               // different items per side
+const TRADE_SIDE_NAME = { mine: 'your side', theirs: 'their side' };
+let trade = { mine: [], theirs: [] };
+let tradeMenuKey = null, tradeMenuBtn = null;
+
+function loadTrade(){
+  try {
+    const raw = JSON.parse(localStorage.getItem(TRADE_KEY) || 'null');
+    if (raw && Array.isArray(raw.mine) && Array.isArray(raw.theirs))
+      trade = { mine: raw.mine, theirs: raw.theirs };
+  } catch(e){}
+}
+function saveTrade(){
+  try { localStorage.setItem(TRADE_KEY, JSON.stringify(trade)); } catch(e){}
+}
+function tradeNum(v){
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return isFinite(n) ? Math.round(n * 100) / 100 : null;
+}
+
+// What to add, built from the list it was clicked in.
+function tradeItemFor(key){
+  const [kind, id] = key.split(':');
+  if (kind === 'card'){
+    const c = lastCards.filter(x => String(x.id) === id)[0];
+    if (!c) return null;
+    const printings = {};
+    Object.entries(c.printing_prices || {}).forEach(([k, v]) => {
+      if (tradeNum(v) !== null) printings[k] = tradeNum(v);
+    });
+    const market = tradeNum(c.shown_price !== undefined ? c.shown_price : c.raw_price);
+    // Name the printing this price belongs to when that's knowable: the one a
+    // printing filter is showing, else the printing priced the same as the card.
+    let printing = c.shown_variant || null;
+    if (!printing && market !== null)
+      printing = Object.keys(printings).find(k => Math.abs(printings[k] - market) < 0.005) || null;
+    return { key, name: c.name, sub: [c.set_name, c.card_number].filter(Boolean).join(' · '),
+             printings, printing, base: market, market, price: market, edited: false };
+  }
+  const r = sealedRows.filter(x => String(x.id) === id)[0];
+  if (!r) return null;
+  const market = tradeNum(r.market_price);
+  return { key, name: r.name, sub: [r.set_name, r.type_label].filter(Boolean).join(' · '),
+           printings: {}, printing: null, base: market, market, price: market, edited: false };
+}
+
+function addToTrade(side, key){
+  const list = trade[side];
+  const at = list.findIndex(it => it.key === key);
+  if (at > -1) list[at].qty += 1;
+  else {
+    if (list.length >= TRADE_MAX){
+      alert('Each side holds ' + TRADE_MAX + ' different items. Remove something first.');
+      return;
+    }
+    const item = tradeItemFor(key);
+    if (!item) return;
+    item.qty = 1;
+    item.at = Date.now();
+    list.push(item);
+  }
+  saveTrade();
+  renderTrade();
+}
+
+// Rows are addressed by side + POSITION, never by interpolating a name or key
+// into an onclick (same reason as the tally). Redrawn after every change, so
+// positions never go stale.
+function tradeQty(side, i, delta){
+  const it = trade[side][i];
+  if (!it) return;
+  it.qty += delta;
+  if (it.qty < 1) trade[side].splice(i, 1);
+  saveTrade();
+  renderTrade();
+}
+function tradeRemove(side, i){
+  trade[side].splice(i, 1);
+  saveTrade();
+  renderTrade();
+}
+function clearTradeSide(side){
+  if (trade[side].length && !confirm('Clear ' + TRADE_SIDE_NAME[side] + '?')) return;
+  trade[side] = [];
+  saveTrade();
+  renderTrade();
+}
+function tradeSetPrinting(side, i, name){
+  const it = trade[side][i];
+  if (!it) return;
+  it.printing = name || null;
+  it.market = name ? tradeNum(it.printings[name]) : it.base;
+  if (!it.edited) it.price = it.market;
+  saveTrade();
+  renderTrade();
+}
+function tradeUseMarket(side, i){
+  const it = trade[side][i];
+  if (!it) return;
+  it.price = it.market;
+  it.edited = false;
+  saveTrade();
+  renderTrade();
+}
+// Live while typing: totals follow every keystroke without redrawing the
+// rows, which would steal focus from the box being typed in. The full redraw
+// (to show or hide the "you changed this" note) happens on change.
+function tradePriceInput(side, i, el){
+  const it = trade[side][i];
+  if (!it) return;
+  const text = el.value.replace(/[$,\s]/g, '');
+  if (text === '') {
+    it.price = it.market;
+    it.edited = false;
+  } else {
+    const n = Number(text);
+    if (!isFinite(n) || n < 0) { el.classList.add('bad'); return; }
+    it.price = Math.round(n * 100) / 100;
+    it.edited = it.market === null || Math.abs(it.price - it.market) >= 0.005;
+  }
+  el.classList.remove('bad');
+  saveTrade();
+  const line = document.getElementById('tradeLine_' + side + '_' + i);
+  if (line) {
+    line.textContent = it.price === null ? 'no value' : money(it.price * it.qty);
+    line.classList.toggle('none', it.price === null);
+  }
+  renderTradeTotals();
+}
+function tradeTotals(side){
+  let total = 0, unpriced = 0, edited = 0, units = 0;
+  trade[side].forEach(it => {
+    units += it.qty;
+    if (it.edited) edited += 1;
+    if (it.price === null || it.price === undefined) unpriced += 1;
+    else total += it.price * it.qty;
+  });
+  return { total, unpriced, edited, units };
+}
+
+function tradeRowHtml(side, it, i){
+  const names = Object.keys(it.printings || {});
+  const call = (fn, extra) => fn + "('" + side + "'," + i + (extra || '') + ')';
+  let printing = '';
+  if (names.length > 1) {
+    printing = '<select class="trade-printing" aria-label="Printing for ' + esc(it.name) + '" ' +
+      'onchange="' + call('tradeSetPrinting', ',this.value') + '">' +
+      (it.printing && names.includes(it.printing) ? ''
+        : '<option value="" selected>Market price' + (it.base !== null ? ' · ' + money(it.base) : '') + '</option>') +
+      names.map(n => '<option value="' + esc(n) + '"' + (n === it.printing ? ' selected' : '') + '>' +
+        esc(n) + ' · ' + money(it.printings[n]) + '</option>').join('') +
+      '</select>';
+  } else if (it.printing) {
+    printing = '<span class="trade-chip">' + esc(it.printing) + '</span>';
+  }
+  const priced = !(it.price === null || it.price === undefined);
+  const value = priced ? Number(it.price).toFixed(2) : '';
+  let note = '';
+  if (!priced)
+    note = '<span class="trade-was warn">No market price — type a value to count it.</span>';
+  else if (it.edited)
+    note = '<span class="trade-was">You changed this' +
+      (it.market !== null ? ' · market is ' + money(it.market) +
+        ' · <button type="button" onclick="' + call('tradeUseMarket') + '">use market</button>' : '') + '</span>';
+  return '<div class="trade-row">' +
+    '<div class="trade-name">' + esc(it.name) + '</div>' +
+    (it.sub ? '<div class="trade-sub">' + esc(it.sub) + '</div>' : '') +
+    '<div class="trade-ctl">' + printing +
+      '<span class="trade-qty">' +
+        '<button type="button" aria-label="One fewer" onclick="' + call('tradeQty', ',-1') + '">&minus;</button>' +
+        '<span>' + it.qty + '</span>' +
+        '<button type="button" aria-label="One more" onclick="' + call('tradeQty', ',1') + '">+</button>' +
+      '</span>' +
+      '<label class="trade-value">$<input type="text" inputmode="decimal" value="' + value + '" ' +
+        'placeholder="Value" aria-label="Value each, ' + esc(it.name) + '"' +
+        (it.edited ? ' class="edited"' : '') +
+        ' oninput="' + call('tradePriceInput', ',this') + '" onchange="renderTrade()"> each</label>' +
+      '<span class="trade-line' + (priced ? '' : ' none') + '" id="tradeLine_' + side + '_' + i + '">' +
+        (priced ? money(it.price * it.qty) : 'no value') + '</span>' +
+      '<button type="button" class="trade-x" aria-label="Remove ' + esc(it.name) + '" onclick="' +
+        call('tradeRemove') + '">&times;</button>' +
+    '</div>' + note +
+  '</div>';
+}
+
+function renderTrade(){
+  markTradeButtons();
+  if (!document.getElementById('tradeSection')) return;
+  ['mine', 'theirs'].forEach(side => {
+    document.getElementById('tradeList_' + side).innerHTML = trade[side].length
+      ? trade[side].map((it, i) => tradeRowHtml(side, it, i)).join('')
+      : '<div class="trade-empty">Nothing on ' + TRADE_SIDE_NAME[side] + ' yet. Use <strong>+ Trade</strong> on any ' +
+        'card in Singles or product in Sealed, then choose “Add to ' + TRADE_SIDE_NAME[side] + '”.</div>';
+  });
+  renderTradeTotals();
+}
+
+function renderTradeTotals(){
+  const sum = document.getElementById('tradeSummary');
+  if (!sum) return;
+  const a = tradeTotals('mine'), b = tradeTotals('theirs');
+  document.getElementById('tradeTotal_mine').textContent = a.units ? money(a.total) : '';
+  document.getElementById('tradeTotal_theirs').textContent = b.units ? money(b.total) : '';
+  const count = a.units + b.units;
+  document.getElementById('tradeTabCount').textContent = count ? String(count) : '';
+
+  if (!count) {
+    sum.innerHTML = '<div class="trade-headline">Add items to both sides to compare a trade.</div>' +
+      '<div class="trade-notes">Use <strong>+ Trade</strong> on Singles or Sealed. Each item is valued at market ' +
+      'price, which you can change per line. Kept on this device until you clear it.</div>';
+    return;
+  }
+  const diff = b.total - a.total;
+  const pct = a.total > 0 ? ' (' + (diff >= 0 ? '+' : '−') + Math.abs(diff / a.total * 100).toFixed(1) + '%)' : '';
+  let headline;
+  if (Math.abs(diff) < 0.005) headline = 'Even trade — both sides are worth ' + money(a.total) + '.';
+  else if (diff > 0) headline = 'You get ' + money(diff) + ' more than you give' + pct + '.';
+  else headline = 'You give ' + money(-diff) + ' more than you get' + pct + '.';
+  const both = a.total + b.total;
+  const mineW = both > 0 ? a.total / both * 100 : 50;
+  const notes = [];
+  if (pct && Math.abs(diff) >= 0.005) notes.push('The percentage is measured against your side.');
+  const unpriced = a.unpriced + b.unpriced, edited = a.edited + b.edited;
+  if (unpriced) notes.push(unpriced === 1 ? '1 item has no value yet and counts as $0.'
+                                           : unpriced + ' items have no value yet and count as $0.');
+  if (edited) notes.push(edited + (edited === 1 ? ' value was' : ' values were') + ' changed by you.');
+  notes.push('Market prices are from when each item was added.');
+  const items = n => n + (n === 1 ? ' item' : ' items');
+  sum.innerHTML = '<div class="trade-headline">' + headline + '</div>' +
+    '<div class="trade-bar" role="img" aria-label="You give ' + money(a.total) + ', you get ' + money(b.total) + '">' +
+      '<span class="mine" style="width:' + mineW.toFixed(2) + '%"></span>' +
+      '<span class="theirs" style="width:' + (100 - mineW).toFixed(2) + '%"></span></div>' +
+    '<div class="trade-legend">' +
+      '<span><span class="dot mine"></span>You give <b>' + money(a.total) + '</b> · ' + items(a.units) + '</span>' +
+      '<span><span class="dot theirs"></span>You get <b>' + money(b.total) + '</b> · ' + items(b.units) + '</span>' +
+    '</div>' +
+    '<div class="trade-notes">' + notes.join(' ') + '</div>';
+}
+
+// + Trade buttons on the Singles grid and list and the Sealed list.
+function tradeButtonHtml(key){
+  return '<button type="button" class="btn btn-sm btn-trade" ' +
+         'data-trade-key="' + esc(key) + '" aria-haspopup="menu" ' +
+         'title="Add to one side of the trade calculator" ' +
+         'onclick="openTradeMenu(this, event)">+ Trade</button>';
+}
+function tradeCount(key){
+  let n = 0;
+  ['mine', 'theirs'].forEach(s => trade[s].forEach(it => { if (it.key === key) n += it.qty; }));
+  return n;
+}
+function markTradeButtons(){
+  document.querySelectorAll('[data-trade-key]').forEach(btn => {
+    const n = tradeCount(btn.getAttribute('data-trade-key'));
+    btn.classList.toggle('on', n > 0);
+    btn.textContent = n ? 'Trade (' + n + ')' : '+ Trade';
+  });
+}
+function openTradeMenu(btn, ev){
+  ev.stopPropagation();
+  const menu = document.getElementById('tradeMenu');
+  if (!menu) return;
+  if (!menu.hidden && tradeMenuBtn === btn) { closeTradeMenu(true); return; }
+  tradeMenuKey = btn.getAttribute('data-trade-key');
+  tradeMenuBtn = btn;
+  const item = tradeItemFor(tradeMenuKey);
+  document.getElementById('tradeMenuTitle').textContent = item ? item.name : 'Add to trade';
+  menu.hidden = false;
+  const r = btn.getBoundingClientRect();
+  const width = menu.offsetWidth;
+  const maxLeft = window.scrollX + document.documentElement.clientWidth - width - 8;
+  menu.style.top = (window.scrollY + r.bottom + 4) + 'px';
+  menu.style.left = Math.max(window.scrollX + 8, Math.min(window.scrollX + r.right - width, maxLeft)) + 'px';
+  menu.querySelector('button').focus();
+}
+// refocus: return focus to the + Trade button (Esc, or after choosing a
+// side), but not when the menu closes because something else was clicked.
+function closeTradeMenu(refocus){
+  const menu = document.getElementById('tradeMenu');
+  if (menu && !menu.hidden) {
+    menu.hidden = true;
+    if (refocus && tradeMenuBtn && document.body.contains(tradeMenuBtn)) tradeMenuBtn.focus();
+  }
+  tradeMenuKey = null;
+  tradeMenuBtn = null;
+}
+function tradeMenuPick(side){
+  const key = tradeMenuKey;
+  closeTradeMenu(true);
+  if (key) addToTrade(side, key);
+}
+document.addEventListener('click', ev => {
+  const menu = document.getElementById('tradeMenu');
+  if (menu && !menu.hidden && !menu.contains(ev.target)) closeTradeMenu(false);
+});
+// Positioned once, under its button: a resize would leave it pointing at
+// nothing, so it simply closes.
+window.addEventListener('resize', () => closeTradeMenu(false));
 
 let lastCards = [];
 // A card's printing_prices is only worth showing when it actually
@@ -1090,6 +1545,7 @@ try {
 let offset = 0;
 let total = 0;
 let loadTimer = null;
+let cardsAbort = null;    // the in-flight /api/catalog/cards request, if any
 let allSets = [];        // stocked sets, from /facets
 let availableSets = [];  // every set PPT knows (admin stock picker)
 // Era grouping, supplied by the server so ERA_ORDER lives in exactly one
@@ -1331,13 +1787,13 @@ function clearFilters(){
 
 // Any filter change starts the results over at page 1 — keeping the old offset
 // would land the user on an empty page whenever the result set shrinks.
-function resetAndLoad(){
+function resetAndLoad(delay){
   offset = 0;
-  scheduleLoad();
+  scheduleLoad(typeof delay === 'number' ? delay : 250);
 }
-function scheduleLoad(){
+function scheduleLoad(delay){
   clearTimeout(loadTimer);
-  loadTimer = setTimeout(loadCards, 250);
+  loadTimer = setTimeout(loadCards, typeof delay === 'number' ? delay : 250);
 }
 
 function currentParams(){
@@ -1646,7 +2102,12 @@ document.addEventListener('click', (ev) => {
   if (ev.target.closest('#picker') || ev.target.closest('.th-picker')) return;
   closePicker();
 });
-document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closePicker(); });
+document.addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Escape') return;
+  closePicker();
+  closeTradeMenu(true);
+  setScratchOpen(false);
+});
 // Fixed positioning doesn't follow the page, so close instead of drifting.
 window.addEventListener('resize', closePicker);
 // Capture phase, because scroll doesn't bubble — but that also means this sees
@@ -1707,7 +2168,7 @@ function renderGrid(cards){
         <div class="gcard-foot">
           <span class="gcard-price ${c.shown_price == null ? 'none' : ''}">${
             c.shown_price == null ? 'no price' : money(c.shown_price)}${shownVariantLabelHtml(c)}</span>
-          ${IS_GUEST ? '' : trackButtonHtml(c) + scratchButtonHtml('card:' + c.id)}
+          ${IS_GUEST ? '' : trackButtonHtml(c) + scratchButtonHtml('card:' + c.id) + tradeButtonHtml('card:' + c.id)}
         </div>
         ${showPrintings ? printingPricesHtml(c) : ''}
       </div>
@@ -1741,7 +2202,7 @@ function renderList(cards){
           ${selectedCards.has(c.id) ? 'checked' : ''} ${eligible.ok ? '' : 'disabled'}
           title="${esc(eligible.reason)}" onchange="onCardCheck(this)"></td>`;
     const trackCell = IS_GUEST ? '' :
-      `<td class="col-track">${trackButtonHtml(c)}${scratchButtonHtml('card:' + c.id)}</td>`;
+      `<td class="col-track">${trackButtonHtml(c)}${scratchButtonHtml('card:' + c.id)}${tradeButtonHtml('card:' + c.id)}</td>`;
     return `<tr>
     ${checkCell}
     <td class="col-card">${nameCell}${c.card_number ? `<span class="cnum">${esc(c.card_number)}</span>` : ''}</td>
@@ -1763,16 +2224,30 @@ function renderList(cards){
 
 async function loadCards(){
   const countEl = document.getElementById('resultCount');
-  countEl.textContent = 'Loading…';
+  // Typing fires a request per pause. Cancel the one still in flight so an
+  // older, slower answer ("pik") can never land after a newer one
+  // ("pikachu") and replace the right results.
+  if (cardsAbort) cardsAbort.abort();
+  const ctrl = cardsAbort = new AbortController();
+  // Keep the current results and count on screen while the next ones load;
+  // only the very first load has nothing to show yet.
+  if (!countEl.textContent) countEl.textContent = 'Loading…';
+  document.body.classList.add('cards-loading');
   let d;
   try {
-    const resp = await fetch('/api/catalog/cards?' + currentParams());
+    const resp = await fetch('/api/catalog/cards?' + currentParams(), { signal: ctrl.signal });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     d = await resp.json();
   } catch(e){
+    if (ctrl.signal.aborted) return;   // superseded by a newer search
+    cardsAbort = null;
+    document.body.classList.remove('cards-loading');
     countEl.textContent = 'Couldn’t load cards.';
     return;
   }
+  if (ctrl !== cardsAbort) return;     // a newer request started meanwhile
+  cardsAbort = null;
+  document.body.classList.remove('cards-loading');
   total = d.total;
   if (d.facets) applyFacets(d.facets);
   const empty = document.getElementById('emptyState');
@@ -2090,7 +2565,11 @@ function updateSortIndicators(){
   });
 }
 
-['qSearch','qMin','qMax'].forEach(id =>
+document.getElementById('qSearch').addEventListener('input', () => resetAndLoad(150));
+document.getElementById('qSearch').addEventListener('keydown', ev => {
+  if (ev.key === 'Enter') { ev.preventDefault(); resetAndLoad(0); }
+});
+['qMin','qMax'].forEach(id =>
   document.getElementById(id).addEventListener('input', resetAndLoad));
 document.getElementById('qPriced').addEventListener('change', resetAndLoad);
 document.getElementById('qSort').addEventListener('change', () => { updateSortIndicators(); resetAndLoad(); });
@@ -2142,10 +2621,10 @@ document.getElementById('qPageSize').addEventListener('change', function(){
 updateSortIndicators();
 applyViewMode();
 loadScratch();
-let scratchWasOpen = true;
-try { scratchWasOpen = sessionStorage.getItem(SCRATCH_OPEN_KEY) !== '0'; } catch(e){}
-setScratchOpen(scratchWasOpen);
+setScratchOpen(false);
 renderScratch();
+loadTrade();
+renderTrade();
 loadFacets();
 loadPortfolioKeys().then(loadCards);
 
@@ -2198,17 +2677,23 @@ let pfTarget = null;          // the product being added
 let pfPortfolios = [];
 let pfChosen = null;
 
+const CATALOG_SECTIONS = { singles: ['singlesSection', 'tabSingles'],
+                           sealed:  ['sealedSection', 'tabSealed'],
+                           trade:   ['tradeSection', 'tabTrade'] };
 function setSection(which) {
-  const singles = which !== 'sealed';
-  document.getElementById('singlesSection').style.display = singles ? '' : 'none';
-  document.getElementById('sealedSection').style.display = singles ? 'none' : '';
-  document.getElementById('tabSingles').classList.toggle('on', singles);
-  document.getElementById('tabSealed').classList.toggle('on', !singles);
-  document.getElementById('tabSingles').setAttribute('aria-selected', String(singles));
-  document.getElementById('tabSealed').setAttribute('aria-selected', String(!singles));
+  // Guests have no Trade tab, so anything unknown falls back to Singles.
+  if (!CATALOG_SECTIONS[which] || !document.getElementById(CATALOG_SECTIONS[which][0])) which = 'singles';
+  Object.keys(CATALOG_SECTIONS).forEach(k => {
+    const [sectionId, tabId] = CATALOG_SECTIONS[k];
+    const section = document.getElementById(sectionId), tab = document.getElementById(tabId);
+    if (section) section.style.display = k === which ? '' : 'none';
+    if (tab) { tab.classList.toggle('on', k === which); tab.setAttribute('aria-selected', String(k === which)); }
+  });
   try { localStorage.setItem('catalogSection', which); } catch (e) {}
-  if (!singles && !sealedLoaded) loadSealed(false);
+  if (which === 'sealed' && !sealedLoaded) loadSealed(false);
+  if (which === 'trade') renderTrade();
 }
+
 
 function sealedEsc(v) {
   return String(v === null || v === undefined ? '' : v)
@@ -2311,7 +2796,7 @@ function renderSealed() {
       (IS_GUEST_CAT ? '' :
         '<td class="acts-col"><button type="button" class="btn btn-sm" ' +
         'data-add-sealed="' + r.id + '">Add to portfolio</button>' +
-        scratchButtonHtml('sealed:' + r.id) + '</td>') +
+        scratchButtonHtml('sealed:' + r.id) + tradeButtonHtml('sealed:' + r.id) + '</td>') +
       '</tr>';
   }).join('');
   markScratchButtons();
@@ -2443,7 +2928,7 @@ async function confirmAddToPortfolio() {
   typeSel.addEventListener('change', () => loadSealed(false));
   let saved = null;
   try { saved = localStorage.getItem('catalogSection'); } catch (e) {}
-  if (saved === 'sealed') setSection('sealed');
+  if (saved === 'sealed' || saved === 'trade') setSection(saved);
 })();
 
 </script>
