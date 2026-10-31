@@ -2042,3 +2042,11 @@ Cross-repo change (decision logged in ava_bot MEMORY.md, "Auto-delete rules: "*"
 Cross-repo change (decision logged in ava_bot MEMORY.md, "Batch 2 of the code review"). The bot's online restock channel was renamed from `online-restock-information` to `retailers-online-restocks`. `restock_reports.channel_name` holds the channel's name when the restock was saved, so online restocks since the rename slipped past every "leave out online channels" filter. Jeffrey: add the new name everywhere.
 - All 5 `channel_name NOT IN (...)` lists in main.py now also leave out `retailers-online-restocks`; the old name stays for older rows.
 - Same change in the bot (daily summary, all 9 leaderboard queries), so both still leave out the same channels.
+
+## 2026-10-31 — Lighter watermark on phones and tablets
+
+Members said the username watermark drowned out the dashboard on mobile. On small or touch screens (width under 768px, or `(hover: none) and (pointer: coarse)`), `drawWatermark` on the Dashboard, Map and Status pages now:
+- spaces names by their measured width + 44px, rows 64px apart, every other row shifted half a step (was a fixed 72x48px grid, so names ran into each other);
+- draws at 20% (light) / 14% (dark), down from 50% / 30%.
+
+Desktop is unchanged (only mobile was asked). Text stays 12px so a cropped screenshot still shows a readable name, which is the watermark's job (leak tracing, Terms section 8). Rejected: smaller text (harder to read in a leaked screenshot) and fewer copies (a cropped card could miss the name).
