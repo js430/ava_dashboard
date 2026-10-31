@@ -204,6 +204,10 @@ async def lifespan(app: FastAPI):
         await catalog.ensure_catalog_schema(app.state.db)
     except Exception:
         logger.exception("Catalog schema ensure failed — /catalog may be unavailable")
+    # Its own step, after the table exists: can be refused (logged inside)
+    # without costing anything but search speed. Never raises.
+    if await catalog.ensure_catalog_search_indexes(app.state.db):
+        logger.info("Catalog search indexes ready")
     try:
         await population.ensure_population_schema(app.state.db)
     except Exception:

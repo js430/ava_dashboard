@@ -257,6 +257,64 @@ async def ensure_catalog_schema(pool) -> None:
             await conn.execute(ddl)
 
 
+# Trigram indexes for the catalog search box. A search is ILIKE '%term%' on
+# card_name OR card_number, which a btree index can't serve, so without these
+# every part of a search (the page, the total, the four facet counts) reads
+# the whole table. With them, searches of 3+ characters become index lookups.
+#
+# Kept OUT of CATALOG_SCHEMA on purpose: that loop has no per-statement error
+# handling, and CREATE EXTENSION can be refused (a Postgres without contrib,
+# or no permission). A refusal must cost search speed, never startup. The
+# names match the ones handed out for creating these by hand in pgAdmin, so
+# once they exist this is a no-op. Names and columns are fixed constants,
+# never user input, which is what makes interpolating them safe.
+CATALOG_SEARCH_INDEXES = {
+    "idx_catalog_cards_name_trgm": "card_name",
+    "idx_catalog_cards_number_trgm": "card_number",
+}
+
+
+async def _invalid_search_indexes(conn) -> list:
+    """Search indexes that exist but are unusable — what an interrupted
+    CREATE INDEX CONCURRENTLY leaves behind. IF NOT EXISTS skips them, so
+    they'd stay broken forever without a warning."""
+    rows = await conn.fetch(
+        "SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+        "WHERE c.relname = ANY($1::text[]) AND NOT i.indisvalid",
+        list(CATALOG_SEARCH_INDEXES))
+    return [r["relname"] for r in rows]
+
+
+async def ensure_catalog_search_indexes(pool) -> bool:
+    """Create pg_trgm and the search indexes if absent. True when both are in
+    place and usable. Never raises: search works without them, only slower."""
+    try:
+        async with pool.acquire() as conn:
+            try:
+                await conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+            except Exception as exc:
+                logger.warning("Catalog search indexes skipped — pg_trgm is not available "
+                               "here (%s). Search still works, just slower.", exc)
+                return False
+            # Plain, not CONCURRENTLY: on a catalog this size it takes seconds,
+            # and a failed CONCURRENTLY build leaves an invalid index behind.
+            # It holds back writes to catalog_cards (never reads) meanwhile.
+            for name, column in CATALOG_SEARCH_INDEXES.items():
+                await conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS {name} ON catalog_cards "
+                    f"USING gin ({column} gin_trgm_ops)")
+            invalid = await _invalid_search_indexes(conn)
+    except Exception:
+        logger.exception("Catalog search index setup failed — search still works, just slower")
+        return False
+    if invalid:
+        logger.warning("Catalog search index(es) %s exist but are INVALID (an interrupted "
+                       "build) and are not being used. Drop them (DROP INDEX CONCURRENTLY "
+                       "<name>;) and restart to rebuild.", ", ".join(invalid))
+        return False
+    return True
+
+
 def number_sort_key(card_number: str) -> int:
     """Leading integer of a card number, or _UNNUMBERED_SORT.
 
