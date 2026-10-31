@@ -6590,6 +6590,7 @@ async def get_analytics(
             WHERE date >= $1
               AND channel_name NOT IN (
                   'online-restock-information',
+                  'retailers-online-restocks',
                   'other-online-restocks',
                   'pokemon-center-drops'
               )
@@ -6921,7 +6922,7 @@ async def get_contributor_points(request: Request, period: str = "3months",
                     COUNT(*) AS restock_count
                 FROM restock_reports
                 WHERE date >= $1
-                  AND channel_name NOT IN ('online-restock-information','other-online-restocks','pokemon-center-drops')
+                  AND channel_name NOT IN ('online-restock-information','retailers-online-restocks','other-online-restocks','pokemon-center-drops')
                 GROUP BY user_id
             ),
             empty_points AS (
@@ -7078,7 +7079,7 @@ async def get_contributor_regions(request: Request, region: str, period: str = "
                 """ + _restock_locations_join(ids_ready) + """
                 WHERE rr.date >= $1
                   AND l.state = $2
-                  AND rr.channel_name NOT IN ('online-restock-information','other-online-restocks','pokemon-center-drops')
+                  AND rr.channel_name NOT IN ('online-restock-information','retailers-online-restocks','other-online-restocks','pokemon-center-drops')
                 GROUP BY rr.user_id
             ),
             empty_pts_cte AS (
@@ -7457,6 +7458,7 @@ async def get_restocks(
             AND rr.non_tcg = FALSE
             AND (rr.channel_name IS NULL OR rr.channel_name NOT IN (
                 'online-restock-information',
+                'retailers-online-restocks',
                 'other-online-restocks',
                 'pokemon-center-drops'
             ))
@@ -7578,6 +7580,7 @@ async def get_map_data(
               AND rr.date >= $1
               AND (rr.channel_name IS NULL OR rr.channel_name NOT IN (
                   'online-restock-information',
+                  'retailers-online-restocks',
                   'other-online-restocks',
                   'pokemon-center-drops'
               ))
