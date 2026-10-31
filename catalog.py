@@ -20,6 +20,7 @@ Nothing here fetches. `main.py` owns the network calls; this module owns the
 schema, the upsert, and the read queries.
 """
 
+import asyncio
 import os
 import re
 import json
@@ -163,7 +164,7 @@ SORT_COLUMNS = {
     "set_newest": "refreshed_at DESC, number_sort ASC",
     "set_asc":    "set_name ASC, number_sort ASC",
     "set_desc":   "set_name DESC, number_sort ASC",
-    # rarity is '' rather than NULL when unset (see _facet_counts' "rarity <> ''"
+    # rarity is '' rather than NULL when unset (see _facet_parts' "rarity <> ''"
     # filter) — NULLS LAST doesn't apply to an empty string, so unset rows are
     # pushed to the end explicitly instead of sorting first in ASC order.
     "rarity_asc":  "(rarity = '') ASC, rarity ASC, card_name ASC",
@@ -237,7 +238,7 @@ CATALOG_SCHEMA = [
     # PPT's own `cardType` — "Pokemon", "Trainer", "Energy" and whatever else
     # it reports, stored verbatim rather than mapped to a vocabulary of ours:
     # the filter's options are built from the distinct values actually present
-    # (see _facet_counts), so a value we have never seen still shows up as
+    # (see _facet_parts), so a value we have never seen still shows up as
     # something to pick instead of being silently dropped. NULL until a row is
     # (re-)stocked with this field read.
     "ALTER TABLE catalog_cards ADD COLUMN IF NOT EXISTS card_type TEXT",
@@ -606,12 +607,43 @@ def _build_filters(game: str, language, set_ids=None, rarities=None,
     return " AND ".join(where), params
 
 
-async def _facet_counts(conn, game, language, set_ids, rarities,
-                        min_price, max_price, search, priced_only,
-                        restrict_set_ids=None, exclude=None, variants=None,
-                        card_types=None) -> dict:
+def _renumber(sql: str, offset: int) -> str:
+    """Shift a clause's $1..$n placeholders up by `offset`, so clauses built
+    separately by _build_filters (each numbered from $1) can share one
+    statement. Safe because these clauses contain no other `$`: every value
+    is a bind parameter."""
+    if not offset:
+        return sql
+    return re.sub(r"\$(\d+)", lambda m: f"${int(m.group(1)) + offset}", sql)
+
+
+def _one_statement(parts) -> tuple:
+    """(sql, params) running every (key, sql, params) part as a scalar
+    subquery of ONE SELECT, each part becoming a column named by its key.
+    One database round trip instead of one per part — which is most of the
+    cost now the app and its database sit on different hosts."""
+    columns, all_params = [], []
+    for key, sql, params in parts:
+        columns.append(f"({_renumber(sql, len(all_params))}) AS {key}")
+        all_params.extend(params)
+    return "SELECT " + ", ".join(columns), all_params
+
+
+def _json_rows(sql: str, fields: str, order_by: str) -> str:
+    """Wrap a grouped query so it returns its rows as one JSON array, in the
+    order the separate query used to return them."""
+    pairs = ", ".join(f"'{f.strip()}', {f.strip()}" for f in fields.split(","))
+    return (f"SELECT COALESCE(json_agg(json_build_object({pairs}) ORDER BY {order_by}), "
+            f"'[]'::json) FROM ({sql}) f")
+
+
+def _facet_parts(game, language, set_ids, rarities,
+                 min_price, max_price, search, priced_only,
+                 restrict_set_ids=None, exclude=None, variants=None,
+                 card_types=None) -> list:
     """Option counts for the set, rarity, and variant filters, so each
-    narrows the others.
+    narrows the others. Returned as statement parts for _one_statement, read
+    back by _facets_from_row.
 
     THE RULE: a facet's counts are computed with every filter applied EXCEPT
     its own. Rarity options ignore the rarity selection; set options ignore
@@ -646,18 +678,18 @@ async def _facet_counts(conn, game, language, set_ids, rarities,
         game, language, set_ids, rarities, min_price, max_price, search, priced_only,
         restrict_set_ids, exclude=exclude, variants=None, card_types=card_types)
 
-    rarity_rows = await conn.fetch(
+    parts = [("rarities", _json_rows(
         f"SELECT rarity, COUNT(*) AS n FROM catalog_cards "
-        f"WHERE {rarity_where} AND rarity <> '' "
-        f"GROUP BY rarity ORDER BY n DESC, rarity ASC", *rarity_params)
+        f"WHERE {rarity_where} AND rarity <> '' GROUP BY rarity",
+        "rarity, n", "n DESC, rarity ASC"), rarity_params)]
     # Grouped by (set_id, language), NOT set_id alone. With both languages
     # selected a shared set_id would otherwise collapse two genuinely
     # different products into one row with a summed count — the English and
     # Japanese printings of a set are separate inventory at separate prices.
-    set_rows = await conn.fetch(
+    parts.append(("sets", _json_rows(
         f"SELECT set_id, language, MAX(set_name) AS set_name, COUNT(*) AS n "
-        f"FROM catalog_cards WHERE {set_where} "
-        f"GROUP BY set_id, language ORDER BY MAX(set_name) ASC", *set_params)
+        f"FROM catalog_cards WHERE {set_where} GROUP BY set_id, language",
+        "set_id, language, set_name, n", "set_name ASC"), set_params))
     # jsonb_object_keys is a set-returning function — one row per printing
     # name per card, implicitly LATERAL against the preceding table, which is
     # why a card with two printings contributes two rows to this count.
@@ -668,26 +700,36 @@ async def _facet_counts(conn, game, language, set_ids, rarities,
         game, language, set_ids, rarities, min_price, max_price, search,
         priced_only, restrict_set_ids, exclude=exclude, variants=variants,
         card_types=None)
-    card_type_rows = await conn.fetch(
+    parts.append(("card_types", _json_rows(
         f"SELECT card_type, COUNT(*) AS n FROM catalog_cards "
         f"WHERE {type_where} AND card_type IS NOT NULL AND card_type <> '' "
-        f"GROUP BY card_type ORDER BY n DESC, card_type ASC", *type_params)
+        f"GROUP BY card_type",
+        "card_type, n", "n DESC, card_type ASC"), type_params))
 
-    variant_rows = await conn.fetch(
+    parts.append(("variants", _json_rows(
         f"SELECT variant_name, COUNT(*) AS n FROM catalog_cards, "
         f"     LATERAL jsonb_object_keys(printing_prices) AS variant_name "
         f"WHERE {variant_where} AND printing_prices IS NOT NULL "
-        f"GROUP BY variant_name ORDER BY n DESC, variant_name ASC", *variant_params)
+        f"GROUP BY variant_name",
+        "variant_name, n", "n DESC, variant_name ASC"), variant_params))
+    return parts
+
+
+def _facets_from_row(row) -> dict:
+    """The facets dict, from the columns _facet_parts added to the statement."""
+    def rows(key):
+        value = row[key]
+        return json.loads(value) if isinstance(value, str) else (value or [])
 
     return {
-        "rarities": [{"rarity": r["rarity"], "count": int(r["n"])} for r in rarity_rows],
+        "rarities": [{"rarity": r["rarity"], "count": int(r["n"])} for r in rows("rarities")],
         "sets": [{"set_id": r["set_id"], "language": r["language"],
                   "set_name": r["set_name"] or r["set_id"],
-                  "cards": int(r["n"])} for r in set_rows],
+                  "cards": int(r["n"])} for r in rows("sets")],
         "card_types": [{"card_type": r["card_type"], "count": int(r["n"])}
-                       for r in card_type_rows],
+                       for r in rows("card_types")],
         "variants": [{"variant": r["variant_name"], "count": int(r["n"])}
-                    for r in variant_rows],
+                    for r in rows("variants")],
     }
 
 
@@ -707,7 +749,7 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
     rather than inferred from the page length.
 
     `with_facets` adds per-filter option counts so the set, rarity, and
-    variant dropdowns can narrow each other — see _facet_counts for the one
+    variant dropdowns can narrow each other — see _facet_parts for the one
     rule that makes faceted filtering work.
 
     `restrict_set_ids`, when not None, is a hard ceiling ANDed on regardless
@@ -759,13 +801,28 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
     )
     count_sql = f"SELECT COUNT(*) FROM catalog_cards WHERE {where_sql}"
 
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(page_sql, *page_params)
-        total = await conn.fetchval(count_sql, *params)
-        facets = await _facet_counts(
-            conn, game, language, set_ids, rarities, min_price, max_price,
-            search, priced_only, restrict_set_ids, exclude, variants,
-            card_types) if with_facets else None
+    # Two statements on two connections, at the same time: the page itself,
+    # and everything else (total + facet counts) folded into one SELECT. This
+    # used to be six queries one after another, each a full round trip to the
+    # database — the bulk of a search's wait. Same SQL, same results.
+    stat_parts = [("total", count_sql, list(params))]
+    if with_facets:
+        stat_parts += _facet_parts(
+            game, language, set_ids, rarities, min_price, max_price,
+            search, priced_only, restrict_set_ids, exclude, variants, card_types)
+    stats_sql, stats_params = _one_statement(stat_parts)
+
+    async def _page_rows():
+        async with pool.acquire() as conn:
+            return await conn.fetch(page_sql, *page_params)
+
+    async def _stats_row():
+        async with pool.acquire() as conn:
+            return await conn.fetchrow(stats_sql, *stats_params)
+
+    rows, stats = await asyncio.gather(_page_rows(), _stats_row())
+    total = stats["total"]
+    facets = _facets_from_row(stats) if with_facets else None
 
     def _shown_price(r):
         if not variant_shown:
@@ -928,7 +985,7 @@ async def facets(pool, game: str, language=DEFAULT_LANGUAGE,
             f"WHERE {where} AND rarity <> '' "
             f"GROUP BY rarity ORDER BY n DESC, rarity ASC",
             *params)
-        # (set_id, language), not set_id alone — see _facet_counts. Two
+        # (set_id, language), not set_id alone — see _facet_parts. Two
         # printings sharing a set_id must stay two rows in the coverage list.
         set_rows = await conn.fetch(
             f"SELECT set_id, language, MAX(set_name) AS set_name, COUNT(*) AS cards, "

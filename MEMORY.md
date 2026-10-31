@@ -3,6 +3,47 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-10-31 — Catalog: faster live search, Tally drawer, Trade calculator
+
+**Search: 6 sequential queries -> 2 concurrent.** `query_cards` ran the page,
+the total and four facet counts one after another, each a full round trip —
+and the database is now on another host (app on Render, DB on Railway). The
+total and facets are folded into ONE statement (`_one_statement`: each part a
+scalar subquery, placeholders shifted by `_renumber`, facet rows returned via
+`json_agg`), run alongside the page query on a second pooled connection. Same
+SQL, same results: verified identical on 54 filter combinations against a
+real Postgres with ~58k synthetic cards. 2 connections per search (pool max
+is 10). **The facet rule (each facet ignores its own filter) is unchanged.**
+
+**The remaining cost is the search itself:** every part does
+`ILIKE '%term%'` on name and number, a full scan (~70-120 ms each on 58k rows
+locally). The fix is a pg_trgm GIN index on `card_name` and `card_number`.
+Not added in code yet: pg_trgm wasn't available to test against locally.
+If it's created by hand in pgAdmin, add it to the schema afterwards — in its
+own guarded step, NOT inside CATALOG_SCHEMA, whose DDL loop has no
+per-statement error handling (see the 2026-08-03 incident).
+
+**Page: cancel stale searches.** Each keystroke's request aborts the one
+still in flight (AbortController), and a response is ignored if a newer one
+started, so "pik" can't overwrite "pikachu". Results stay on screen (dimmed
+only if a reload takes >150 ms) instead of flashing "Loading…". Search box
+debounce 150 ms (was 250), Enter searches immediately.
+
+**Quick tally is now a drawer,** closed on every page load, opened from a
+"Tally · N · $X" button in the tab row. Its old open/closed sessionStorage
+key is gone.
+
+**Trade calculator** (third catalog tab, members only — guests get no tab,
+no buttons): "+ Trade" on Singles grid/list and Sealed rows asks "your side"
+or "their side". localStorage key `catalogTrade` — on this device, never sent
+to the server. Values are market-price SNAPSHOTS from when added (like the
+tally), editable per line; a card with several printings can switch printing.
+Summary: each side's total, the difference, and % measured against your
+side. **Rejected for now:** server-saved/shareable trades (new table + API)
+and live re-pricing (needs a price-by-ids endpoint).
+
+---
+
 ## 2026-10-27 — Security dependency updates: Starlette 1.x, FastAPI 0.162, Pillow 13
 
 **Decided:** patched every dependency with a known advisory (pip-audit: 95
