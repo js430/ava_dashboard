@@ -1132,6 +1132,7 @@ async def index(request: Request):
             "discord_invite_url": DISCORD_INVITE_URL,
             "upgrade_url": DEMO_UPGRADE_URL,
             "guest_catalog_visible_sets": GUEST_CATALOG_VISIBLE_SETS,
+            "guest_riftbound_visible_sets": GUEST_RIFTBOUND_VISIBLE_SETS,
             **await _membership_offer(),
         })
     limited = allowed_regions(request)
@@ -5412,12 +5413,14 @@ CATALOG_GAME = "pokemon"
 # Discord-members-only. Neither restriction applies to a real Discord
 # session (member or admin) — only to `is_guest`.
 #
-# Was 3 (roughly 6-9 months of releases); widened to 8 (~1.5-2 years) since a
-# cold visitor's first search landing on an older set read as broken rather
-# than restricted — 3 sets wasn't enough for a search to plausibly succeed,
-# which is the wrong first impression for someone converting from a cold
-# link, not a returning member who already knows the restriction exists.
-GUEST_CATALOG_VISIBLE_SETS = int(os.getenv("GUEST_CATALOG_VISIBLE_SETS", "8"))
+# Was 3 (roughly 6-9 months of releases), then widened to 8 (~1.5-2 years)
+# because a cold visitor's first search landing on an older set read as
+# broken rather than restricted. Cut back to 4 (2026-11-01) to keep more of
+# the catalog behind the premium role. See MEMORY.md.
+GUEST_CATALOG_VISIBLE_SETS = int(os.getenv("GUEST_CATALOG_VISIBLE_SETS", "4"))
+# Riftbound's window is its own number: it releases far fewer sets than
+# Pokemon, so 3 main sets is already about a year of releases.
+GUEST_RIFTBOUND_VISIBLE_SETS = int(os.getenv("GUEST_RIFTBOUND_VISIBLE_SETS", "3"))
 # The grading calculator has its own, tighter guest window — decoupled from
 # the Catalog's so tightening/widening one never silently changes the other.
 GUEST_GRADING_VISIBLE_SETS = int(os.getenv("GUEST_GRADING_VISIBLE_SETS", "5"))
@@ -5488,9 +5491,10 @@ def _catalog_languages(game: str, raw: str) -> list:
 
 async def _riftbound_guest_set_ids(pool, limit: int = None) -> list:
     """Riftbound's guest ceiling, by the same rule as _guest_visible_set_ids:
-    the newest N released, stocked, main sets. Promo sets are skipped the way
-    Pokemon's promo era is. Fails closed — no set list means nothing shown."""
-    limit = GUEST_CATALOG_VISIBLE_SETS if limit is None else limit
+    the newest N released, stocked, main sets. Promos, collections and
+    bundles are skipped (riftbound.is_main_set) the way Pokemon's promo era
+    is. Fails closed — no set list means nothing shown."""
+    limit = GUEST_RIFTBOUND_VISIBLE_SETS if limit is None else limit
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             sets = await riftbound.cached_episodes(client)
@@ -5501,7 +5505,7 @@ async def _riftbound_guest_set_ids(pool, limit: int = None) -> list:
     today = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d")
     out = []
     for s in sets:
-        if not s["released"] or s["released"] > today or s["promo"]:
+        if not s["released"] or s["released"] > today or not s["main"]:
             continue
         if s["id"] in have:
             out.append(s["id"])
@@ -6259,6 +6263,7 @@ async def catalog_page(request: Request):
         "ebay_affiliate": catalog.ebay_affiliate_enabled(),
         "refresh_min_age_hours": CATALOG_MANUAL_REFRESH_MIN_AGE_HOURS,
         "guest_catalog_visible_sets": GUEST_CATALOG_VISIBLE_SETS,
+        "guest_riftbound_visible_sets": GUEST_RIFTBOUND_VISIBLE_SETS,
         # Drives the admin Stock/Refresh button labels — read from the same
         # constants the backend defaults to, so a batch-size change can never
         # leave the button text stale again.

@@ -2076,3 +2076,12 @@ API doc mismatches: `per_page` ignored; history is `/history-prices`, not `/rift
 Not included: the grading calculator and Tracker Management's set import stay Pokémon-only.
 
 Shared DB: ava_bot's card_identifier reads catalog_cards with `game = 'pokemon'`, so new rows, columns and the index swap don't affect it. Recorded in data-system.md, which didn't list catalog_cards as bot-read before.
+
+## 2026-11-01 — Guest catalog window: Pokémon 4 sets, Riftbound 3 main sets
+
+Guests and role-less Discord members (the guest tier) see a smaller slice of the Catalog. Jeffrey's call:
+- **Pokémon: newest 4 main sets** (`GUEST_CATALOG_VISIBLE_SETS`, was 8). This partly reverses the earlier widening from 3 to 8, whose reason was that a cold visitor's first search often landed on a hidden set and read as broken. 4 is a deliberate trade toward keeping more behind the premium role.
+- **Riftbound: newest 3 main sets**, its own setting (`GUEST_RIFTBOUND_VISIBLE_SETS`) so the two never move together. Today that's Radiance, Vendetta and Unleashed.
+- **"Main set" for Riftbound excludes promos, collections and bundles** (`riftbound.is_main_set`, a word match on the set name). Without it the T1 2025 Worlds Champion Collection and Secret Garden Bundle would take two of the three slots. The set picker uses the same rule, so those two now sit under "Promos & extras".
+
+Unchanged: the window counts only sets that are released and stocked (same as Pokémon), and the Sealed tab has no guest limit for either game. The Grading Calculator's guest window stays at 5 sets, now wider than the Catalog's.
