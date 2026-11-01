@@ -85,6 +85,22 @@
   .view-toggle button + button { border-left: 1px solid #ddd; }
   .view-toggle button.on { background: #5865F2; color: #fff; }
 
+  /* ── Pokémon / Riftbound ── same segmented look as the list/grid toggle,
+     sized to sit in the tab row. Everything below it follows the choice. */
+  .game-switch { align-self: center; margin-right: 6px; }
+  .game-switch button { font-size: 13px; padding: 7px 14px; }
+  /* Controls that only mean something for one game. */
+  body.game-riftbound .pokemon-only,
+  body.game-riftbound .col-cardtype,
+  body.game-riftbound .check-col,
+  body.game-riftbound .gcard-check { display: none !important; }
+  body:not(.game-riftbound) .riftbound-only { display: none !important; }
+  /* A Riftbound card priced from Cardmarket instead of TCGplayer. */
+  .src-tag { display: inline-block; font-size: 9.5px; font-weight: 700; letter-spacing: .03em;
+             padding: 0 4px; margin-left: 4px; border-radius: 3px; vertical-align: 1px;
+             background: #fef3c7; color: #92400e; cursor: help; }
+  html[data-theme="dark"] .src-tag { background: #3a2f12; color: #fcd34d; }
+
   /* ── Grid view ──
      The filter controls live in the table's <thead>, so grid mode hides only
      the column-label row and the <tbody>. The table element itself stays put,
@@ -541,6 +557,12 @@
 <div class="main">
 
   <div class="cat-tabs" role="tablist" aria-label="Catalog sections">
+    <div class="view-toggle game-switch" role="group" aria-label="Game">
+      <button type="button" id="gamePokemon" class="on" aria-pressed="true"
+              onclick="setGame('pokemon')">Pokémon</button>
+      <button type="button" id="gameRiftbound" aria-pressed="false"
+              onclick="setGame('riftbound')">Riftbound</button>
+    </div>
     <button type="button" id="tabSingles" class="cat-tab on" role="tab"
             aria-selected="true" onclick="setSection('singles')">Singles</button>
     <button type="button" id="tabSealed" class="cat-tab" role="tab"
@@ -566,7 +588,7 @@
             <button type="button" id="viewGridBtn"
                     onclick="setViewMode('grid')" title="Card images">Grid</button>
           </div>
-          <span class="lang-group" title="English and Japanese printings are different products with different prices. Tick both to see them together.">
+          <span class="lang-group pokemon-only" title="English and Japanese printings are different products with different prices. Tick both to see them together.">
             <label class="head-check">
               <input type="checkbox" id="langEnglish" checked> English
             </label>
@@ -577,7 +599,7 @@
           <label class="head-check" title="Hide cards with no price on record">
             <input type="checkbox" id="qPriced"> Priced only
           </label>
-          <label class="head-check" title="Show Normal/Holofoil/Reverse Holofoil prices side by side, for cards with more than one variant on record">
+          <label class="head-check pokemon-only" title="Show Normal/Holofoil/Reverse Holofoil prices side by side, for cards with more than one variant on record">
             <input type="checkbox" id="qShowPrintings"> Variant prices
           </label>
           <select id="qSort" style="width:auto">
@@ -602,14 +624,19 @@
           <button class="btn btn-plain btn-sm" id="exportBtn" onclick="exportCsv()"
                   title="Download every card matching the current filters as a CSV">Export CSV</button>
           {% if not is_guest %}
-          <button class="btn btn-plain btn-sm" id="refreshSelectedBtn" disabled
+          <button class="btn btn-plain btn-sm pokemon-only" id="refreshSelectedBtn" disabled
                   onclick="refreshSelectedCards()">Refresh selected</button>
-          <span class="hint" id="refreshMsg"></span>
+          <span class="hint pokemon-only" id="refreshMsg"></span>
           {% endif %}
         </div>
-        <div class="hint" style="padding:0 16px 10px">
+        <div class="hint pokemon-only" style="padding:0 16px 10px">
           Prices from PokemonPriceTracker (TCGplayer market price) &mdash; refreshed nightly for the
           newest sets, plus on demand for individual cards. See "Last updated" per row below.
+        </div>
+        <div class="hint riftbound-only" style="padding:0 16px 10px">
+          Riftbound prices are TCGplayer's market price. Cards TCGplayer has no price for show
+          Cardmarket's 7-day average instead, converted from euros and marked
+          <span class="src-tag">EU</span>. Every card updates once a day.
         </div>
         {% if is_guest and not user_id %}
         <div class="hint guest-note" style="padding:0 16px 10px">
@@ -627,7 +654,7 @@
           complete catalog.
         </div>
         {% else %}
-        <div class="hint" style="padding:0 16px 10px">
+        <div class="hint pokemon-only" style="padding:0 16px 10px">
           Check up to 10 cards to refresh their price right now. Cards priced within
           the last {{ refresh_min_age_hours }} hours can't be selected &mdash; their
           checkbox is grayed out until that window passes.
@@ -692,13 +719,13 @@
                   </label>
                 </th>
                 <th class="col-variant">
-                  <button type="button" class="th-picker" id="variantPickerBtn"
+                  <button type="button" class="th-picker pokemon-only" id="variantPickerBtn"
                           onclick="openPicker('variant', this)" aria-haspopup="true"
                           aria-expanded="false"
                           title="Only cards with one of these printings on record. Picking exactly one also swaps the price shown and sorted to that printing's own price.">
                     <span id="variantPickerLabel">All variants</span><span class="th-caret">&#9662;</span>
                   </button>
-                  <label class="filter-exclude" title="Show every card that has NONE of the chosen printings">
+                  <label class="filter-exclude pokemon-only" title="Show every card that has NONE of the chosen printings">
                     <input type="checkbox" id="excludeVariant" aria-label="Exclude cards with this printing">Exclude
                   </label>
                 </th>
@@ -746,16 +773,30 @@
         </div>
         <div class="card-body">
           <div class="backfill" id="backfillLine" style="display:none"></div>
-          <div class="hint" style="margin-bottom:10px">
+          <div class="hint pokemon-only" style="margin-bottom:10px">
             The newest sets are stocked automatically. Anything older lands here the
             first time someone opens it in the
             <a href="/grading-calculator" style="color:#5865F2">Grading Calculator</a> &mdash;
             that lookup already covers the whole set, so stocking it costs nothing extra.
             Sets nobody has opened yet aren't searchable here.
           </div>
+          <div class="hint riftbound-only" style="margin-bottom:10px">
+            Every Riftbound set is added automatically, and every card's price is updated
+            once a day. There's nothing to stock by hand.
+          </div>
           <div class="setlist" id="stockedSets"></div>
           {% if is_admin %}
-          <div style="border-top:1px solid #f0f0f0; padding-top:12px; margin-top:12px">
+          <div class="riftbound-only" style="border-top:1px solid #f0f0f0; padding-top:12px; margin-top:12px">
+            <button class="btn btn-plain btn-sm" id="rbSyncBtn" onclick="runRiftboundSync()">
+              Update Riftbound now
+            </button>
+            <span class="hint" style="margin-left:6px">
+              Re-fetches every set and sealed product right away instead of waiting for the
+              daily update. Uses about 95 of the price API's daily requests.
+            </span>
+            <div class="warn" id="rbSyncMsg" style="display:none"></div>
+          </div>
+          <div class="pokemon-only" style="border-top:1px solid #f0f0f0; padding-top:12px; margin-top:12px">
             <label class="label" for="stockLang">Stock a set now (admin)</label>
             <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px">
               <select id="stockLang" style="width:auto" onchange="renderStockPicker()">
@@ -798,9 +839,13 @@
           </div>
           {% endif %}
           <div class="note">
-            Prices are the ungraded ("raw") market price from PokemonPriceTracker, captured
-            when the set was last stocked &mdash; not live. A blank price means no market
-            price was reported for that card, not that it's worthless.
+            <span class="pokemon-only">Prices are the ungraded ("raw") market price from
+            PokemonPriceTracker, captured when the set was last stocked &mdash; not live. A blank
+            price means no market price was reported for that card, not that it's worthless.</span>
+            <span class="riftbound-only">Prices are the ungraded ("raw") price, updated once a
+            day &mdash; not live. TCGplayer reports one price per card: the regular (non-foil)
+            printing where there are both. A blank price means neither TCGplayer nor Cardmarket
+            reported one for that card, not that it's worthless.</span>
             {% if ebay_affiliate %}
             <br><br>
             <strong>Heads up:</strong> card names that link to eBay are affiliate links.
@@ -1222,7 +1267,7 @@ function tradeItemFor(key){
     let printing = c.shown_variant || null;
     if (!printing && market !== null)
       printing = Object.keys(printings).find(k => Math.abs(printings[k] - market) < 0.005) || null;
-    return { key, name: c.name, sub: [c.set_name, c.card_number].filter(Boolean).join(' · '),
+    return { key, name: c.name, sub: [c.set_name, c.card_number, c.version].filter(Boolean).join(' · '),
              printings, printing, base: market, market, price: market, edited: false };
   }
   const r = sealedRows.filter(x => String(x.id) === id)[0];
@@ -1504,7 +1549,17 @@ function printingPricesHtml(c){
 function variantCellHtml(c){
   if (c.shown_variant) return esc(c.shown_variant);
   const names = c.printing_prices ? Object.keys(c.printing_prices) : [];
-  return names.length ? esc(names.join(' · ')) : '';
+  if (names.length) return esc(names.join(' · '));
+  // A Riftbound card's version ("V.4 - Showcase") is what tells two copies
+  // of one name and number apart, so it takes this column.
+  return c.version ? esc(c.version) : '';
+}
+
+// Riftbound only: marks a price that came from Cardmarket, not TCGplayer.
+function priceSourceHtml(c){
+  if (currentGame !== 'riftbound' || c.price_source !== 'cardmarket' || c.shown_price == null) return '';
+  return '<span class="src-tag" title="Cardmarket’s 7-day average, converted from euros — '
+       + 'TCGplayer has no price for this card">EU</span>';
 }
 
 // Grid tiles have no separate Variant column (the list table does), so when
@@ -1517,11 +1572,61 @@ function shownVariantLabelHtml(c){
 // catalog rows — see price_sources.CardRef.key()), so these are independent
 // datasets shown together, not a display toggle. Persisted like the theme is,
 // so nobody has to re-tick Japanese every visit.
+// Pokémon or Riftbound. Same tables, same filters — the server scopes every
+// request by it. Remembered like the view mode and languages.
+const CATALOG_GAMES = ['pokemon', 'riftbound'];
+let currentGame = 'pokemon';
+try {
+  const savedGame = localStorage.getItem('catalogGame');
+  if (CATALOG_GAMES.includes(savedGame)) currentGame = savedGame;
+} catch(e){}
+
 function currentLanguages(){
+  // Riftbound is English-only, so the language boxes (hidden for it) don't
+  // apply — and nothing should badge its rows as one language of two.
+  if (currentGame === 'riftbound') return ['english'];
   const out = [];
   if (document.getElementById('langEnglish').checked) out.push('english');
   if (document.getElementById('langJapanese').checked) out.push('japanese');
   return out;
+}
+
+function applyGameUi(){
+  const rift = currentGame === 'riftbound';
+  document.body.classList.toggle('game-riftbound', rift);
+  [['gamePokemon', !rift], ['gameRiftbound', rift]].forEach(([id, on]) => {
+    const b = document.getElementById(id);
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', String(on));
+  });
+  document.getElementById('sealedQ').placeholder = rift ? 'Origins Booster Box' : 'Prismatic Evolutions';
+}
+
+function setGame(game){
+  if (!CATALOG_GAMES.includes(game) || game === currentGame) return;
+  currentGame = game;
+  try { localStorage.setItem('catalogGame', game); } catch(e){}
+  applyGameUi();
+  // Set, rarity, printing and type choices belong to one game's catalog — a
+  // set picked in one would keep filtering the other invisibly. The search
+  // box and price range carry over; they mean the same thing in both.
+  ['set', 'rarity', 'variant', 'cardType'].forEach(key => {
+    selected[key].clear();
+    updatePickerLabel(key);
+  });
+  selectedCards.clear();
+  updateRefreshButton();
+  closePicker();
+  document.getElementById('resultCount').textContent = '';
+  loadFacets();
+  resetAndLoad(0);
+  // Sealed refills its filters for the new game, now if it's on screen.
+  const setSel = document.getElementById('sealedSetFilter');
+  delete setSel.dataset.filled;
+  setSel.value = '';
+  document.getElementById('sealedTypeFilter').value = '';
+  sealedLoaded = false;
+  if (document.getElementById('sealedSection').style.display !== 'none') loadSealed(false);
 }
 function saveLanguages(){
   try { localStorage.setItem('catalogLanguages', currentLanguages().join(',')); } catch(e){}
@@ -1589,6 +1694,7 @@ function timeAgo(iso){
 // visitors never hit the 400/skip path, but the server re-checks
 // unconditionally since a disabled checkbox is only a UI nicety.
 function refreshEligible(c){
+  if (currentGame === 'riftbound') return { ok: false, reason: 'Riftbound prices update once a day on their own' };
   if (!c.tcgplayer_url) return { ok: false, reason: 'No direct TCGplayer link — can’t be refreshed this way' };
   if (c.priced_at){
     const ageMs = Date.now() - new Date(c.priced_at).getTime();
@@ -1615,6 +1721,10 @@ const selectedCards = new Set();
 let cardsById = new Map();
 let portfolioKeys = new Set();
 function cardKey(c){
+  // Riftbound by the API's own card id: the tracked copy's number can carry
+  // its version (card_tracker.riftbound_card_identity), so name and number
+  // alone wouldn't match it back to its catalog row.
+  if (c.source_id) return 'rb:' + c.source_id;
   return [c.name, c.set_name, c.card_number, c.language || 'english'].join('|');
 }
 async function loadPortfolioKeys(){
@@ -1643,7 +1753,10 @@ async function addToTracker(btn, id){
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
-        game: 'pokemon',
+        game: currentGame,
+        // Riftbound: the server reads the card from this catalog row and
+        // ignores the rest, so the exact version is what gets tracked.
+        catalog_id: c.id,
         name: c.name,
         set_name: c.set_name,
         card_number: c.card_number,
@@ -1817,6 +1930,7 @@ function currentParams(){
   if ((min !== '' || max !== '') && document.getElementById('excludePrice').checked) p.set('exclude_price', '1');
   if (selected.variant.size && document.getElementById('excludeVariant').checked) p.set('exclude_variant', '1');
   if (selected.cardType.size && document.getElementById('excludeCardTypes').checked) p.set('exclude_card_types', '1');
+  p.set('game', currentGame);
   p.set('language', currentLanguages().join(','));
   p.set('sort', document.getElementById('qSort').value);
   p.set('limit', pageSize);
@@ -2164,10 +2278,10 @@ function renderGrid(cards){
       <div class="gcard-img">${check}${img}</div>
       <div class="gcard-body">
         <div class="gcard-name">${nameHtml}</div>
-        <div class="gcard-meta">${c.card_number ? '#' + esc(c.card_number) + ' · ' : ''}${esc(c.set_name || c.set_id)}${lang}</div>
+        <div class="gcard-meta">${c.card_number ? '#' + esc(c.card_number) + ' · ' : ''}${esc(c.set_name || c.set_id)}${c.version ? ' · ' + esc(c.version) : ''}${lang}</div>
         <div class="gcard-foot">
           <span class="gcard-price ${c.shown_price == null ? 'none' : ''}">${
-            c.shown_price == null ? 'no price' : money(c.shown_price)}${shownVariantLabelHtml(c)}</span>
+            c.shown_price == null ? 'no price' : money(c.shown_price)}${priceSourceHtml(c)}${shownVariantLabelHtml(c)}</span>
           ${IS_GUEST ? '' : trackButtonHtml(c) + scratchButtonHtml('card:' + c.id) + tradeButtonHtml('card:' + c.id)}
         </div>
         ${showPrintings ? printingPricesHtml(c) : ''}
@@ -2214,7 +2328,7 @@ function renderList(cards){
     <td class="col-variant">${variantCellHtml(c)}</td>
     <td class="right col-price">${c.shown_price == null
         ? '<span class="price-none">no price</span>'
-        : `<span class="price">${money(c.shown_price)}</span>`}${showPrintings ? printingPricesHtml(c) : ''}</td>
+        : `<span class="price">${money(c.shown_price)}</span>${priceSourceHtml(c)}`}${showPrintings ? printingPricesHtml(c) : ''}</td>
     <td class="col-updated" title="${c.priced_at ? esc(new Date(c.priced_at).toLocaleString()) : ''}">${timeAgo(c.priced_at)}</td>
     ${trackCell}
   </tr>`;
@@ -2266,7 +2380,9 @@ async function loadCards(){
       || document.getElementById('qMax').value.trim()
       || document.getElementById('qPriced').checked;
     let msg = total === 0 && !filtering
-      ? 'Nothing stocked yet. Open a set in the Grading Calculator and it’ll show up here.'
+      ? (currentGame === 'riftbound'
+          ? 'Riftbound cards haven’t been loaded yet — they’re added automatically, so check back shortly.'
+          : 'Nothing stocked yet. Open a set in the Grading Calculator and it’ll show up here.')
       : 'No cards match those filters.';
     // A guest searching for a card from an older set gets a real zero-result
     // page that looks identical to "that card doesn't exist" — this is the
@@ -2297,16 +2413,23 @@ function changePage(dir){
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
+let facetsSeq = 0;
 async function loadFacets(){
+  // Switching game straight back and forth can leave two of these in flight;
+  // only the newest one gets to draw.
+  const seq = ++facetsSeq;
   let d;
   try {
-    const resp = await fetch('/api/catalog/facets?language=' + currentLanguages().join(','));
+    const resp = await fetch('/api/catalog/facets?game=' + currentGame
+                             + '&language=' + currentLanguages().join(','));
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     d = await resp.json();
   } catch(e){
+    if (seq !== facetsSeq) return;
     document.getElementById('setPickerLabel').textContent = 'Sets unavailable';
     return;
   }
+  if (seq !== facetsSeq) return;
   allSets = d.sets || [];
   availableSets = d.available_sets || [];
 
@@ -2337,6 +2460,25 @@ async function loadFacets(){
 
   canStock = d.can_stock !== false;
   renderStockPicker();
+  const rbBtn = document.getElementById('rbSyncBtn');
+  if (rbBtn) rbBtn.disabled = currentGame === 'riftbound' && d.can_sync === false;
+}
+
+async function runRiftboundSync(){
+  const btn = document.getElementById('rbSyncBtn');
+  const msg = document.getElementById('rbSyncMsg');
+  const show = text => { msg.textContent = text; msg.style.display = 'block'; };
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/api/catalog/riftbound/sync', { method: 'POST' });
+    const d = await resp.json().catch(() => ({}));
+    if (!resp.ok) show(d.detail || 'Couldn’t start the update.');
+    else { show('Updating every Riftbound set — progress shows above.'); loadFacets(); }
+  } catch(e){
+    show('Network error — please try again.');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // Admin picker: only sets that aren't stocked yet, so it can't be used to
@@ -2412,7 +2554,8 @@ function renderBackfill(bf){
     // half-empty set list reads like something failed.
     const skipped = bf.empty ? `, ${bf.empty} with no data yet` : '';
     const already = bf.skipped ? `, ${bf.skipped} already complete` : '';
-    const verb = bf.mode === 'refresh' ? 'Refreshing already-stocked sets' : 'Stocking the newest sets';
+    const verb = bf.mode === 'refresh' ? 'Refreshing already-stocked sets'
+               : bf.mode === 'riftbound' ? 'Updating Riftbound sets' : 'Stocking the newest sets';
     el.className = 'backfill';
     el.textContent = `${verb} — ${bf.done}${of} done${skipped}${already}`
       + (bf.current ? ` (currently ${bf.current})` : '')
@@ -2620,6 +2763,7 @@ document.getElementById('qPageSize').addEventListener('change', function(){
 
 updateSortIndicators();
 applyViewMode();
+applyGameUi();
 loadScratch();
 setScratchOpen(false);
 renderScratch();
@@ -2717,6 +2861,7 @@ async function loadSealed(append) {
   if (q) params.set('q', q);
   if (set) params.set('set_name', set);
   if (type) params.set('product_type', type);
+  params.set('game', currentGame);
   params.set('limit', String(SEALED_PAGE));
   params.set('offset', String(append ? sealedRows.length : 0));
 
@@ -2772,8 +2917,10 @@ function renderSealed() {
                       document.getElementById('sealedTypeFilter').value;
     showSealedEmpty(filtering
       ? 'Nothing matches those filters.'
-      : 'No sealed product has been added yet. An admin or server mod stocks it '
-        + 'per set from Tracker Management.');
+      : currentGame === 'riftbound'
+        ? 'Riftbound sealed product hasn’t been loaded yet — it’s added automatically once a day.'
+        : 'No sealed product has been added yet. An admin or server mod stocks it '
+          + 'per set from Tracker Management.');
     return;
   }
   showSealedEmpty('');
@@ -2826,7 +2973,8 @@ async function openPfPicker(product, ev) {
   document.getElementById('pfQty').value = 1;
   // Prefill with the usual retail price for this kind of product, same as the
   // portfolios page. A starting point, not a claim — it stays editable.
-  const preset = SEALED_DEFAULT_COSTS[product.product_type];
+  // Pokémon retail prices — Riftbound gets none and falls back to market.
+  const preset = currentGame === 'pokemon' ? SEALED_DEFAULT_COSTS[product.product_type] : null;
   document.getElementById('pfCost').value = preset || '';
   const note = document.getElementById('pfCostNote');
   if (note) {

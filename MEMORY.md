@@ -2050,3 +2050,29 @@ Members said the username watermark drowned out the dashboard on mobile. On smal
 - draws at 20% (light) / 14% (dark), down from 50% / 30%.
 
 Desktop is unchanged (only mobile was asked). Text stays 12px so a cropped screenshot still shows a readable name, which is the watermark's job (leak tracing, Terms section 8). Rejected: smaller text (harder to read in a leaked screenshot) and fewer copies (a cropped card could miss the name).
+
+## 2026-10-31 — Riftbound in the catalog, sealed tab and portfolios
+
+Riftbound (Riot's League of Legends TCG) sits alongside Pokémon, from TCGGO's "Riftbound Prices API" on RapidAPI (`riftbound.py`, key `RIFTBOUND_API_KEY`). Same tables as Pokémon, `game = 'riftbound'`: catalog_cards, sealed_products, tracked_cards/price_snapshots. Jeffrey chose each of these:
+
+- **Main price: TCGplayer's market price; Cardmarket's 7-day average where TCGplayer has none.** `price_source` records which (`tcgplayer` / `cardmarket`). His first pick was Cardmarket's 7-day average, made when the docs suggested only European prices; changed once live data showed TCGplayer prices and ids on most cards (352 of 354 in Origins).
+- **Pro plan ($9.90/mo, 2,500 requests/day), whole game refreshed daily.** `per_page` is ignored (always 20), so a full pass is ~95 requests. Rejected: free plan (100/day) with every card refreshed every other day.
+- **`version` is part of catalog_cards' identity.** Same name + number + rarity exists twice as different versions (Ezreal 082b V.3/V.4). New unique index `idx_catalog_cards_identity_v2`; the old one is dropped (built first, so the table is never without one). Rejected: folding version into rarity (the rarity filter would fill with "Showcase · V.3" combinations).
+- **Full portfolio support**, not catalog-only.
+
+How it works / why:
+- **The API's TCGplayer figure is TCGplayer's US price divided by a fixed 1.17**, though labelled EUR — 17 of 20 cards matched TCGplayer's own market price at exactly 1.17x. Multiplied back by 1.17 (`RIFTBOUND_TCGPLAYER_USD_PER_EUR`, in case TCGGO changes it). Rejected: today's ECB rate, which read 4-5% low. Cardmarket figures are real euros and use the day's ECB rate (Frankfurter, no key).
+- **Daily sync, "due" read from the DB** (`_run_riftbound_sync`): a set is re-fetched once its rows are 20h old, so redeploys never re-spend requests and a cut-short run resumes where it stopped. Admin "Update Riftbound now" forces it.
+- **Portfolio prices cost nothing extra**: a tracked card's daily snapshot is copied from its catalog row, joined on the new `source_id` (TCGGO's card id) — never re-matched by name. History comes from `/history-prices` once per newly tracked card (capped 25/run). Snapshot sources `riftbound-tcgplayer` / `riftbound-cardmarket` are separate scoring families.
+- **tracked_cards' unique key has no version**, so when two catalog versions share name + number in a set, rarity and version are folded into the tracked card's number ("082b (Showcase · V.4 - Showcase)"). Rejected: changing tracked_cards' unique key, which every Pokémon insert path's ON CONFLICT depends on.
+- **Riftbound adds send the catalog row id; the server reads the card from it** (`_riftbound_add_fields`) and ignores client-sent names.
+- Pokémon's retail defaults for sealed (`DEFAULT_SEALED_COST`) are not applied to Riftbound; a blank price falls back to market value.
+- The admin sealed **purge is now Pokémon-only** — `portfolio_lots.sealed_id` cascades, so a purge would have destroyed members' Riftbound holdings.
+- **CSP `img-src` gains `https://images.tcggo.com`** (images only; URLs checked against that host before they're stored, like PPT_IMAGE_HOSTS).
+- The `game` CHECKs on the three tables are widened at startup by `catalog.widen_game_check`: the constraint is looked up rather than its name guessed, and drop + add share a transaction (race-tested: 6 concurrent boots x 15 trials, 0 failures).
+
+API doc mismatches: `per_page` ignored; history is `/history-prices`, not `/riftbound/history-prices`, and has no 7-day average; many rows have empty `rarity` (taken from `version` instead).
+
+Not included: the grading calculator and Tracker Management's set import stay Pokémon-only.
+
+Shared DB: ava_bot's card_identifier reads catalog_cards with `game = 'pokemon'`, so new rows, columns and the index swap don't affect it. Recorded in data-system.md, which didn't list catalog_cards as bot-read before.

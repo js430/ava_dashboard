@@ -174,14 +174,18 @@ SORT_COLUMNS = {
 }
 DEFAULT_SORT = "price_desc"
 
-# `game` stays permissive even though v1 only stocks Pokemon: One Piece's
-# catalog source (optcgapi) has no prices, so it isn't wired up yet. Leaving
-# the constraint open means adding it later is a code change, not a migration.
+# Every game the shared card tables may hold. catalog_cards stocks Pokemon and
+# Riftbound (riftbound.py); One Piece's catalog source (optcgapi) has no
+# prices, so it isn't wired up yet, but stays allowed so adding it later is a
+# code change, not a migration. See widen_game_check for how existing tables
+# pick up a new entry here.
+GAMES = ("pokemon", "one_piece", "riftbound")
+
 CATALOG_SCHEMA = [
     """
     CREATE TABLE IF NOT EXISTS catalog_cards (
         id           SERIAL PRIMARY KEY,
-        game         TEXT NOT NULL CHECK (game IN ('pokemon','one_piece')),
+        game         TEXT NOT NULL CHECK (game IN ('pokemon','one_piece','riftbound')),
         language     TEXT NOT NULL DEFAULT 'english',
         set_id       TEXT NOT NULL,
         set_name     TEXT NOT NULL DEFAULT '',
@@ -196,15 +200,9 @@ CATALOG_SCHEMA = [
         refreshed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
     """,
-    # Identity of a printing. rarity is part of the key because One Piece
-    # prints alt-art and manga variants under the SAME name and number —
-    # without it those collapse into one row and a variant silently vanishes.
-    # Every column is NOT NULL with a '' default so no row can escape the
-    # index via a NULL (which compares unequal to itself in a unique index).
-    """
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_catalog_cards_identity
-        ON catalog_cards (game, language, set_id, card_number, card_name, rarity)
-    """,
+    # The identity index lives further down (idx_catalog_cards_identity_v2):
+    # it includes `version`, which is added by an ALTER below and so has to
+    # exist before the index can be built.
     # Serves the cross-set price-range browse, which is the whole point of the
     # page and the only query that can touch every row.
     """
@@ -247,6 +245,37 @@ CATALOG_SCHEMA = [
     CREATE INDEX IF NOT EXISTS idx_catalog_cards_type
         ON catalog_cards (game, language, card_type)
     """,
+    # Riftbound ships versions of one card under the same name, number AND
+    # rarity — "Ezreal, Dashing" 082b as "V.3 - Showcase" and as "V.4 -
+    # Showcase" are two products at two prices. `version` is part of the
+    # identity so they stay two rows. '' on every Pokemon row, so no Pokemon
+    # card's identity changes. ADD COLUMN with a constant default is a
+    # metadata-only change, not a table rewrite.
+    "ALTER TABLE catalog_cards ADD COLUMN IF NOT EXISTS version TEXT NOT NULL DEFAULT ''",
+    # The price source's own id for the card — TCGGO's, for Riftbound rows.
+    # Daily portfolio prices and price-history lookups key on it. NULL for
+    # Pokemon, which is keyed by tcgplayer_id instead.
+    "ALTER TABLE catalog_cards ADD COLUMN IF NOT EXISTS source_id TEXT",
+    # Identity of a printing. rarity is part of the key because One Piece
+    # prints alt-art and manga variants under the SAME name and number, and
+    # version for the Riftbound reason above — without them those collapse
+    # into one row and a variant silently vanishes. Every column is NOT NULL
+    # with a '' default so no row can escape the index via a NULL (which
+    # compares unequal to itself in a unique index).
+    #
+    # Replaces idx_catalog_cards_identity (the same minus version). Built
+    # BEFORE the old one is dropped, so the table is never without a unique
+    # key. A plain build, not CONCURRENTLY: ~60k rows take a second or two,
+    # during which writes wait, once.
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_catalog_cards_identity_v2
+        ON catalog_cards (game, language, set_id, card_number, card_name, rarity, version)
+    """,
+    "DROP INDEX IF EXISTS idx_catalog_cards_identity",
+    """
+    CREATE INDEX IF NOT EXISTS idx_catalog_cards_source
+        ON catalog_cards (game, source_id) WHERE source_id IS NOT NULL
+    """,
 ]
 
 
@@ -255,16 +284,76 @@ async def ensure_catalog_schema(pool) -> None:
     async with pool.acquire() as conn:
         for ddl in CATALOG_SCHEMA:
             await conn.execute(ddl)
+    await widen_game_check(pool, "catalog_cards")
 
 
-def number_sort_key(card_number: str) -> int:
+# Tables whose `game` CHECK widen_game_check may rewrite. A fixed allowlist,
+# because the name is interpolated into DDL (same rule as the raffle wheel's
+# _find_table).
+_GAME_CHECK_TABLES = ("catalog_cards", "sealed_products", "tracked_cards")
+
+
+def _check_allows_every_game(rows) -> bool:
+    return bool(rows) and all(all(f"'{g}'" in r["def"] for g in GAMES) for r in rows)
+
+
+async def widen_game_check(pool, table: str) -> None:
+    """Make `table`'s CHECK on `game` allow every value in GAMES.
+
+    CREATE TABLE IF NOT EXISTS never revisits a CHECK on a table that already
+    exists, so a new game needs this. The constraint is found by looking it
+    up, not by guessing its name — Postgres named it when the table was first
+    created. Idempotent: once every game is allowed, this only reads.
+
+    The drop and the add share one transaction, so two instances booting at
+    once can't leave the table without its check: the loser's ADD fails and
+    rolls its DROP back, and the re-read below finds the winner's.
+    """
+    if table not in _GAME_CHECK_TABLES:
+        raise ValueError(f"not a game-checked table: {table!r}")
+    lookup = ("SELECT conname, pg_get_constraintdef(oid) AS def FROM pg_constraint "
+              "WHERE conrelid = $1::regclass AND contype = 'c' "
+              "AND pg_get_constraintdef(oid) ILIKE '%game%'")
+    allowed = ", ".join(f"'{g}'" for g in GAMES)
+
+    async def read(conn):
+        # A constraint another instance has just dropped can still be listed,
+        # with no definition left to read — it's gone, so it's skipped.
+        return [r for r in await conn.fetch(lookup, table) if r["def"]]
+
+    async with pool.acquire() as conn:
+        rows = await read(conn)
+        if _check_allows_every_game(rows):
+            return
+        try:
+            async with conn.transaction():
+                for r in rows:
+                    name = r["conname"].replace('"', '""')
+                    await conn.execute(f'ALTER TABLE {table} DROP CONSTRAINT IF EXISTS "{name}"')
+                await conn.execute(f"ALTER TABLE {table} ADD CONSTRAINT {table}_game_check "
+                                   f"CHECK (game IN ({allowed}))")
+        except Exception:
+            if not _check_allows_every_game(await read(conn)):
+                raise
+            return
+    logger.info("Schema: %s now accepts games %s", table, ", ".join(GAMES))
+
+
+def number_sort_key(card_number: str, game: str = "") -> int:
     """Leading integer of a card number, or _UNNUMBERED_SORT.
 
     Mirrors the ordering `price_sources.fetch_ppt_set_cards` applies in
     Python, so a set reads the same way from the cache as it does from the
     live picker.
+
+    Riftbound numbers lead with the set's code ("OGN-303a/298"), so for that
+    game the number is read after it. Only for that game: a Pokemon number
+    with a hyphen in it keeps sorting exactly as before.
     """
-    match = re.match(r"^\s*(\d+)", str(card_number or ""))
+    text = str(card_number or "")
+    if game == "riftbound":
+        text = re.sub(r"^\s*[A-Za-z0-9]+-", "", text)
+    match = re.match(r"^\s*(\d+)", text)
     if not match:
         return _UNNUMBERED_SORT
     try:
@@ -294,10 +383,11 @@ _UPSERT = """
     INSERT INTO catalog_cards
         (game, language, set_id, set_name, card_name, card_number, rarity,
          tcgplayer_id, tcgplayer_verified, number_sort, raw_price, price_source,
-         image_url, printing_prices, card_type, priced_at, refreshed_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::NUMERIC,$12,$13,$14::JSONB,$15,
+         image_url, printing_prices, card_type, version, source_id,
+         priced_at, refreshed_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::NUMERIC,$12,$13,$14::JSONB,$15,$16,$17,
             CASE WHEN $11::NUMERIC IS NULL THEN NULL ELSE NOW() END, NOW())
-    ON CONFLICT (game, language, set_id, card_number, card_name, rarity)
+    ON CONFLICT (game, language, set_id, card_number, card_name, rarity, version)
     DO UPDATE SET
         set_name           = EXCLUDED.set_name,
         tcgplayer_id       = EXCLUDED.tcgplayer_id,
@@ -311,6 +401,7 @@ _UPSERT = """
         image_url          = COALESCE(EXCLUDED.image_url, catalog_cards.image_url),
         printing_prices    = COALESCE(EXCLUDED.printing_prices, catalog_cards.printing_prices),
         card_type          = COALESCE(EXCLUDED.card_type, catalog_cards.card_type),
+        source_id          = COALESCE(EXCLUDED.source_id, catalog_cards.source_id),
         priced_at          = EXCLUDED.priced_at,
         refreshed_at       = NOW()
 """
@@ -322,7 +413,9 @@ async def upsert_set_cards(pool, game: str, language: str, set_id: str,
 
     `cards` is the shape `price_sources.fetch_ppt_set_cards` returns:
     {name, card_number, variant, tcgplayer_id, set_name, raw_price, image_url,
-    printing_prices, card_type}.
+    printing_prices, card_type}. Riftbound cards (riftbound.parse_card) add
+    `version`, `source_id`, and their own `price_source` — each card can be
+    priced from a different source, which overrides the batch-wide one.
 
     A refresh takes the new response as truth: if a card no longer carries a
     price, its cached price is cleared rather than left to look current.
@@ -344,14 +437,16 @@ async def upsert_set_cards(pool, game: str, language: str, set_id: str,
             str(card.get("variant") or "").strip(),
             str(card.get("tcgplayer_id") or "").strip(),
             bool(card.get("tcgplayer_id_verified")),
-            number_sort_key(number),
+            number_sort_key(number, game),
             price,
-            price_source if price is not None else None,
+            (card.get("price_source") or price_source) if price is not None else None,
             (str(card.get("image_url")).strip()[:500]
              if card.get("image_url") else None),
             json.dumps(printing_prices) if printing_prices else None,
             (str(card.get("card_type")).strip()[:40]
              if card.get("card_type") else None),
+            str(card.get("version") or "").strip()[:80],
+            (str(card.get("source_id")).strip()[:40] or None) if card.get("source_id") else None,
         ))
     if not rows:
         return {"cards": 0, "priced": 0}
@@ -793,7 +888,7 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
 
     page_sql = (
         "SELECT id, set_id, language, set_name, card_name, card_number, rarity, "
-        "       card_type, tcgplayer_id, image_url, printing_prices, "
+        "       card_type, tcgplayer_id, image_url, printing_prices, version, source_id, "
         "       tcgplayer_verified, raw_price, price_source, priced_at, refreshed_at "
         f"FROM catalog_cards WHERE {where_sql} "
         f"ORDER BY {order_by} "
@@ -844,6 +939,11 @@ async def query_cards(pool, *, game: str, language=DEFAULT_LANGUAGE,
             "name": r["card_name"],
             "card_number": r["card_number"],
             "rarity": r["rarity"],
+            # Riftbound's version label ("V.4 - Showcase"); '' for Pokemon.
+            "version": r["version"],
+            # Riftbound's own card id — how the page tells a tracked card
+            # apart from its other versions (tracked_cards.source_id).
+            "source_id": r["source_id"],
             # NULL on rows stocked before card_type shipped — the column shows
             # a dash rather than pretending the card has no type.
             "card_type": r["card_type"],
@@ -919,7 +1019,7 @@ async def export_rows(pool, *, game: str, language=DEFAULT_LANGUAGE,
     query_params.append(EXPORT_MAX_ROWS)
 
     sql = (
-        "SELECT set_id, language, set_name, card_name, card_number, rarity, "
+        "SELECT set_id, language, set_name, card_name, card_number, rarity, version, "
         "       card_type, tcgplayer_id, tcgplayer_verified, raw_price, printing_prices, "
         "       price_source, priced_at, refreshed_at "
         f"FROM catalog_cards WHERE {where_sql} "
@@ -946,6 +1046,7 @@ async def export_rows(pool, *, game: str, language=DEFAULT_LANGUAGE,
             "name": r["card_name"],
             "card_number": r["card_number"],
             "rarity": r["rarity"],
+            "version": r["version"],
             "card_type": r["card_type"],
             "tcgplayer_url": tcgplayer_url(r["tcgplayer_id"], r["tcgplayer_verified"]),
             "ebay_url": ebay_search_url(r["card_name"], r["set_name"], r["card_number"]),
