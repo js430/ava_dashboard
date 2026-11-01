@@ -39,6 +39,8 @@ import logging
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
+import catalog
+
 logger = logging.getLogger("dashboard.portfolios")
 
 # How many portfolios one person may create. Deliberately small for now — the
@@ -149,7 +151,7 @@ PORTFOLIO_SCHEMA = [
     CREATE TABLE IF NOT EXISTS sealed_products (
         id             SERIAL PRIMARY KEY,
         game           TEXT NOT NULL DEFAULT 'pokemon'
-                       CHECK (game IN ('pokemon','one_piece')),
+                       CHECK (game IN ('pokemon','one_piece','riftbound')),
         language       TEXT NOT NULL DEFAULT 'english',
         set_name       TEXT NOT NULL DEFAULT '',
         name           TEXT NOT NULL,
@@ -227,6 +229,8 @@ async def ensure_portfolio_schema(pool) -> None:
     async with pool.acquire() as conn:
         for stmt in PORTFOLIO_SCHEMA:
             await conn.execute(stmt)
+    # Riftbound sealed product (riftbound.py) — an older table's CHECK predates it.
+    await catalog.widen_game_check(pool, "sealed_products")
     logger.info("Portfolio schema ready")
 
 
@@ -633,6 +637,7 @@ async def list_lots(pool, portfolio_id: int) -> list:
                    COALESCE(t.name, s.name)            AS item_name,
                    COALESCE(t.set_name, s.set_name)    AS set_name,
                    COALESCE(t.language, s.language)    AS language,
+                   COALESCE(t.game, s.game)            AS game,
                    t.card_number, t.variant,
                    s.product_type,
                    CASE WHEN l.card_id IS NOT NULL THEN 'card' ELSE 'sealed' END AS kind
@@ -682,13 +687,18 @@ async def item_already_held(pool, user_id: int, card_id, sealed_id) -> bool:
 
 
 async def sealed_product_type(pool, sealed_id):
-    """The product_type of one sealed row, or "" — used to pick a default cost."""
+    """The product_type of one sealed row, or "" — used to pick a default cost.
+
+    Pokemon rows only: DEFAULT_SEALED_COST holds Pokemon's retail prices, and
+    a Riftbound booster box filled in at a Pokemon box's price would be a
+    confident wrong number. Other games get "", so a blank price falls back
+    to market value instead."""
     if not sealed_id:
         return ""
     try:
         async with pool.acquire() as conn:
             return await conn.fetchval(
-                "SELECT product_type FROM sealed_products WHERE id = $1",
+                "SELECT product_type FROM sealed_products WHERE id = $1 AND game = 'pokemon'",
                 int(sealed_id)) or ""
     except Exception:
         logger.exception("Portfolios: could not read product type for %s", sealed_id)
@@ -986,6 +996,7 @@ def group_positions(lots, prices: dict) -> list:
             "variant": sample.get("variant") or "",
             "product_type": sample.get("product_type") or "",
             "language": sample.get("language") or "",
+            "game": sample.get("game") or "pokemon",
             "quantity": open_qty,
             "sold_quantity": sold_qty,
             "cost_basis": open_cost.quantize(TWO_DP),

@@ -70,6 +70,12 @@ SOURCE_FAMILIES = {
     "justtcg-history": "justtcg",
     "pokemonpricetracker": "pokemonpricetracker",
     "pokemonpricetracker-history": "pokemonpricetracker",
+    # Riftbound (card_tracker.run_riftbound_snapshots): TCGplayer's market
+    # price and Cardmarket's 7-day average are different numbers, so they're
+    # separate families. The history backfill is the TCGplayer series.
+    "riftbound-tcgplayer": "riftbound-tcgplayer",
+    "riftbound-tcgplayer-history": "riftbound-tcgplayer",
+    "riftbound-cardmarket": "riftbound-cardmarket",
 }
 # Below this, a family isn't enough of a series to prefer over an established
 # one — momentum needs at least two points to mean anything.
