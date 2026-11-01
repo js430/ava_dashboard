@@ -161,15 +161,23 @@ def _iso_date(value):
     return text if re.match(r"^\d{4}-\d{2}-\d{2}$", text) else None
 
 
-def is_promo_set(name: str) -> bool:
-    """'Origins: Promos', 'Project K Promos' — not a main release. The guest
-    window skips these, the same way Pokemon's skips its promo era."""
-    return (name or "").strip().lower().endswith("promos")
+# Words that mark a release as something other than a main set: promo groups
+# ("Origins: Promos", "Project K Promos") and one-off products ("T1 2025 Worlds
+# Champion Collection", "Secret Garden Bundle").
+_NON_MAIN_WORDS = {"promo", "promos", "collection", "bundle"}
+
+
+def is_main_set(name: str) -> bool:
+    """'Radiance', 'Vendetta', 'Unleashed' — a main release. The guest window
+    counts only these, the same way Pokemon's skips its promo era, and the set
+    picker files the rest under "Promos & extras"."""
+    words = re.findall(r"[a-z]+", (name or "").lower())
+    return not any(w in _NON_MAIN_WORDS for w in words)
 
 
 async def fetch_episodes(client: httpx.AsyncClient) -> tuple:
     """Riftbound sets ("episodes"), newest release first, undated last:
-    ([{id, name, code, released, promo}], status)."""
+    ([{id, name, code, released, main}], status)."""
     rows, status = await _get_all(client, "/episodes", {}, "episodes")
     out = []
     for r in rows:
@@ -180,7 +188,7 @@ async def fetch_episodes(client: httpx.AsyncClient) -> tuple:
         if not episode_id or not name:
             continue
         out.append({"id": str(episode_id), "name": name[:200], "code": r.get("code") or "",
-                    "released": _iso_date(r.get("released_at")), "promo": is_promo_set(name)})
+                    "released": _iso_date(r.get("released_at")), "main": is_main_set(name)})
     out.sort(key=lambda s: (s["released"] or "", s["name"]), reverse=True)
     if out:
         _episodes_cache.update(rows=out, fetched=time.monotonic())
@@ -396,7 +404,7 @@ def annotate_sets(sets: list, name_key: str = "set_name") -> list:
     shape, so the catalog's grouped set picker works unchanged."""
     labels = dict(ERA_ORDER)
     for entry in sets:
-        key = "riftbound_promos" if is_promo_set(entry.get(name_key) or "") else "riftbound_sets"
+        key = "riftbound_sets" if is_main_set(entry.get(name_key) or "") else "riftbound_promos"
         entry["era"] = key
         entry["era_label"] = labels[key]
     return sets

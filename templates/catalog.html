@@ -640,15 +640,17 @@
         </div>
         {% if is_guest and not user_id %}
         <div class="hint guest-note" style="padding:0 16px 10px">
-          <strong>Guest account restriction:</strong> showing the newest {{ guest_catalog_visible_sets }}
-          stocked set(s) only, and manual price refresh is Discord-members-only.
+          <strong>Guest account restriction:</strong> showing the newest
+          <span class="pokemon-only">{{ guest_catalog_visible_sets }} stocked set(s)</span><span class="riftbound-only">{{ guest_riftbound_visible_sets }} main set(s)</span>
+          only, and manual price refresh is Discord-members-only.
           <a href="/login">Sign in with Discord</a> for the full catalog, or sign up for the paid
           tier (coming soon via Stripe) for full access without a Discord account.
         </div>
         {% elif is_guest %}
         <div class="hint guest-note" style="padding:0 16px 10px">
-          <strong>Limited access:</strong> showing the newest {{ guest_catalog_visible_sets }}
-          stocked set(s) only, and manual price refresh requires a premium role. Get the
+          <strong>Limited access:</strong> showing the newest
+          <span class="pokemon-only">{{ guest_catalog_visible_sets }} stocked set(s)</span><span class="riftbound-only">{{ guest_riftbound_visible_sets }} main set(s)</span>
+          only, and manual price refresh requires a premium role. Get the
           <strong>Intel</strong> or <strong>Monitor</strong> role
           <a href="{{ upgrade_url }}" target="_blank" rel="noopener">here</a> for the
           complete catalog.
