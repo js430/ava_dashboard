@@ -207,7 +207,12 @@ async def lifespan(app: FastAPI):
     secret = os.getenv("SESSION_SECRET", "")
     if not secret or len(secret) < 32:
         raise RuntimeError("SESSION_SECRET env var must be set and at least 32 characters long")
-    app.state.db = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+    # application_name labels this app's connections in Postgres's own logs
+    # and pg_stat_activity (app=ava_dashboard), so they can be told apart
+    # from the bot's — both share the one database.
+    app.state.db = await asyncpg.create_pool(
+        DATABASE_URL, min_size=2, max_size=10,
+        server_settings={"application_name": "ava_dashboard"})
     try:
         await ensure_card_tracker_schema(app.state.db)
     except Exception:
