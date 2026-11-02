@@ -17,7 +17,10 @@ several of these contradict its own documentation, and each one matters here:
         BY A FIXED 1.17. Compared against TCGplayer's own market price, 17 of
         20 cards came out at exactly 1.17x; the other three were cards whose
         price had moved since. Multiplying by that constant recovers the real
-        dollar figure. Today's exchange rate would read it 4-5% low.
+        dollar figure. Today's exchange rate would read it 4-5% low. If the
+        API ever picks a new number, every card moves by the same percentage
+        on the same day; the sync spots that (detect_factor_change) and
+        switches to the new one.
     The TCGplayer figure is the main price (it's the US market, the same
     number Pokemon's catalog shows); Cardmarket's 7-day average, converted at
     the day's ECB rate, is the fallback for cards TCGplayer doesn't price.
@@ -58,10 +61,35 @@ BASE = f"https://{HOST}"
 # stops a misbehaving `paging.total` from walking forever and spending quota.
 MAX_PAGES = int(os.getenv("RIFTBOUND_MAX_PAGES", "40"))
 # Undoes the API's own TCGplayer -> "EUR" conversion (see the module
-# docstring). An env var rather than only a constant because it's the API's
-# number, not ours: if TCGGO ever changes it, prices drift by the difference
-# until this is updated.
+# docstring). This is only the STARTING value: once the sync has detected a
+# change, the newest row in price_factor_changes wins (loaded at startup and
+# before every sync), so changing this env var later has no effect.
 TCGPLAYER_USD_PER_EUR = float(os.getenv("RIFTBOUND_TCGPLAYER_USD_PER_EUR", "1.17"))
+_factor = {"value": TCGPLAYER_USD_PER_EUR}
+
+# When the API's number counts as changed (detect_factor_change). On an
+# ordinary day many cards keep exactly yesterday's price — a tall spike of
+# cards at "no change" — and the rest move by all sorts of amounts. When the
+# API changes its number, that spike moves: every card that didn't trade
+# lands on the same new percentage instead, and nothing is left at "no
+# change". So: at least FACTOR_MIN_CARDS compared; the tallest spike sits at
+# least FACTOR_MIN_SHIFT away from no change, holds at least FACTOR_MIN_SHARE
+# of the cards and is FACTOR_SPIKE_RATIO times taller than the ground 2% to
+# either side (a market rally spreads out instead of spiking); and at most
+# FACTOR_MAX_UNMOVED of the cards kept their price.
+FACTOR_MIN_CARDS = int(os.getenv("RIFTBOUND_FACTOR_MIN_CARDS", "40"))
+FACTOR_MIN_SHIFT = float(os.getenv("RIFTBOUND_FACTOR_MIN_SHIFT", "0.01"))
+FACTOR_MIN_SHARE = float(os.getenv("RIFTBOUND_FACTOR_MIN_SHARE", "0.15"))
+FACTOR_MAX_UNMOVED = float(os.getenv("RIFTBOUND_FACTOR_MAX_UNMOVED", "0.1"))
+FACTOR_SPIKE_RATIO = 3.0
+# How wide "the same percentage" is, either side of the spike.
+FACTOR_TOLERANCE = 0.0075
+# "Kept its price": within this of yesterday's — the cent rounding alone,
+# on a card of at least FACTOR_MIN_PRICE.
+FACTOR_UNMOVED_TOLERANCE = 0.0025
+# Only prices at least this high are compared: the API rounds its figure to
+# the cent, which alone moves a $1 card by up to 0.6%.
+FACTOR_MIN_PRICE = 3.0
 
 # Values written to catalog_cards.price_source.
 SOURCE_TCGPLAYER = "tcgplayer"
@@ -239,7 +267,7 @@ async def fetch_history(client: httpx.AsyncClient, card_id, max_pages: int = 6) 
                 when = _iso_date(day)
                 price = _money((row or {}).get("tcg_player_market")) if isinstance(row, dict) else None
                 if when and price is not None:
-                    points[when] = round(price * TCGPLAYER_USD_PER_EUR, 2)
+                    points[when] = round(price * usd_per_eur(), 2)
         try:
             pages = int((body.get("paging") or {}).get("total") or 0)
         except (TypeError, ValueError):
@@ -287,6 +315,74 @@ def _money(value):
     return number if math.isfinite(number) and number > 0 else None
 
 
+def usd_per_eur() -> float:
+    """The number that turns the API's TCGplayer figure back into dollars."""
+    return _factor["value"]
+
+
+def set_usd_per_eur(value) -> None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return
+    if math.isfinite(number) and 0.5 < number < 3:
+        _factor["value"] = number
+
+
+def tcgplayer_figure(row: dict):
+    """The API's own TCGplayer number for a row, before converting it."""
+    prices = (row or {}).get("prices") or {}
+    return _money((prices.get("tcg_player") or {}).get("market_price"))
+
+
+def detect_factor_change(pairs, current: float):
+    """Has the API changed its TCGplayer number? `pairs` is
+    [(today's API figure, the dollar price stored for that card last time)].
+
+    Each pair's ratio says how far the card would move at the current number.
+    The tallest spike of cards moved by the same percentage is found; if it
+    sits away from "no change" and almost nothing stayed put (see
+    FACTOR_MIN_SHIFT and the rest above), the number changed. Returns
+    {factor, shift, cards, share} with the factor that puts the spike back at
+    no change, or None when it hasn't changed (the usual case) or there's
+    too little to tell.
+    """
+    ratios = sorted(new * current / old for new, old in pairs
+                    if new and old and old >= FACTOR_MIN_PRICE)
+    n = len(ratios)
+    if n < FACTOR_MIN_CARDS:
+        return None
+
+    def share_near(centre):
+        return sum(1 for r in ratios if abs(r / centre - 1) <= FACTOR_TOLERANCE) / n
+
+    # Tallest spike: the window of +/-FACTOR_TOLERANCE holding the most
+    # cards, found with two pointers over the sorted ratios.
+    best, best_lo, best_hi, hi = 0, 0, 0, 0
+    width = 1 + 2 * FACTOR_TOLERANCE
+    for lo in range(n):
+        while hi < n and ratios[hi] <= ratios[lo] * width:
+            hi += 1
+        if hi - lo > best:
+            best, best_lo, best_hi = hi - lo, lo, hi - 1
+    spike = ratios[(best_lo + best_hi) // 2]
+
+    if abs(spike - 1) < FACTOR_MIN_SHIFT:
+        return None
+    unmoved = sum(1 for r in ratios if abs(r - 1) <= FACTOR_UNMOVED_TOLERANCE) / n
+    if unmoved > FACTOR_MAX_UNMOVED:
+        return None
+    share = share_near(spike)
+    ground = max(share_near(spike * 1.02), share_near(spike / 1.02))
+    if share < FACTOR_MIN_SHARE or share < FACTOR_SPIKE_RATIO * ground:
+        return None
+    factor = current / spike
+    if not (0.5 < factor < 3):
+        return None
+    return {"factor": round(factor, 6), "shift": round(spike - 1, 6),
+            "cards": n, "share": round(share, 4)}
+
+
 def price_usd(row: dict, eur_usd) -> tuple:
     """(price in USD, source) for a card or product row, or (None, None).
 
@@ -294,9 +390,9 @@ def price_usd(row: dict, eur_usd) -> tuple:
     is involved — then Cardmarket's 7-day average at the day's rate.
     """
     prices = (row or {}).get("prices") or {}
-    tcg = _money((prices.get("tcg_player") or {}).get("market_price"))
+    tcg = tcgplayer_figure(row)
     if tcg is not None:
-        return round(tcg * TCGPLAYER_USD_PER_EUR, 2), SOURCE_TCGPLAYER
+        return round(tcg * usd_per_eur(), 2), SOURCE_TCGPLAYER
     avg7 = _money((prices.get("cardmarket") or {}).get("7d_average"))
     if avg7 is not None and eur_usd:
         return round(avg7 * eur_usd, 2), SOURCE_CARDMARKET

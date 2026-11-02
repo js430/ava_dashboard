@@ -28,6 +28,8 @@ import logging
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote_plus, parse_qsl, urlencode
 
+import games
+
 logger = logging.getLogger("dashboard.catalog")
 
 # TCGplayer product ids are plain integers. Belt-and-braces alongside the
@@ -174,12 +176,12 @@ SORT_COLUMNS = {
 }
 DEFAULT_SORT = "price_desc"
 
-# Every game the shared card tables may hold. catalog_cards stocks Pokemon and
-# Riftbound (riftbound.py); One Piece's catalog source (optcgapi) has no
-# prices, so it isn't wired up yet, but stays allowed so adding it later is a
-# code change, not a migration. See widen_game_check for how existing tables
-# pick up a new entry here.
-GAMES = ("pokemon", "one_piece", "riftbound")
+# Every game the shared card tables may hold — the whole registry
+# (games.py). catalog_cards stocks Pokemon and Riftbound (riftbound.py); One
+# Piece has no price source yet, so it isn't stocked, but stays allowed so
+# adding it later is a code change, not a migration. See widen_game_check for
+# how existing tables pick up a new entry here.
+GAMES = games.KEYS
 
 CATALOG_SCHEMA = [
     """
@@ -276,6 +278,23 @@ CATALOG_SCHEMA = [
     CREATE INDEX IF NOT EXISTS idx_catalog_cards_source
         ON catalog_cards (game, source_id) WHERE source_id IS NOT NULL
     """,
+    # A price API's own conversion number, each time it changes. Riftbound's
+    # API hands over TCGplayer's dollar price divided by a fixed number it
+    # chose (riftbound.py), and the sync notices when it picks a new one
+    # (riftbound.detect_factor_change). The newest row is the number in use;
+    # none means the starting value. Per game, so a future API with the same
+    # habit reuses it.
+    """
+    CREATE TABLE IF NOT EXISTS price_factor_changes (
+        id             SERIAL PRIMARY KEY,
+        game           TEXT NOT NULL,
+        factor         NUMERIC(10,6) NOT NULL,
+        previous       NUMERIC(10,6),
+        cards_compared INTEGER,
+        share_matched  NUMERIC(5,4),
+        detected_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
 ]
 
 
@@ -337,6 +356,27 @@ async def widen_game_check(pool, table: str) -> None:
                 raise
             return
     logger.info("Schema: %s now accepts games %s", table, ", ".join(GAMES))
+
+
+async def price_factor_changes(pool, game: str, limit: int = 5) -> list:
+    """The most recent conversion-number changes for `game`, newest first."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT factor, previous, cards_compared, share_matched, detected_at "
+            "FROM price_factor_changes WHERE game = $1 ORDER BY detected_at DESC, id DESC "
+            "LIMIT $2", game, limit)
+    return [dict(r) for r in rows]
+
+
+async def record_price_factor_change(pool, game: str, factor: float, previous: float,
+                                     cards_compared: int, share_matched: float) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO price_factor_changes "
+            "(game, factor, previous, cards_compared, share_matched) "
+            "VALUES ($1, $2, $3, $4, $5)",
+            game, Decimal(str(round(factor, 6))), Decimal(str(round(previous, 6))),
+            cards_compared, Decimal(str(round(share_matched, 4))))
 
 
 def number_sort_key(card_number: str, game: str = "") -> int:
