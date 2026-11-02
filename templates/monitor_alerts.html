@@ -223,6 +223,12 @@
   .tag { font-size: 11px; padding: 3px 8px; border-radius: 999px;
          background: #f4f4f5; color: #666; border: 1px solid #e7e7ea; }
   .tag.chan { background: #eef0ff; color: #4550d8; border-color: #dfe3ff; }
+  /* The words that stop an alert — under the keyword in the table. */
+  .except-row { margin-top: 5px; font-size: 11.5px; font-weight: 400; color: #999; }
+  .tag.not { background: #fdf2f2; color: #a33; border-color: #f0dada; }
+  html[data-theme="dark"] .except-row { color: #8a8a92; }
+  html[data-theme="dark"] .tag.not { background: #3a2626; color: #e08a8a;
+    border-color: #4a3333; }
   .alert-side { flex: none; text-align: right; display: flex;
                 flex-direction: column; gap: 6px; align-items: flex-end; }
   .alert-delivery { font-size: 11px; color: #999; text-transform: uppercase;
@@ -381,6 +387,15 @@
         </div>
 
         <div class="field">
+          <label class="label" for="aExclude">But not if the name contains <span class="label-soft">(optional)</span></label>
+          <input type="text" id="aExclude" maxlength="600" autocomplete="off"
+                 placeholder="japanese, jp, mini tin">
+          <div class="hint">Separate words with commas. Any one of them stops the
+            ping &mdash; so &ldquo;151&rdquo; with &ldquo;japanese, jp&rdquo; here
+            pings for English 151 only.</div>
+        </div>
+
+        <div class="field">
           <label class="label">Channels</label>
           <div class="chan-list" id="aChannels"></div>
           <div class="hint" id="aChannelHint">
@@ -454,6 +469,13 @@
             capitals. A broad word like &ldquo;prismatic&rdquo; catches
             everything from that set; a fuller name catches just that item.
           </div>
+        </div>
+
+        <div class="field">
+          <label class="label" for="eExclude">But not if the name contains <span class="label-soft">(optional)</span></label>
+          <input type="text" id="eExclude" maxlength="600" autocomplete="off"
+                 placeholder="japanese, jp, mini tin">
+          <div class="hint">Separate words with commas. Any one of them stops the ping.</div>
         </div>
 
         <div class="field">
@@ -621,12 +643,17 @@ function drawAlerts() {
       : '<span class="tag chan">Every channel</span>';
     const cap = a.max_price_usd
       ? "$" + esc(a.max_price_usd) : '<span class="muted-cell">&mdash;</span>';
+    const excludes = a.exclude_keywords || [];
     return '<tr class="' + (a.enabled ? '' : 'off') + '">' +
       '<td class="kw-cell">' +
         (a.match_all
           ? '<span class="tag all">Everything</span>'
           : esc(a.keyword)) +
-        (a.enabled ? '' : ' <span class="tag paused">Paused</span>') + '</td>' +
+        (a.enabled ? '' : ' <span class="tag paused">Paused</span>') +
+        (excludes.length
+          ? '<div class="except-row">except ' +
+              excludes.map(w => '<span class="tag not">' + esc(w) + '</span>').join(" ") + '</div>'
+          : '') + '</td>' +
       '<td>' + chans + '</td>' +
       '<td class="num">' + cap + '</td>' +
       '<td class="' + (a.last_matched_at ? 'matched-live' : 'muted-cell') + '">' +
@@ -656,16 +683,18 @@ async function addAlert() {
       body: JSON.stringify({
         keyword: keyword,
         match_all: document.getElementById("aMatchAll").checked,
+        exclude_keywords: document.getElementById("aExclude").value,
         channel_ids: [...picked.channels],
         max_price_usd: document.getElementById("aPrice").value
       })
     });
     alerts.unshift(data.alert);
     drawAlerts();
-    // Full reset: keyword, match-all, channels, and price all clear so the
-    // form is ready for an unrelated alert rather than carrying over the
-    // last one's filters by accident.
+    // Full reset: keyword, match-all, exceptions, channels, and price all
+    // clear so the form is ready for an unrelated alert rather than carrying
+    // over the last one's filters by accident.
     document.getElementById("aKeyword").value = "";
+    document.getElementById("aExclude").value = "";
     document.getElementById("aMatchAll").checked = false;
     toggleMatchAll();
     picked.channels.clear();
@@ -689,6 +718,7 @@ function duplicateAlert(i) {
   document.getElementById("aMatchAll").checked = !!a.match_all;
   keyword.value = a.match_all ? "" : (a.keyword || "");
   toggleMatchAll();
+  document.getElementById("aExclude").value = (a.exclude_keywords || []).join(", ");
   picked.channels = new Set(a.channel_ids || []);
   drawChannels();
   // A cap at the default is the same as leaving the box blank, so show it blank.
@@ -743,6 +773,7 @@ function openEditModal(i) {
   editPicked.channels = new Set(a.channel_ids || []);
 
   document.getElementById("eKeyword").value = a.match_all ? "" : (a.keyword || "");
+  document.getElementById("eExclude").value = (a.exclude_keywords || []).join(", ");
   document.getElementById("eMatchAll").checked = !!a.match_all;
   document.getElementById("ePrice").value =
     a.max_price_usd ? String(a.max_price_usd) : "";
@@ -816,6 +847,7 @@ async function updateAlert() {
       body: JSON.stringify({
         keyword: keyword,
         match_all: document.getElementById("eMatchAll").checked,
+        exclude_keywords: document.getElementById("eExclude").value,
         channel_ids: [...editPicked.channels],
         max_price_usd: document.getElementById("ePrice").value
       })
@@ -841,6 +873,9 @@ document.addEventListener("keydown", function (e) {
 });
 
 document.getElementById("aKeyword").addEventListener("keydown", function (e) {
+  if (e.key === "Enter") addAlert();
+});
+document.getElementById("aExclude").addEventListener("keydown", function (e) {
   if (e.key === "Enter") addAlert();
 });
 

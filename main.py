@@ -7091,6 +7091,8 @@ def _alert_json(row: dict) -> dict:
         "id": row["id"],
         "keyword": row["keyword"],
         "match_all": row["match_all"],
+        # "...but not if the name contains" (monitor_alerts.parse_excludes).
+        "exclude_keywords": list(row.get("exclude_keywords") or []),
         # Snowflakes as strings: a channel id is larger than JavaScript's
         # safe integer range, and the browser only ever echoes it back.
         "channel_ids": [str(c) for c in (row["channel_ids"] or [])],
