@@ -55,6 +55,7 @@
   .basis-sold { background: #dcfce7; color: #166534; }
   .basis-ask { background: #fef9c3; color: #854d0e; }
   .basis-manual { background: #f3f4f6; color: #6b7280; }
+  .basis-market { background: #dbeafe; color: #1e40af; }
   .src { font-size: 11px; color: #aaa; }
   .src.recent { color: #5865F2; cursor: pointer; }
   .src.recent:hover { text-decoration: underline; }
@@ -310,8 +311,8 @@
             <div style="flex:0 0 120px">
               <label class="label" for="game">Game</label>
               <select id="game" onchange="onGameChange()">
-                <option value="pokemon">Pok&eacute;mon</option>
-                <option value="one_piece">One Piece</option>
+                {% for g in GAMES if g.grading %}<option value="{{ g.key }}">{{ g.label }}</option>
+                {% endfor %}
               </select>
             </div>
             <div style="flex:0 0 120px" id="langWrap">
@@ -328,14 +329,16 @@
           </div>
           {% if is_guest and not user_id %}
           <div class="hint guest-note">
-            <strong>Guest account restriction:</strong> showing the newest {{ guest_grading_visible_sets }} main sets only,
+            <strong>Guest account restriction:</strong> showing the newest
+            <span data-guest-sets="other">{{ guest_grading_visible_sets }}</span><span data-guest-sets="riftbound" hidden>{{ guest_riftbound_visible_sets }}</span> main sets only,
             and costs are locked to PSA 10 / PSA Regular tier.
             <a href="/login">Sign in with Discord</a> for the full set list and every grade/grader, or sign up for the
             paid tier (coming soon via Stripe) for full access without a Discord account.
           </div>
           {% elif is_guest %}
           <div class="hint guest-note">
-            <strong>Limited access:</strong> showing the newest {{ guest_grading_visible_sets }} main sets only,
+            <strong>Limited access:</strong> showing the newest
+            <span data-guest-sets="other">{{ guest_grading_visible_sets }}</span><span data-guest-sets="riftbound" hidden>{{ guest_riftbound_visible_sets }}</span> main sets only,
             and costs are locked to PSA 10 / PSA Regular tier. Get the
             <strong>Intel</strong> or <strong>Monitor</strong> role
             <a href="{{ upgrade_url }}" target="_blank" rel="noopener">here</a>
@@ -514,13 +517,20 @@ const SOURCE_LABELS = {
   pokemonpricetracker: 'PokemonPriceTracker',
   ebay_browse: 'eBay',
   manual: 'Manual entry',
+  // A Riftbound card's ungraded price, from the Catalog's daily update.
+  catalog_tcgplayer: 'TCGplayer market price',
+  catalog_cardmarket: 'Cardmarket average, converted from euros',
 };
 // A "sold" price (PokemonPriceTracker) and an "ask" price (eBay Browse, active
 // listings only — see price_sources.py's EBay comment) are not the same thing,
 // and shouldn't read as interchangeable badges. Shared between the Market
 // Prices table and the "What you'd net" cards so the wording matches wherever
-// a price's basis is shown.
-const BASIS_LABELS = { sold: 'Sold', ask: 'Asking', manual: 'Manual' };
+// a price's basis is shown. "Market" is a marketplace's own price figure
+// (the Catalog's, for Riftbound).
+const BASIS_LABELS = { sold: 'Sold', ask: 'Asking', manual: 'Manual', market: 'Market' };
+// Games and what each has (games.py) — languages decide whether the
+// Language picker shows.
+const GAME_INFO = Object.fromEntries({{ GAMES | tojson }}.map(g => [g.key, g]));
 // Grading company / tier reference (fee, turnaround, coverage). Single source
 // of truth lives in grading_tiers.py; the fee is a default and stays editable.
 const GRADERS = {{ grading_companies | tojson }};
@@ -535,6 +545,7 @@ let quotes = {};
 let calcTimer = null;
 let setCards = [];        // cards for the currently selected set (from the API)
 let selectedTcgId = '';   // PPT id of the picked card, when it came from PPT
+let selectedCatalogId = '';  // catalog row of the picked card (Riftbound)
 
 // The scanned photo + Claude's raw read, kept around so Market prices and
 // What you'd net can show what was actually scanned. scanPopulating guards
@@ -554,10 +565,14 @@ function renderSetOptions(list){
     `<option value="${esc(s.id)}">${esc(s.name)}${s.year ? ' (' + esc(s.year) + ')' : ''}</option>`).join('');
 }
 
-// Language only applies to Pokemon (PPT's parameter); hidden for One Piece.
+// Language only applies to a game with more than one (Pokemon, PPT's
+// parameter); hidden for the rest.
+function gameLanguages(game){
+  return (GAME_INFO[game] && GAME_INFO[game].languages) || ['english'];
+}
 function currentLanguage(){
   const game = document.getElementById('game').value;
-  if (game !== 'pokemon') return 'english';
+  if (gameLanguages(game).length < 2) return gameLanguages(game)[0];
   return document.getElementById('language').value || 'english';
 }
 
@@ -565,7 +580,11 @@ async function buildSetOptions(){
   const game = document.getElementById('game').value;
   const lang = currentLanguage();
   const key = game + ':' + lang;
-  document.getElementById('langWrap').style.display = (game === 'pokemon') ? '' : 'none';
+  document.getElementById('langWrap').style.display = gameLanguages(game).length > 1 ? '' : 'none';
+  // Riftbound's guest window is the Catalog's, not this page's own.
+  document.querySelectorAll('[data-guest-sets]').forEach(el => {
+    el.hidden = (el.dataset.guestSets === 'riftbound') !== (game === 'riftbound');
+  });
   if (setListCache[key]){ renderSetOptions(setListCache[key]); return; }
   renderSetOptions(SETS[game] || []);        // show something immediately
   try {
@@ -597,6 +616,7 @@ function resetCardSelect(msg){
   c.disabled = true;
   setCards = [];
   selectedTcgId = '';
+  selectedCatalogId = '';
 }
 
 function onGameChange(){
@@ -649,6 +669,7 @@ function onCardChange(){
   document.getElementById('setName').value = card.set_name || '';
   document.getElementById('cardNumber').value = card.card_number || '';
   selectedTcgId = card.tcgplayer_id || '';
+  selectedCatalogId = card.catalog_id ? String(card.catalog_id) : '';
   lookup();
 }
 
@@ -660,6 +681,7 @@ function onManualEntry(){
   const c = document.getElementById('cardSelect');
   if (c.value !== ''){ c.value = ''; }
   selectedTcgId = '';
+  selectedCatalogId = '';
 }
 let feeIsManual = false;   // true once the user types a fee by hand
 
@@ -830,6 +852,8 @@ async function lookup(){
       // Present when the card came from the PPT-backed picker: pins the exact
       // printing, so the server skips name/set matching altogether.
       tcgplayer_id: selectedTcgId || '',
+      // Riftbound: the exact catalog row (version included) to price from.
+      catalog_id: selectedCatalogId || '',
       language: currentLanguage()
     });
     const resp = await fetch('/api/grading-calculator/quotes?' + params);
@@ -845,7 +869,7 @@ async function lookup(){
     buildRows();
     const found = Object.keys(quotes).length;
     status.textContent = found
-      ? `${found} price(s) from ${d.sources_used.join(', ') || 'no source'}`
+      ? `${found} price(s) from ${d.sources_used.map(s => SOURCE_LABELS[s] || s).join(', ') || 'no source'}`
       : 'No prices found — enter them by hand below.';
     renderPopulation(d.population);
     refreshTier();
@@ -1409,21 +1433,51 @@ function scanNorm(s){
 // downstream matching, so nothing about card selection is scan-specific.
 async function applyScanResult(scan){
   const status = document.getElementById('lookupStatus');
-  const mappedGame = (scan.game === 'pokemon' || scan.game === 'one_piece') ? scan.game : null;
+  const gameSel = document.getElementById('game');
+  const covered = Array.from(gameSel.options).map(o => o.value);
+  const mappedGame = covered.includes(scan.game) ? scan.game : null;
 
   if (!mappedGame){
     document.getElementById('cardName').value = scan.name || '';
     document.getElementById('setName').value = scan.set || '';
     document.getElementById('cardNumber').value = scan.number || '';
     onManualEntry();
-    status.textContent = `Scanned a ${scan.game || 'card'} — this calculator covers Pokémon `
-      + `and One Piece, so nothing was auto-matched. The scanned name/set/number are filled in above.`;
+    const names = Array.from(gameSel.options).map(o => o.textContent.trim());
+    const list = names.length > 1
+      ? names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] : names.join('');
+    status.textContent = `Scanned a ${scan.game || 'card'} — this calculator covers ${list}, `
+      + `so nothing was auto-matched. The scanned name/set/number are filled in above.`;
     return;
   }
 
   document.getElementById('game').value = mappedGame;
   resetCardSelect('Choose a set first');
   await buildSetOptions();
+
+  // A game priced from its catalog (Riftbound) is placed by its printed
+  // number first: its cards show a set code, not a set name, so the name
+  // matching below can only guess between sets that share a word.
+  if (GAME_INFO[mappedGame] && GAME_INFO[mappedGame].priced_from_catalog){
+    try {
+      const resp = await fetch('/api/grading-calculator/find-card?' + new URLSearchParams({
+        game: mappedGame, number: scan.number || '', name: scan.name || '' }));
+      if (resp.ok){
+        const hit = await resp.json();
+        const picker = document.getElementById('setSelect');
+        if (Array.from(picker.options).some(o => o.value === hit.set_id)){
+          picker.value = hit.set_id;
+          await onSetChange();
+          const found = setCards.findIndex(c => String(c.catalog_id) === String(hit.catalog_id));
+          if (found >= 0){
+            document.getElementById('cardSelect').value = String(found);
+            onCardChange();
+            status.textContent = 'Matched from the scan — ' + (setCards[found].name || '');
+            return;
+          }
+        }
+      }
+    } catch(e){ /* falls through to matching by set name */ }
+  }
 
   const setSel = document.getElementById('setSelect');
   const wantSet = scanNorm(scan.set);
@@ -1454,12 +1508,20 @@ async function applyScanResult(scan){
   setSel.value = matchedSetValue;
   await onSetChange();
 
-  const wantNum = (scan.number || '').split('/')[0].replace(/^0+/, '').toLowerCase();
+  // Riftbound numbers carry a set code ("OGN-066/298") that the scan may
+  // read differently ("OGN • 066") or drop, so only the number after it is
+  // compared — the set is already pinned by the picker.
+  const numKey = s => {
+    let n = (s || '').split('/')[0].trim().toLowerCase();
+    if (mappedGame === 'riftbound') n = n.replace(/^[a-z]+\s*[-•·]?\s*/, '');
+    return n.replace(/^0+/, '');
+  };
+  const wantNum = numKey(scan.number);
   const wantName = scanNorm(scan.name);
   let idx = -1;
   if (wantNum){
     idx = setCards.findIndex(c => {
-      const got = (c.card_number || '').split('/')[0].replace(/^0+/, '').toLowerCase();
+      const got = numKey(c.card_number);
       return got && got === wantNum;
     });
   }
@@ -1475,7 +1537,7 @@ async function applyScanResult(scan){
   if (idx >= 0 && wantNum){
     const sameNumber = setCards
       .map((c, i) => [c, i])
-      .filter(([c]) => (c.card_number || '').split('/')[0].replace(/^0+/, '').toLowerCase() === wantNum);
+      .filter(([c]) => numKey(c.card_number) === wantNum);
     if (sameNumber.length > 1){
       const scored = sameNumber.map(([c, i]) => {
         const v = (c.variant || '').toLowerCase();

@@ -85,16 +85,18 @@
   .view-toggle button + button { border-left: 1px solid #ddd; }
   .view-toggle button.on { background: #5865F2; color: #fff; }
 
-  /* ── Pokémon / Riftbound ── same segmented look as the list/grid toggle,
-     sized to sit in the tab row. Everything below it follows the choice. */
+  /* ── Game switch (games.py) ── same segmented look as the list/grid
+     toggle, sized to sit in the tab row. Everything below it follows the
+     choice. */
   .game-switch { align-self: center; margin-right: 6px; }
   .game-switch button { font-size: 13px; padding: 7px 14px; }
-  /* Controls that only mean something for one game. */
-  body.game-riftbound .pokemon-only,
-  body.game-riftbound .col-cardtype,
-  body.game-riftbound .check-col,
-  body.game-riftbound .gcard-check { display: none !important; }
-  body:not(.game-riftbound) .riftbound-only { display: none !important; }
+  /* Controls that only mean something for one game: `<key>-only` shows only
+     while that game is picked. Card type and the bulk-refresh ticks come
+     from PokemonPriceTracker, so they're Pokémon's alone. */
+  {% for g in GAMES if g.catalog %}body:not(.game-{{ g.key }}) .{{ g.key }}-only,
+  {% endfor %}body:not(.game-pokemon) .col-cardtype,
+  body:not(.game-pokemon) .check-col,
+  body:not(.game-pokemon) .gcard-check { display: none !important; }
   /* A Riftbound card priced from Cardmarket instead of TCGplayer. */
   .src-tag { display: inline-block; font-size: 9.5px; font-weight: 700; letter-spacing: .03em;
              padding: 0 4px; margin-left: 4px; border-radius: 3px; vertical-align: 1px;
@@ -478,7 +480,7 @@
 </style>
 <script src="/static/csrf.js"></script>
 </head>
-<body>
+<body class="game-pokemon">
 <div class="scratch-backdrop" id="scratchBackdrop" hidden onclick="setScratchOpen(false)"></div>
 <div class="scratch-bar" id="scratchBar" role="dialog" aria-label="Quick tally">
   <div class="scratch-head">
@@ -558,10 +560,10 @@
 
   <div class="cat-tabs" role="tablist" aria-label="Catalog sections">
     <div class="view-toggle game-switch" role="group" aria-label="Game">
-      <button type="button" id="gamePokemon" class="on" aria-pressed="true"
-              onclick="setGame('pokemon')">Pokémon</button>
-      <button type="button" id="gameRiftbound" aria-pressed="false"
-              onclick="setGame('riftbound')">Riftbound</button>
+      {% for g in GAMES if g.catalog %}<button type="button" data-game="{{ g.key }}"
+              class="{{ 'on' if loop.first }}" aria-pressed="{{ 'true' if loop.first else 'false' }}"
+              onclick="setGame('{{ g.key }}')">{{ g.label }}</button>
+      {% endfor %}
     </div>
     <button type="button" id="tabSingles" class="cat-tab on" role="tab"
             aria-selected="true" onclick="setSection('singles')">Singles</button>
@@ -796,6 +798,7 @@
               Re-fetches every set and sealed product right away instead of waiting for the
               daily update. Uses about 95 of the price API's daily requests.
             </span>
+            <div class="hint" id="rbFactorNote" style="margin-top:8px"></div>
             <div class="warn" id="rbSyncMsg" style="display:none"></div>
           </div>
           <div class="pokemon-only" style="border-top:1px solid #f0f0f0; padding-top:12px; margin-top:12px">
@@ -1574,19 +1577,22 @@ function shownVariantLabelHtml(c){
 // catalog rows — see price_sources.CardRef.key()), so these are independent
 // datasets shown together, not a display toggle. Persisted like the theme is,
 // so nobody has to re-tick Japanese every visit.
-// Pokémon or Riftbound. Same tables, same filters — the server scopes every
-// request by it. Remembered like the view mode and languages.
-const CATALOG_GAMES = ['pokemon', 'riftbound'];
-let currentGame = 'pokemon';
+// Which game (games.py: the ones with a priced catalog). Same tables, same
+// filters — the server scopes every request by it. Remembered like the view
+// mode and languages.
+const GAME_INFO = Object.fromEntries({{ GAMES | tojson }}.filter(g => g.catalog).map(g => [g.key, g]));
+const CATALOG_GAMES = Object.keys(GAME_INFO);
+let currentGame = CATALOG_GAMES[0];
 try {
   const savedGame = localStorage.getItem('catalogGame');
   if (CATALOG_GAMES.includes(savedGame)) currentGame = savedGame;
 } catch(e){}
 
 function currentLanguages(){
-  // Riftbound is English-only, so the language boxes (hidden for it) don't
-  // apply — and nothing should badge its rows as one language of two.
-  if (currentGame === 'riftbound') return ['english'];
+  // A one-language game (Riftbound) has the language boxes hidden, so they
+  // don't apply — and nothing should badge its rows as one language of two.
+  const langs = GAME_INFO[currentGame].languages;
+  if (langs.length < 2) return [langs[0]];
   const out = [];
   if (document.getElementById('langEnglish').checked) out.push('english');
   if (document.getElementById('langJapanese').checked) out.push('japanese');
@@ -1594,14 +1600,13 @@ function currentLanguages(){
 }
 
 function applyGameUi(){
-  const rift = currentGame === 'riftbound';
-  document.body.classList.toggle('game-riftbound', rift);
-  [['gamePokemon', !rift], ['gameRiftbound', rift]].forEach(([id, on]) => {
-    const b = document.getElementById(id);
+  CATALOG_GAMES.forEach(g => document.body.classList.toggle('game-' + g, g === currentGame));
+  document.querySelectorAll('.game-switch button[data-game]').forEach(b => {
+    const on = b.dataset.game === currentGame;
     b.classList.toggle('on', on);
     b.setAttribute('aria-pressed', String(on));
   });
-  document.getElementById('sealedQ').placeholder = rift ? 'Origins Booster Box' : 'Prismatic Evolutions';
+  document.getElementById('sealedQ').placeholder = GAME_INFO[currentGame].sealed_example || '';
 }
 
 function setGame(game){
@@ -1696,7 +1701,10 @@ function timeAgo(iso){
 // visitors never hit the 400/skip path, but the server re-checks
 // unconditionally since a disabled checkbox is only a UI nicety.
 function refreshEligible(c){
-  if (currentGame === 'riftbound') return { ok: false, reason: 'Riftbound prices update once a day on their own' };
+  // A one-card refresh is a PokemonPriceTracker call; other games refresh
+  // whole, once a day.
+  if (currentGame !== 'pokemon')
+    return { ok: false, reason: GAME_INFO[currentGame].label + ' prices update once a day on their own' };
   if (!c.tcgplayer_url) return { ok: false, reason: 'No direct TCGplayer link — can’t be refreshed this way' };
   if (c.priced_at){
     const ageMs = Date.now() - new Date(c.priced_at).getTime();
@@ -1724,7 +1732,7 @@ let cardsById = new Map();
 let portfolioKeys = new Set();
 function cardKey(c){
   // Riftbound by the API's own card id: the tracked copy's number can carry
-  // its version (card_tracker.riftbound_card_identity), so name and number
+  // its version (card_tracker.catalog_card_identity), so name and number
   // alone wouldn't match it back to its catalog row.
   if (c.source_id) return 'rb:' + c.source_id;
   return [c.name, c.set_name, c.card_number, c.language || 'english'].join('|');
@@ -2464,6 +2472,18 @@ async function loadFacets(){
   renderStockPicker();
   const rbBtn = document.getElementById('rbSyncBtn');
   if (rbBtn) rbBtn.disabled = currentGame === 'riftbound' && d.can_sync === false;
+  const factorNote = document.getElementById('rbFactorNote');
+  if (factorNote && d.factor){
+    const f = d.factor;
+    const when = f.changed_at
+      ? new Date(f.changed_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+      : '';
+    factorNote.textContent = 'TCGplayer prices: the price API sends them divided by '
+      + f.value.toFixed(4) + ', and they are multiplied back. Every daily update checks whether '
+      + 'the API has changed that number. '
+      + (when ? 'Last change: ' + when + (f.previous ? ', from ' + f.previous.toFixed(4) : '') + '.'
+              : 'It hasn’t changed since Riftbound was added.');
+  }
 }
 
 async function runRiftboundSync(){

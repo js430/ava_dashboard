@@ -150,11 +150,20 @@
       Search for an exact printing and add it to the shared catalogue, so it starts
       getting a daily price. Already there? You can pull its price history again.
     </div>
-    <div class="field" style="max-width:460px;">
-      <label for="cardSearch">Search cards</label>
-      <input type="text" id="cardSearch" placeholder="Charizard" autocomplete="off">
+    <div class="row">
+      <div class="field" style="flex:0 0 150px;">
+        <label for="cardGame">Game</label>
+        <select id="cardGame" onchange="onCardGameChange()">
+          {% for g in GAMES if g.catalog %}<option value="{{ g.key }}">{{ g.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field" style="flex:1 1 300px;max-width:460px;">
+        <label for="cardSearch">Search cards</label>
+        <input type="text" id="cardSearch" placeholder="Charizard" autocomplete="off">
+      </div>
     </div>
-    <div class="hint">Pokémon only — that's what the price API covers.</div>
+    <div class="hint">Searches the Catalog, so a card shows up once its set is there.</div>
     <div class="search-results" id="cardResults" style="display:none;"></div>
 
     <div id="cardChosen" style="display:none;margin-top:12px;">
@@ -189,15 +198,16 @@
   <div class="card">
     <div class="card-title">Import a whole set</div>
     <div class="card-desc">
-      Pulls a set's card list from the free catalogue APIs, shows you what's new, and
-      adds the ones you pick. No price-API credits are spent until the nightly run.
+      Pulls a set's card list, shows you what's new, and adds the ones you pick. Pokémon and
+      One Piece lists come from free card databases, and no price-API credits are spent until
+      the nightly run. Riftbound's come from the Catalog, and its cards are priced right away.
     </div>
     <div class="row">
       <div class="field" style="flex:0 0 150px;">
         <label for="impGame">Game</label>
         <select id="impGame" onchange="onImportGameChange()">
-          <option value="pokemon">Pokémon</option>
-          <option value="one_piece">One Piece</option>
+          {% for g in GAMES if g.set_import %}<option value="{{ g.key }}">{{ g.label }}</option>
+          {% endfor %}
         </select>
       </div>
       <div class="field" style="flex:2 1 240px;">
@@ -363,10 +373,26 @@ function stat(label, value, sub) {
 }
 
 // ── Single card ─────────────────────────────────────────────────────────
+// Games and what each has (games.py): a placeholder per game, and whether a
+// pick is sent back by its catalog row (priced_from_catalog) or by its name.
+const GAME_INFO = Object.fromEntries({{ GAMES | tojson }}.map(g => [g.key, g]));
 // Sequence number so a slow early response can't repaint the list after a
 // faster later one — see the same guard on the portfolios page.
 let searchTimer = null;
 let searchSeq = 0;
+
+function onCardGameChange() {
+  const game = document.getElementById("cardGame").value;
+  const input = document.getElementById("cardSearch");
+  input.placeholder = (GAME_INFO[game] && GAME_INFO[game].card_example) || "";
+  chosenCard = null;
+  chosenCardId = null;
+  document.getElementById("cardChosen").style.display = "none";
+  document.getElementById("cardResults").style.display = "none";
+  say("cardMsg", "");
+  const q = input.value.trim();
+  if (q.length >= 2) searchCards(q, ++searchSeq);
+}
 document.getElementById("cardSearch").addEventListener("input", (e) => {
   clearTimeout(searchTimer);
   const q = e.target.value.trim();
@@ -377,19 +403,24 @@ document.getElementById("cardSearch").addEventListener("input", (e) => {
 async function searchCards(q, seq) {
   const box = document.getElementById("cardResults");
   try {
+    const game = document.getElementById("cardGame").value;
     const rows = await api("/api/card-tracker/portfolio/search", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ game: "pokemon", query: q })
+      body: JSON.stringify({ game: game, query: q })
     });
     if (seq !== searchSeq) return;   // a newer keystroke already won
     box.innerHTML = rows.length ? "" : '<div class="search-row muted">No cards matched.</div>';
     rows.forEach(r => {
       const div = document.createElement("div");
       div.className = "search-row";
-      const bits = [r.set_name, r.card_number, r.variant].filter(Boolean).join(" · ");
+      const bits = [r.set_name, r.card_number, r.variant, r.version].filter(Boolean).join(" · ");
       div.innerHTML = '<span>' + esc(r.name) + '</span><span class="muted">' + esc(bits) + '</span>';
       div.onclick = () => {
-        chosenCard = r;
+        // A game priced from its catalog is added by the row picked (the
+        // server reads the card from it); others by name, set and number.
+        chosenCard = GAME_INFO[game] && GAME_INFO[game].priced_from_catalog
+          ? { game: game, catalog_id: r.id }
+          : Object.assign({ game: game }, r);
         chosenCardId = null;
         document.getElementById("cardChosenName").textContent = r.name;
         document.getElementById("cardChosenBits").textContent = bits;
@@ -420,8 +451,11 @@ async function seedCard() {
     });
     chosenCardId = data.card_id;
     document.getElementById("reseedBtn").disabled = false;
+    const fromCatalog = GAME_INFO[chosenCard.game] && GAME_INFO[chosenCard.game].priced_from_catalog;
     say("cardMsg", data.added
-      ? "Added to the catalogue. It'll pick up a price on the next nightly run — or pull its history now."
+      ? (fromCatalog
+          ? "Added to the catalogue. Its price and history fill in on the next price update — or pull its history now."
+          : "Added to the catalogue. It'll pick up a price on the next nightly run — or pull its history now.")
       : "That card was already in the catalogue. You can re-pull its history.", "ok");
     loadStats();
   } catch (e) {
@@ -433,7 +467,10 @@ async function seedCard() {
 async function reseedCard() {
   if (!chosenCardId) return;
   const days = parseInt(document.getElementById("seedDays").value, 10);
-  if (!confirm("Pull " + days + " days of history for this card? Costs 2 price-API credits.")) return;
+  const fromCatalog = chosenCard && GAME_INFO[chosenCard.game] && GAME_INFO[chosenCard.game].priced_from_catalog;
+  if (!confirm("Pull " + days + " days of history for this card? " + (fromCatalog
+      ? "Uses a few of the " + GAME_INFO[chosenCard.game].label + " price API's daily requests."
+      : "Costs 2 price-API credits."))) return;
   const btn = document.getElementById("reseedBtn");
   btn.disabled = true;
   say("cardMsg", "Pulling history…", "busy");
@@ -559,9 +596,11 @@ function impToggleAll(on) {
 }
 
 async function importRun() {
-  // The API re-fetches the set and imports everything EXCEPT the numbers we
-  // list, so send the unticked ones rather than the ticked ones.
+  // The API re-fetches the set and imports everything EXCEPT the cards we
+  // list, so send the unticked ones rather than the ticked ones. By number,
+  // except where versions share a number (Riftbound): there the catalog id.
   const exclude = [];
+  const excludeIds = [];
   let picked = 0;
   document.querySelectorAll('#impList input[type=checkbox]')
     .forEach(cb => {
@@ -569,6 +608,7 @@ async function importRun() {
       if (!card) return;
       if (cb.disabled) return;              // already tracked; the API skips it
       if (cb.checked) picked += 1;
+      else if (card.catalog_id) excludeIds.push(card.catalog_id);
       else if (card.card_number) exclude.push(card.card_number);
     });
   if (!picked) { say("impMsg", "Nothing selected.", "err"); return; }
@@ -584,12 +624,14 @@ async function importRun() {
         game: document.getElementById("impGame").value,
         set_id: document.getElementById("impSet").value,
         rarity: document.getElementById("impRarity").value,
-        exclude_numbers: exclude
+        exclude_numbers: exclude,
+        exclude_ids: excludeIds
       })
     });
     const added = (data.added !== undefined) ? data.added : picked;
-    say("impMsg", "Added " + added + " card(s). They'll be priced on the next " +
-      "nightly run.", "ok");
+    say("impMsg", "Added " + added + " card(s). " + (data.priced_now
+      ? "Their prices fill in within a minute or two; price history follows over the next few updates."
+      : "They'll be priced on the next nightly run."), "ok");
     loadStats();
     importPreview();
   } catch (e) {

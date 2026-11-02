@@ -83,7 +83,15 @@ class CardRef:
     language: str = "english"    # PPT's `language` param: english | japanese
 
     def query(self) -> str:
-        """Free-text search string shared by both vendors."""
+        """Free-text search string shared by both vendors.
+
+        Riftbound is searched as "Riftbound <name> <code>": listings say the
+        game but rarely the API's set names ("Origins Main Set"), and write
+        the number as its code ("OGN-066") without the set total — every
+        extra word is one more a listing title has to contain."""
+        if self.game == "riftbound":
+            code = (self.card_number or "").split("/")[0].strip()
+            return " ".join(p for p in ("Riftbound", self.name.strip(), code) if p)
         parts = [self.name, self.set_name, self.card_number]
         return " ".join(p.strip() for p in parts if p and p.strip())
 
@@ -1418,10 +1426,14 @@ async def fetch_ebay(client: httpx.AsyncClient, card: CardRef) -> list[GradedQuo
 
 # ─────────────────────────────── Merging ───────────────────────────────
 # Lower number wins when two sources quote the same grade. PokemonPriceTracker
-# outranks eBay since it returns real graded sales, not asking prices.
+# outranks eBay since it returns real graded sales, not asking prices. The
+# catalog's own ungraded price (games priced from their catalog — Riftbound)
+# ranks with it for the same reason: a market price beats an asking price.
 SOURCE_PRIORITY = {
     "manual": 0,
     "pokemonpricetracker": 1,
+    "catalog_tcgplayer": 1,
+    "catalog_cardmarket": 1,
     "ebay_browse": 2,
 }
 

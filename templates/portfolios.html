@@ -276,9 +276,10 @@
 
     <div id="pickStep">
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
-        <div class="seg" role="group" aria-label="Game">
-          <button id="segPokemon" class="on" onclick="setAddGame('pokemon')">Pokémon</button>
-          <button id="segRiftbound" onclick="setAddGame('riftbound')">Riftbound</button>
+        <div class="seg" role="group" aria-label="Game" id="segGame">
+          {% for g in GAMES if g.catalog %}<button data-game="{{ g.key }}" class="{{ 'on' if loop.first }}"
+                  onclick="setAddGame('{{ g.key }}')">{{ g.label }}</button>
+          {% endfor %}
         </div>
         <div class="seg">
           <button id="segCard" class="on" onclick="setKind('card')">Card</button>
@@ -1155,16 +1156,18 @@ function fillConditions(kind) {
 // cuts a 400-card set down to something readable.
 let pickTimer = null;
 let pickSeq = 0;
-// Keyed "<kind>:<game>" — Pokémon's and Riftbound's sets are separate lists.
+// Keyed "<kind>:<game>" — each game's sets are a separate list.
 const setCache = {};
-let addGame = "pokemon";
+// Games with a priced catalog (games.py), for the picker and its placeholders.
+const GAME_INFO = Object.fromEntries({{ GAMES | tojson }}.filter(g => g.catalog).map(g => [g.key, g]));
+let addGame = Object.keys(GAME_INFO)[0];
 
 // Which game's catalog the picker draws from. Same pick-a-set-then-narrow
-// flow for both; a switch starts the pick over, like changing Card/Sealed.
+// flow for every game; a switch starts the pick over, like changing Card/Sealed.
 function setAddGame(game) {
-  addGame = game === "riftbound" ? "riftbound" : "pokemon";
-  document.getElementById("segPokemon").classList.toggle("on", addGame === "pokemon");
-  document.getElementById("segRiftbound").classList.toggle("on", addGame === "riftbound");
+  addGame = GAME_INFO[game] ? game : Object.keys(GAME_INFO)[0];
+  document.querySelectorAll("#segGame button[data-game]")
+    .forEach(b => b.classList.toggle("on", b.dataset.game === addGame));
   setKind(addKind);
 }
 
@@ -1187,8 +1190,8 @@ function setKind(kind) {
   el.typeLabel.textContent = kind === "sealed"
     ? "Product type (optional)" : "Rarity (optional)";
   el.search.placeholder = kind === "sealed"
-    ? (addGame === "riftbound" ? "Booster Box" : "Elite Trainer Box")
-    : (addGame === "riftbound" ? "Jinx" : "Charizard");
+    ? (addGame === "pokemon" ? "Elite Trainer Box" : "Booster Box")
+    : (GAME_INFO[addGame].card_example || "");
   el.set.value = "";
   el.type.innerHTML = '<option value="">Any</option>';
   el.results.style.display = "none";
@@ -1367,9 +1370,10 @@ function showChosen() {
 function applyDefaultCost() {
   const box = document.getElementById("fUnitCost");
   const note = document.getElementById("costNote");
-  // Pokémon retail prices, so Riftbound gets none — a blank price there
+  // Pokémon retail prices, so other games get none — a blank price there
   // falls back to the market price instead (portfolios.sealed_product_type).
-  const preset = chosenItem && chosenItem.kind === "sealed" && chosenItem.game !== "riftbound"
+  const preset = chosenItem && chosenItem.kind === "sealed"
+      && (chosenItem.game || "pokemon") === "pokemon"
     ? DEFAULT_COSTS[chosenItem.productType] : null;
   if (preset && !box.value) box.value = preset;
   if (note) {
