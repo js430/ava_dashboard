@@ -33,7 +33,9 @@ async def main() -> int:
         logger.error("JUSTTCG_API_KEY is not set")
         return 1
 
-    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+    pool = await asyncpg.create_pool(
+        dsn, min_size=1, max_size=3,
+        server_settings={"application_name": "ava_dashboard-ingest_prices"})
     try:
         await ensure_card_tracker_schema(pool)
         added = await sync_watchlist(pool)

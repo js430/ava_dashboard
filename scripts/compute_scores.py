@@ -28,7 +28,9 @@ async def main() -> int:
     if not dsn:
         logger.error("DATABASE_URL is not set")
         return 1
-    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+    pool = await asyncpg.create_pool(
+        dsn, min_size=1, max_size=3,
+        server_settings={"application_name": "ava_dashboard-compute_scores"})
     try:
         await ensure_card_tracker_schema(pool)
         summary = await run_scoring(pool)
