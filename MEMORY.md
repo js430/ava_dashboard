@@ -2099,3 +2099,19 @@ How it works:
 - **Photo scanner:** the prompt now knows Riftbound. Its cards print a set code ("OGN-066/298"), not a set name, so a scan is placed by its number first (`/api/grading-calculator/find-card`). Matching the scanned set name would guess between "Origins Main Set", "Origins: Promos" and "Origins Proving Grounds".
 - **Tracker Management:** the Riftbound set import reads catalog_cards. There's no 250-card cap (that guards a bad external response), and cards to leave out are sent by catalog id, because versions share a number. The single-card search has a game picker. Riftbound cards still count toward MAX_TRACKED_CARDS, though they cost no PPT credits.
 - **Reset history** on a Riftbound card now re-pulls its history at the next sweep (`card_tracker.forget_riftbound_history`). Before, it waited for a redeploy.
+
+## 2026-11-02 — Monitor alerts: exception words ("but not if the name contains")
+
+Cross-repo change (linked from ava_bot MEMORY.md, "Product alerts: 'but not if the name contains' words"). Jeffrey asked for "match all except xyz, in regex".
+
+**Decided: plain exception words, not regex.** A comma-separated box under the keyword. Any one word in the product name stops the alert. Matching works like the keyword: case-insensitive, anywhere in the name. It applies to keyword alerts and "everything" alerts alike (his call), so "151" except "japanese, jp" pings for English 151 only.
+- Rejected **regex**: most members don't know it, a typo silently matches nothing or everything, Postgres's flavour differs from what people copy off regex sites, and a bad pattern runs against every restock for every alert in the bot's matcher.
+- Rejected **the auto-delete rules' "*" gap**: it can't be done in the bot's single SQL match query without moving matching into Python. It can be added later if members ask for word-order patterns.
+
+How:
+- `exclude_keywords TEXT[] NOT NULL DEFAULT '{}'` on `product_subscriptions`, added by BOTH apps' startup ALTERs. Either may create the table, and the bot's matcher reads it.
+- `monitor_alerts.parse_excludes` takes a list or one comma string, drops case-insensitive duplicates, and applies the keyword's 2-100 character rule, up to 20 words. It **refuses a word that's part of the keyword** ("151 booster" except "booster" would never fire), the kind of mistake that otherwise looks like a broken bot.
+- `dedupe_key` appends `not:<sorted words>` only when there are exceptions, so existing alerts keep their stored keys.
+- Bot: `NOT EXISTS (SELECT 1 FROM unnest(exclude_keywords) x WHERE x <> '' AND strpos(lower($1), lower(x)) > 0)`. The `x <> ''` guard matters because `strpos(anything, '') > 0` is true.
+- Tested against Postgres with the bot's query read from its file: "151 except japanese, jp" skips "Pokemon 151 Japanese Booster Box" and "SV 151 Booster Box (JP)" and still matches "Pokemon Mini Tin 151".
+- **Deploy order:** the bot first or together. Exceptions saved before the bot's update would be ignored, and the member would still be pinged.

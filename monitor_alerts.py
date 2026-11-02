@@ -78,6 +78,13 @@ MONITOR_ALERTS_SCHEMA = [
     # reach it — same ALTER-not-CREATE pattern as catalog_cards.
     "ALTER TABLE product_subscriptions ADD COLUMN IF NOT EXISTS "
     "match_all BOOLEAN NOT NULL DEFAULT FALSE",
+    # "...but not if the name contains" — words that stop an alert firing,
+    # matched the same way as the keyword (case-insensitive substring), on
+    # keyword and "everything" alerts alike. Empty = no exceptions. The bot
+    # adds the same column in its own setup (cogs/database.py), since either
+    # app may create the table first.
+    "ALTER TABLE product_subscriptions ADD COLUMN IF NOT EXISTS "
+    "exclude_keywords TEXT[] NOT NULL DEFAULT '{}'",
 ]
 
 # A table created before the store filter was removed still has a `stores`
@@ -92,6 +99,8 @@ MONITOR_ALERTS_SCHEMA = [
 # validation rather than a limit on the feature.
 MAX_KEYWORD_LEN = 100
 MIN_KEYWORD_LEN = 2
+# Exception words share the keyword's length rules; this bounds how many.
+MAX_EXCLUDE_WORDS = 20
 # Comfortably above the number of channels that exist, so selecting every
 # one of them is never refused. (At 25 it was: there are 26.)
 MAX_CHANNELS_PER_ALERT = 100
@@ -221,6 +230,43 @@ def normalize_keyword(raw) -> str:
     return _SPACES.sub(" ", str(raw or "").strip())
 
 
+def parse_excludes(raw, keyword: str, match_all: bool) -> tuple:
+    """(words, error) for the "but not if the name contains" box.
+
+    Takes a list or one comma-separated string (the box is a plain text
+    field). Each word is normalized like the keyword and duplicates are
+    dropped regardless of case. A word that's part of the keyword is refused:
+    every product the keyword matches contains it, so the alert could never
+    fire — the kind of mistake that otherwise looks like a broken bot.
+    """
+    if raw is None or raw == "":
+        return [], None
+    parts = raw.split(",") if isinstance(raw, str) else raw
+    if not isinstance(parts, list):
+        return None, "Those exceptions aren't valid."
+    words, seen = [], set()
+    for part in parts:
+        if not isinstance(part, str):
+            return None, "Those exceptions aren't valid."
+        word = normalize_keyword(part)
+        if not word:
+            continue
+        if len(word) < MIN_KEYWORD_LEN:
+            return None, f"“{word}” is too short to leave out — use at least two characters."
+        if len(word) > MAX_KEYWORD_LEN:
+            return None, "One of those exceptions is too long."
+        if word.lower() in seen:
+            continue
+        if not match_all and word.lower() in keyword.lower():
+            return None, (f"“{word}” is part of what you're watching for, so leaving it "
+                          "out would block every match.")
+        seen.add(word.lower())
+        words.append(word)
+    if len(words) > MAX_EXCLUDE_WORDS:
+        return None, f"That's more than {MAX_EXCLUDE_WORDS} exceptions."
+    return words, None
+
+
 def to_price(raw):
     """A price cap from the browser, or None. Returns (value, error).
 
@@ -244,13 +290,16 @@ def to_price(raw):
 
 
 def dedupe_key(keyword: str, channel_ids, max_price, delivery: str,
-               match_all: bool = False) -> str:
+               match_all: bool = False, excludes=()) -> str:
     """A stable signature of one alert, so the same one can't be added twice.
 
     Sorted and lowercased, so ticking Target then Walmart matches ticking
     Walmart then Target — to a member those are plainly the same alert, and
     being told "you already have that one" is only sensible if it's true
     regardless of the order the boxes were checked.
+
+    Exceptions are appended only when there are some, so an alert without
+    any keeps exactly the key it was stored under before they existed.
     """
     parts = [
         "*all*" if match_all else keyword.strip().lower(),
@@ -258,6 +307,8 @@ def dedupe_key(keyword: str, channel_ids, max_price, delivery: str,
         "" if max_price is None else str(max_price),
         delivery,
     ]
+    if excludes:
+        parts.append("not:" + ",".join(sorted(w.lower() for w in excludes)))
     return "|".join(parts)
 
 
@@ -279,6 +330,11 @@ def validate(payload: dict, allowed_channel_ids) -> tuple:
         return None, "Type at least a couple of characters to match on."
     elif len(keyword) > MAX_KEYWORD_LEN:
         return None, "That keyword is too long."
+
+    excludes, exclude_error = parse_excludes(payload.get("exclude_keywords"),
+                                             keyword, match_all)
+    if exclude_error:
+        return None, exclude_error
 
     raw_channels = payload.get("channel_ids") or []
     if not isinstance(raw_channels, list) or len(raw_channels) > MAX_CHANNELS_PER_ALERT:
@@ -310,16 +366,17 @@ def validate(payload: dict, allowed_channel_ids) -> tuple:
     return {
         "keyword": keyword,
         "match_all": match_all,
+        "exclude_keywords": excludes,
         "channel_ids": sorted(channel_ids),
         "max_price_usd": max_price,
         "delivery": delivery,
         "dedupe_key": dedupe_key(keyword, channel_ids, max_price, delivery,
-                                 match_all),
+                                 match_all, excludes),
     }, None
 
 
-_COLUMNS = ("id, keyword, match_all, channel_ids, max_price_usd, delivery, "
-            "enabled, created_at, last_matched_at")
+_COLUMNS = ("id, keyword, match_all, exclude_keywords, channel_ids, max_price_usd, "
+            "delivery, enabled, created_at, last_matched_at")
 
 
 async def list_alerts(pool, user_id: int) -> list:
@@ -339,13 +396,13 @@ async def add_alert(pool, user_id: int, cleaned: dict) -> tuple:
         row = await conn.fetchrow(
             "INSERT INTO product_subscriptions "
             "  (user_id, keyword, match_all, channel_ids, max_price_usd, "
-            "   delivery, dedupe_key) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7) "
+            "   delivery, dedupe_key, exclude_keywords) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
             "ON CONFLICT (user_id, dedupe_key) DO NOTHING "
             f"RETURNING {_COLUMNS}",
             user_id, cleaned["keyword"], cleaned["match_all"],
             cleaned["channel_ids"], cleaned["max_price_usd"],
-            cleaned["delivery"], cleaned["dedupe_key"])
+            cleaned["delivery"], cleaned["dedupe_key"], cleaned["exclude_keywords"])
     if row is None:
         return None, "You already have that exact alert."
     return dict(row), None
@@ -384,12 +441,12 @@ async def update_alert(pool, user_id: int, alert_id: int, cleaned: dict) -> tupl
         row = await conn.fetchrow(
             "UPDATE product_subscriptions "
             "SET keyword = $3, match_all = $4, channel_ids = $5, "
-            "    max_price_usd = $6, dedupe_key = $7 "
+            "    max_price_usd = $6, dedupe_key = $7, exclude_keywords = $8 "
             "WHERE id = $1 AND user_id = $2 "
             f"RETURNING {_COLUMNS}",
             alert_id, user_id, cleaned["keyword"], cleaned["match_all"],
             cleaned["channel_ids"], cleaned["max_price_usd"],
-            cleaned["dedupe_key"])
+            cleaned["dedupe_key"], cleaned["exclude_keywords"])
     if row is None:
         return None, "That alert is already gone."
 
