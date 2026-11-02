@@ -230,8 +230,8 @@
             <th class="left">
               <select class="col-filter" id="fGame" onchange="onFilterChange()">
                 <option value="all">All</option>
-                <option value="pokemon">Pokémon</option>
-                <option value="one_piece">One Piece</option>
+                {% for g in GAMES %}<option value="{{ g.key }}">{{ g.label }}</option>
+                {% endfor %}
               </select>
             </th>
             <th><div class="range-pair"><input class="range-input" type="number" id="fPriceMin" placeholder="min" oninput="onFilterChange()"><input class="range-input" type="number" id="fPriceMax" placeholder="max" oninput="onFilterChange()"></div></th>
@@ -253,7 +253,7 @@
 <script>
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 
-const GAME_LABELS = { pokemon: 'Pokémon', one_piece: 'One Piece' };
+const GAME_LABELS = Object.fromEntries({{ GAMES | tojson }}.map(g => [g.key, g.label]));
 let allRows = [];
 let selectedId = null;
 let chart = null;

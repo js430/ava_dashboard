@@ -36,7 +36,9 @@ from card_tracker import (ensure_card_tracker_schema, sync_watchlist, run_ingest
                           run_ppt_ingest, run_scoring, MAX_TRACKED_CARDS,
                           run_ppt_backdate, BACKDATE_DAY_CHOICES, BACKDATE_MAX_CARDS,
                           VALID_GAMES, MAX_USER_PORTFOLIO_CARDS, auto_backdate_new_card,
-                          refresh_one_card, TRACKER_COLUMN_KEYS, DEFAULT_VISIBLE_COLUMNS)
+                          refresh_one_card, TRACKER_COLUMN_KEYS, DEFAULT_VISIBLE_COLUMNS,
+                          run_riftbound_snapshots, catalog_card_identity,
+                          catalog_set_identities, forget_riftbound_history)
 import card_scoring
 import set_import
 import price_sources
@@ -53,6 +55,8 @@ import portfolios
 import tips
 import monitor_alerts
 import auto_delete_rules
+import riftbound
+import games
 
 load_dotenv()
 
@@ -164,7 +168,15 @@ async def _card_price_sweep(app: FastAPI) -> None:
     """Fill today's price gaps, then re-score if anything was added."""
     pool = app.state.db
     result = await run_ppt_ingest(pool)
-    if result["snapshots"]:
+    # Riftbound's daily price is copied from the catalog (no per-card calls),
+    # so this costs nothing unless a card is tracked for the first time and
+    # needs its history. Here so a card added mid-day is priced within a sweep.
+    try:
+        rb = await run_riftbound_snapshots(pool)
+    except Exception:
+        logger.exception("Price sweep: Riftbound snapshots failed")
+        rb = {"snapshots": 0, "backdated": 0}
+    if result["snapshots"] or rb["snapshots"] or rb["backdated"]:
         # Scores are pure DB math — no quota — so keep them in step with the
         # prices the sweep just added rather than waiting for the nightly.
         await run_scoring(pool)
@@ -195,13 +207,21 @@ async def lifespan(app: FastAPI):
     secret = os.getenv("SESSION_SECRET", "")
     if not secret or len(secret) < 32:
         raise RuntimeError("SESSION_SECRET env var must be set and at least 32 characters long")
-    app.state.db = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+    # application_name labels this app's connections in Postgres's own logs
+    # and pg_stat_activity (app=ava_dashboard), so they can be told apart
+    # from the bot's — both share the one database.
+    app.state.db = await asyncpg.create_pool(
+        DATABASE_URL, min_size=2, max_size=10,
+        server_settings={"application_name": "ava_dashboard"})
     try:
         await ensure_card_tracker_schema(app.state.db)
     except Exception:
         logger.exception("Card tracker schema ensure failed — /card-tracker may be unavailable")
     try:
         await catalog.ensure_catalog_schema(app.state.db)
+        # Before anything prices a Riftbound card — the nightly sweep's
+        # history lookups use it too, not only the sync.
+        await _load_riftbound_factor(app.state.db)
     except Exception:
         logger.exception("Catalog schema ensure failed — /catalog may be unavailable")
     # Its own step, after the table exists: can be refused (logged inside)
@@ -241,6 +261,8 @@ async def lifespan(app: FastAPI):
     # 11pm ingest missed because the process restarted.
     price_sweep_task = asyncio.create_task(_card_price_sweep_scheduler(app))
     catalog_price_sweep_task = asyncio.create_task(_catalog_price_sweep_scheduler(app))
+    # Checks every couple of hours, fetches only what's past its daily age.
+    riftbound_sync_task = asyncio.create_task(_riftbound_sync_scheduler(app))
     try:
         yield
     finally:
@@ -249,6 +271,7 @@ async def lifespan(app: FastAPI):
         tips_geocode_backfill_task.cancel()
         price_sweep_task.cancel()
         catalog_price_sweep_task.cancel()
+        riftbound_sync_task.cancel()
         await app.state.db.close()
 
 
@@ -355,8 +378,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             # are stored exactly as PokemonPriceTracker returns them
             # (price_sources._ppt_image_url, which accepts only https on this
             # host) — this entry and PPT_IMAGE_HOSTS must stay in step.
+            # images.tcggo.com: Riftbound card images, same arrangement with
+            # riftbound.IMAGE_HOSTS (https on that host only, checked before
+            # the URL is stored). Images only — no script or connect access.
             "img-src 'self' data: blob: https://cdn.discordapp.com https://images.pokemontcg.io "
-            "https://tcgplayer-cdn.tcgplayer.com "
+            "https://tcgplayer-cdn.tcgplayer.com https://images.tcggo.com "
             "https://api.scryfall.com https://db.ygoprodeck.com https://www.optcgapi.com "
             "https://maps.googleapis.com https://maps.gstatic.com https://assets.pokemon.com; "
             "connect-src 'self' https://maps.googleapis.com; "
@@ -437,6 +463,8 @@ app.add_middleware(ContentSizeLimitMiddleware,
                    exception_cls=RequestTooLarge)
 
 templates = Jinja2Templates(directory="templates")
+# Every page's game pickers are built from the one registry (games.py).
+templates.env.globals["GAMES"] = games.for_templates()
 
 # ---- Config ----
 DATABASE_URL             = os.getenv("DATABASE_URL")
@@ -636,7 +664,7 @@ EXTRACT_PROMPT = (
     "You are reading a trading card game card image. Extract the following and return "
     "ONLY a valid JSON object with no extra text, markdown, or code fences:\n\n"
     "{\n"
-    '  "game": "one of: pokemon, magic, yugioh, one piece, other",\n'
+    '  "game": "one of: pokemon, magic, yugioh, one piece, riftbound, other",\n'
     '  "name": "the card name exactly as printed — see formatting rules below",\n'
     '  "number": "the card number as printed (e.g. 045, OP01-001), without the set total — null if not visible",\n'
     '  "set": "the set or expansion name if visible, otherwise null",\n'
@@ -646,7 +674,10 @@ EXTRACT_PROMPT = (
     '  "promo_stamp": null\n'
     "}\n\n"
     "For the game field: use 'magic' for Magic: The Gathering, 'yugioh' for Yu-Gi-Oh!, "
-    "'one piece' for One Piece TCG, 'pokemon' for Pokemon TCG, or 'other' for anything else.\n\n"
+    "'one piece' for One Piece TCG, 'pokemon' for Pokemon TCG, 'riftbound' for Riftbound "
+    "(the League of Legends trading card game), or 'other' for anything else.\n\n"
+    "For a Riftbound card, the number is printed at the bottom with a set code, like "
+    "'OGN-066/298': return it as 'OGN-066', without the total.\n\n"
     "promo_stamp: if the card artwork has a retailer or event stamp printed over it "
     "(e.g. 'GameStop', 'Target', 'Walmart', 'Best Buy', 'PAX', 'Pokemon Center'), set this "
     "to the stamp name as a string. Otherwise null. "
@@ -1120,6 +1151,7 @@ async def index(request: Request):
             "discord_invite_url": DISCORD_INVITE_URL,
             "upgrade_url": DEMO_UPGRADE_URL,
             "guest_catalog_visible_sets": GUEST_CATALOG_VISIBLE_SETS,
+            "guest_riftbound_visible_sets": GUEST_RIFTBOUND_VISIBLE_SETS,
             **await _membership_offer(),
         })
     limited = allowed_regions(request)
@@ -2409,6 +2441,9 @@ def _serialize_tracker_row(r) -> dict:
         "set_name": r["set_name"],
         "card_number": r["card_number"],
         "variant": r["variant"],
+        # Riftbound's catalog link (TCGGO's card id) — lets the Catalog mark
+        # the exact version as tracked; None for other games.
+        "source_id": r["source_id"],
         "justtcg_name": r["justtcg_name"],
         "justtcg_set": r["justtcg_set"],
         "justtcg_number": r["justtcg_number"],
@@ -2430,7 +2465,7 @@ def _serialize_tracker_row(r) -> dict:
     }
 
 _TRACKER_ROW_COLUMNS = """
-    tc.id, tc.name, tc.game, tc.language, tc.set_name, tc.card_number, tc.variant,
+    tc.id, tc.name, tc.game, tc.language, tc.set_name, tc.card_number, tc.variant, tc.source_id,
     tc.release_date, tc.justtcg_name, tc.justtcg_set, tc.justtcg_number,
     ps.price_low, ps.price_mid, ps.price_high, ps.captured_at,
     cs.momentum_7d, cs.momentum_30d, cs.momentum_180d, cs.liquidity_score,
@@ -2499,6 +2534,28 @@ async def api_trial_list(request: Request, user=Depends(require_trial_viewer)):
     return JSONResponse([_serialize_tracker_row(r) for r in rows],
                         headers={"Cache-Control": "no-store"})
 
+async def _catalog_add_fields(pool, game: str, body) -> dict:
+    """The tracked-card fields for adding a card of a game priced from its
+    catalog (games.priced_from_catalog — Riftbound today), read from the
+    catalog row the browser picked (body["catalog_id"]).
+
+    Nothing else in the request is trusted for these games: the name, number
+    and version all come from that row, so a card can never be tracked under
+    details that differ from the product it's priced from. See
+    card_tracker.catalog_card_identity for why the number may carry the
+    version."""
+    try:
+        catalog_id = int(body.get("catalog_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Pick a card from the search results.")
+    async with pool.acquire() as conn:
+        ident = await catalog_card_identity(conn, game, catalog_id)
+    if not ident:
+        label = games.get(game).label if games.get(game) else "card"
+        raise HTTPException(status_code=404, detail=f"That card isn't in the {label} catalog.")
+    return ident
+
+
 @app.post("/api/card-tracker/portfolio/search")
 @limiter.limit("60/hour")
 async def api_portfolio_search(request: Request, user=Depends(get_member_or_subscriber)):
@@ -2518,32 +2575,36 @@ async def api_portfolio_search(request: Request, user=Depends(get_member_or_subs
     query = (body.get("query") or "").strip()
     language = body.get("language")
     if game not in VALID_GAMES:
-        raise HTTPException(status_code=400, detail="game must be 'pokemon' or 'one_piece'")
+        raise HTTPException(status_code=400, detail="Unknown game.")
     if len(query) < 2:
         raise HTTPException(status_code=400, detail="query must be at least 2 characters")
     if language is not None:
         language = price_sources.ppt_language(language)
+    # version is in the DISTINCT ON: two Riftbound versions of one card are
+    # two products, and collapsing them would hide one from the results.
     async with request.app.state.db.acquire() as conn:
         if language:
             rows = await conn.fetch(
-                "SELECT DISTINCT ON (card_name, set_name, card_number, rarity, language) "
-                "id, card_name, set_name, card_number, rarity, tcgplayer_id, language "
+                "SELECT DISTINCT ON (card_name, set_name, card_number, rarity, version, language) "
+                "id, card_name, set_name, card_number, rarity, version, tcgplayer_id, language "
                 "FROM catalog_cards WHERE game = $1 AND language = $2 AND card_name ILIKE $3 "
-                "ORDER BY card_name, set_name, card_number, rarity, language LIMIT 25",
+                "ORDER BY card_name, set_name, card_number, rarity, version, language LIMIT 25",
                 game, language, f"%{query}%")
         else:
             rows = await conn.fetch(
-                "SELECT DISTINCT ON (card_name, set_name, card_number, rarity, language) "
-                "id, card_name, set_name, card_number, rarity, tcgplayer_id, language "
+                "SELECT DISTINCT ON (card_name, set_name, card_number, rarity, version, language) "
+                "id, card_name, set_name, card_number, rarity, version, tcgplayer_id, language "
                 "FROM catalog_cards WHERE game = $1 AND card_name ILIKE $2 "
-                "ORDER BY card_name, set_name, card_number, rarity, language LIMIT 25",
+                "ORDER BY card_name, set_name, card_number, rarity, version, language LIMIT 25",
                 game, f"%{query}%")
     return JSONResponse([
         # id lets the Collectr preview point a corrected match straight at a
-        # catalog row; the tracker's own add flow ignores it.
+        # catalog row, and is what a Riftbound add sends back (see
+        # _catalog_add_fields); a Pokemon add ignores it.
         {"id": r["id"], "name": r["card_name"], "set_name": r["set_name"],
          "card_number": r["card_number"],
-         "variant": r["rarity"] or None, "tcgplayer_id": r["tcgplayer_id"] or None,
+         "variant": r["rarity"] or None, "version": r["version"] or None,
+         "tcgplayer_id": r["tcgplayer_id"] or None,
          "language": r["language"]}
         for r in rows
     ], headers={"Cache-Control": "no-store"})
@@ -2565,11 +2626,16 @@ async def api_portfolio_add(request: Request, user=Depends(get_member_or_subscri
     variant = (body.get("variant") or "").strip()[:200] or None
     tcgplayer_id = (body.get("tcgplayer_id") or "").strip()[:40] or None
     language = price_sources.ppt_language(body.get("language"))
+    source_id = None
+    user_id = int(user["id"])
+    pool = request.app.state.db
+    if games.priced_from_catalog(game):
+        ident = await _catalog_add_fields(pool, game, body)
+        name, set_name, card_number = ident["name"], ident["set_name"], ident["card_number"]
+        variant, language, source_id = ident["variant"], ident["language"], ident["source_id"]
     if game not in VALID_GAMES or not name:
         raise HTTPException(status_code=400, detail="game and name required")
 
-    user_id = int(user["id"])
-    pool = request.app.state.db
     async with pool.acquire() as conn:
         count = await conn.fetchval(
             "SELECT COUNT(*) FROM user_tracked_cards WHERE user_id = $1", user_id)
@@ -2582,10 +2648,10 @@ async def api_portfolio_add(request: Request, user=Depends(get_member_or_subscri
         async with conn.transaction():
             insert_row = await conn.fetchrow(
                 "INSERT INTO tracked_cards (name, game, set_name, card_number, variant, "
-                "tcgplayer_id, language) VALUES ($1, $2, $3, $4, $5, $6, $7) "
+                "tcgplayer_id, language, source_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
                 "ON CONFLICT (game, name, set_name, card_number, language) DO NOTHING RETURNING id",
                 name, game, set_name, card_number,
-                variant, tcgplayer_id if game == "pokemon" else None, language)
+                variant, tcgplayer_id if game == "pokemon" else None, language, source_id)
             is_new = insert_row is not None
             if is_new:
                 card_id = insert_row["id"]
@@ -2603,6 +2669,11 @@ async def api_portfolio_add(request: Request, user=Depends(get_member_or_subscri
                     "AND set_name=$3 AND card_number=$4 AND language=$5",
                     game, name, set_name, card_number, language)
                 card_id = existing["id"]
+                if source_id:
+                    # Links a row tracked before it had one; never re-points one.
+                    await conn.execute(
+                        "UPDATE tracked_cards SET source_id = $1 "
+                        "WHERE id = $2 AND source_id IS NULL", source_id, card_id)
             await conn.execute(
                 "INSERT INTO user_tracked_cards (user_id, card_id) VALUES ($1, $2) "
                 "ON CONFLICT DO NOTHING", user_id, card_id)
@@ -2877,6 +2948,7 @@ async def api_card_tracker_reset_history(request: Request, user=Depends(require_
             async with conn.transaction():
                 await conn.execute("DELETE FROM card_scores")
                 deleted = await conn.execute("DELETE FROM price_snapshots")
+            forget_riftbound_history()
             count = await conn.fetchval("SELECT COUNT(*) FROM tracked_cards")
             logger.info("Card tracker: history reset for ALL cards by admin %s; %s",
                         user["id"], deleted)
@@ -2889,6 +2961,8 @@ async def api_card_tracker_reset_history(request: Request, user=Depends(require_
         async with conn.transaction():
             await conn.execute("DELETE FROM card_scores WHERE card_id = $1", card_id)
             deleted = await conn.execute("DELETE FROM price_snapshots WHERE card_id = $1", card_id)
+    # A Riftbound card's history is pulled again on the next price sweep.
+    forget_riftbound_history(card_id)
     logger.info("Card tracker: history reset for %r (id %d) by admin %s; %s",
                 card["name"], card_id, user["id"], deleted)
     return JSONResponse({"ok": True, "cards_affected": 1}, headers={"Cache-Control": "no-store"})
@@ -3024,19 +3098,24 @@ async def api_card_tracker_seed_card(request: Request,
     variant = (body.get("variant") or "").strip()[:200] or None
     tcgplayer_id = (body.get("tcgplayer_id") or "").strip()[:40] or None
     language = price_sources.ppt_language(body.get("language"))
+    source_id = None
+    pool = request.app.state.db
+    if games.priced_from_catalog(game):
+        ident = await _catalog_add_fields(pool, game, body)
+        name, set_name, card_number = ident["name"], ident["set_name"], ident["card_number"]
+        variant, language, source_id = ident["variant"], ident["language"], ident["source_id"]
     if game not in VALID_GAMES or not name:
         raise HTTPException(status_code=400, detail="Pick a card first.")
 
-    pool = request.app.state.db
     async with pool.acquire() as conn:
         async with conn.transaction():
             inserted = await conn.fetchrow(
                 "INSERT INTO tracked_cards (name, game, set_name, card_number, variant, "
-                "tcgplayer_id, language) VALUES ($1, $2, $3, $4, $5, $6, $7) "
+                "tcgplayer_id, language, source_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
                 "ON CONFLICT (game, name, set_name, card_number, language) "
                 "DO NOTHING RETURNING id",
                 name, game, set_name, card_number, variant,
-                tcgplayer_id if game == "pokemon" else None, language)
+                tcgplayer_id if game == "pokemon" else None, language, source_id)
             if inserted:
                 card_id = inserted["id"]
                 total = await conn.fetchval("SELECT COUNT(*) FROM tracked_cards")
@@ -3316,6 +3395,18 @@ async def api_portfolio_lot_add(request: Request, portfolio_id: int,
         pool, int(user["id"]), portfolio_id, kind, item_id, body)
     if error:
         raise HTTPException(status_code=400, detail=error)
+    if kind == "card":
+        # A Riftbound card's price is a free copy from the catalog, so it's
+        # filled in now rather than at the next sweep (Pokemon's costs a
+        # credit, so it waits). The lot now references the card, which is
+        # what makes it eligible.
+        try:
+            async with pool.acquire() as conn:
+                game = await conn.fetchval("SELECT game FROM tracked_cards WHERE id = $1", item_id)
+            if game == riftbound.GAME:
+                await run_riftbound_snapshots(pool, only_card_id=item_id)
+        except Exception:
+            logger.exception("Portfolio: couldn't price Riftbound card %s on add", item_id)
     return JSONResponse({"id": lot["id"]}, headers={"Cache-Control": "no-store"})
 
 
@@ -3351,11 +3442,14 @@ async def _collectr_catalog(pool, kinds):
             sealed = [dict(r) for r in rows]
         if "card" in kinds:
             # catalog_cards calls it card_name, and its id is NOT what a lot
-            # points at — see _tracked_card_id below.
+            # points at — see _tracked_card_id below. Riftbound cards are
+            # candidates too: Collectr's text doesn't say which game a line
+            # is, and set names keep the two apart.
             rows = await conn.fetch(
-                "SELECT id, card_name AS name, set_name, card_number, "
+                "SELECT id, game, card_name AS name, set_name, card_number, "
                 "rarity AS variant, tcgplayer_id, language "
-                "FROM catalog_cards WHERE game = 'pokemon' LIMIT 60000")
+                "FROM catalog_cards WHERE game = ANY($1::TEXT[]) LIMIT 60000",
+                list(CATALOG_GAMES))
             singles = [dict(r) for r in rows]
     # Indexed once here rather than rescanned per item: matching a hundred
     # items against a few thousand rows is otherwise a minute of string
@@ -3377,9 +3471,9 @@ async def _catalog_row(conn, kind: str, item_id: int):
             "WHERE id = $1", item_id)
     else:
         row = await conn.fetchrow(
-            "SELECT id, card_name AS name, set_name, card_number, "
+            "SELECT id, game, card_name AS name, set_name, card_number, "
             "rarity AS variant, tcgplayer_id, language FROM catalog_cards "
-            "WHERE id = $1 AND game = 'pokemon'", item_id)
+            "WHERE id = $1 AND game = ANY($2::TEXT[])", item_id, list(CATALOG_GAMES))
     return dict(row) if row else None
 
 
@@ -3429,18 +3523,31 @@ async def _tracked_card_id(conn, match: dict):
 
     Returns None when the card isn't already known and the shared catalog is
     full, so that one row is skipped instead of the whole import failing.
+
+    A Riftbound match is read back from its catalog row (by id) the same way
+    _catalog_add_fields does, so it lands linked to that exact version.
     """
-    name = (match.get("name") or "").strip()[:200]
-    set_name = (match.get("set_name") or "").strip()[:200]
-    card_number = (match.get("card_number") or "").strip()[:40]
-    variant = (match.get("variant") or "").strip()[:200] or None
-    tcgplayer_id = (match.get("tcgplayer_id") or "").strip()[:40] or None
-    language = price_sources.ppt_language(match.get("language"))
+    game = match.get("game") or CATALOG_GAME
+    source_id = None
+    if games.priced_from_catalog(game):
+        ident = await catalog_card_identity(conn, game, match.get("id"))
+        if not ident:
+            return None
+        name, set_name, card_number = ident["name"], ident["set_name"], ident["card_number"]
+        variant, language, source_id = ident["variant"], ident["language"], ident["source_id"]
+        tcgplayer_id = None
+    else:
+        name = (match.get("name") or "").strip()[:200]
+        set_name = (match.get("set_name") or "").strip()[:200]
+        card_number = (match.get("card_number") or "").strip()[:40]
+        variant = (match.get("variant") or "").strip()[:200] or None
+        tcgplayer_id = (match.get("tcgplayer_id") or "").strip()[:40] or None
+        language = price_sources.ppt_language(match.get("language"))
 
     found = await conn.fetchrow(
-        "SELECT id FROM tracked_cards WHERE game = 'pokemon' AND name = $1 "
+        "SELECT id FROM tracked_cards WHERE game = $5 AND name = $1 "
         "AND set_name = $2 AND card_number = $3 AND language = $4",
-        name, set_name, card_number, language)
+        name, set_name, card_number, language, game)
     if found:
         return found["id"]
 
@@ -3452,17 +3559,17 @@ async def _tracked_card_id(conn, match: dict):
 
     inserted = await conn.fetchrow(
         "INSERT INTO tracked_cards (name, game, set_name, card_number, variant, "
-        "tcgplayer_id, language) VALUES ($1, 'pokemon', $2, $3, $4, $5, $6) "
+        "tcgplayer_id, language, source_id) VALUES ($1, $7, $2, $3, $4, $5, $6, $8) "
         "ON CONFLICT (game, name, set_name, card_number, language) "
         "DO NOTHING RETURNING id",
-        name, set_name, card_number, variant, tcgplayer_id, language)
+        name, set_name, card_number, variant, tcgplayer_id, language, game, source_id)
     if inserted:
         return inserted["id"]
     # Lost a race between the lookup and the insert; read it back.
     raced = await conn.fetchrow(
-        "SELECT id FROM tracked_cards WHERE game = 'pokemon' AND name = $1 "
+        "SELECT id FROM tracked_cards WHERE game = $5 AND name = $1 "
         "AND set_name = $2 AND card_number = $3 AND language = $4",
-        name, set_name, card_number, language)
+        name, set_name, card_number, language, game)
     return raced["id"] if raced else None
 
 
@@ -3741,6 +3848,8 @@ async def api_portfolio_resolve_card(request: Request,
     Adding a card here makes it eligible for pricing (see card_tracker's
     _MISSING_TODAY_SQL, which now counts portfolio lots as well as
     watchlists). It is priced once a day no matter how many members hold it.
+
+    Riftbound sends the catalog row's id instead (see _catalog_add_fields).
     """
     body = await request.json()
     game = body.get("game", "")
@@ -3750,19 +3859,24 @@ async def api_portfolio_resolve_card(request: Request,
     variant = (body.get("variant") or "").strip()[:200] or None
     tcgplayer_id = (body.get("tcgplayer_id") or "").strip()[:40] or None
     language = price_sources.ppt_language(body.get("language"))
+    source_id = None
+    pool = request.app.state.db
+    if games.priced_from_catalog(game):
+        ident = await _catalog_add_fields(pool, game, body)
+        name, set_name, card_number = ident["name"], ident["set_name"], ident["card_number"]
+        variant, language, source_id = ident["variant"], ident["language"], ident["source_id"]
     if game not in VALID_GAMES or not name:
         raise HTTPException(status_code=400, detail="Pick a card first.")
 
-    pool = request.app.state.db
     async with pool.acquire() as conn:
         async with conn.transaction():
             inserted = await conn.fetchrow(
                 "INSERT INTO tracked_cards (name, game, set_name, card_number, variant, "
-                "tcgplayer_id, language) VALUES ($1, $2, $3, $4, $5, $6, $7) "
+                "tcgplayer_id, language, source_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
                 "ON CONFLICT (game, name, set_name, card_number, language) "
                 "DO NOTHING RETURNING id",
                 name, game, set_name, card_number, variant,
-                tcgplayer_id if game == "pokemon" else None, language)
+                tcgplayer_id if game == "pokemon" else None, language, source_id)
             if inserted:
                 card_id = inserted["id"]
                 total = await conn.fetchval("SELECT COUNT(*) FROM tracked_cards")
@@ -3779,6 +3893,10 @@ async def api_portfolio_resolve_card(request: Request,
                     "AND set_name=$3 AND card_number=$4 AND language=$5",
                     game, name, set_name, card_number, language)
                 card_id = existing["id"]
+                if source_id:
+                    await conn.execute(
+                        "UPDATE tracked_cards SET source_id = $1 "
+                        "WHERE id = $2 AND source_id IS NULL", source_id, card_id)
     return JSONResponse({"card_id": card_id}, headers={"Cache-Control": "no-store"})
 
 
@@ -4111,14 +4229,20 @@ async def api_portfolio_sealed_purge(request: Request, user=Depends(require_admi
     if mode not in ("unused", "all"):
         raise HTTPException(status_code=400, detail="Unknown mode.")
 
+    # Pokemon's sealed product only — the rows this tool exists to clean up
+    # come from the PokemonPriceTracker import. Riftbound's are rewritten
+    # by its daily sync, and purging them would destroy members' Riftbound
+    # holdings (same ON DELETE CASCADE) for nothing.
     pool = request.app.state.db
     async with pool.acquire() as conn:
-        total = await conn.fetchval("SELECT COUNT(*) FROM sealed_products") or 0
+        total = await conn.fetchval(
+            "SELECT COUNT(*) FROM sealed_products WHERE game = 'pokemon'") or 0
         held = await conn.fetchval(
             "SELECT COUNT(DISTINCT s.id) FROM sealed_products s "
-            "JOIN portfolio_lots l ON l.sealed_id = s.id") or 0
+            "JOIN portfolio_lots l ON l.sealed_id = s.id WHERE s.game = 'pokemon'") or 0
         lots_at_risk = await conn.fetchval(
-            "SELECT COUNT(*) FROM portfolio_lots WHERE sealed_id IS NOT NULL") or 0
+            "SELECT COUNT(*) FROM portfolio_lots l JOIN sealed_products s "
+            "ON s.id = l.sealed_id WHERE s.game = 'pokemon'") or 0
 
     impact = {
         "total_products": total,
@@ -4140,14 +4264,14 @@ async def api_portfolio_sealed_purge(request: Request, user=Depends(require_admi
                 detail=("This would delete %d product(s) and %d member holding(s). "
                         "Type DELETE ALL SEALED to confirm." % (total, lots_at_risk)))
         async with pool.acquire() as conn:
-            result = await conn.execute("DELETE FROM sealed_products")
-        logger.warning("Sealed: ALL products purged by admin %s "
+            result = await conn.execute("DELETE FROM sealed_products WHERE game = 'pokemon'")
+        logger.warning("Sealed: ALL Pokemon products purged by admin %s "
                        "(%d products, %d member lots destroyed)",
                        user["id"], total, lots_at_risk)
     else:
         async with pool.acquire() as conn:
             result = await conn.execute(
-                "DELETE FROM sealed_products s WHERE NOT EXISTS "
+                "DELETE FROM sealed_products s WHERE s.game = 'pokemon' AND NOT EXISTS "
                 "(SELECT 1 FROM portfolio_lots l WHERE l.sealed_id = s.id)")
         logger.info("Sealed: purged unused products by admin %s (%s)",
                     user["id"], result)
@@ -4160,7 +4284,7 @@ async def api_portfolio_sealed_purge(request: Request, user=Depends(require_admi
 @app.get("/api/portfolios/sealed/browse")
 async def api_portfolio_sealed_browse(request: Request, set_name: str = "",
                                       product_type: str = "", q: str = "",
-                                      limit: int = 200, offset: int = 0,
+                                      limit: int = 200, offset: int = 0, game: str = "",
                                       user=Depends(get_current_user_or_guest)):
     """Sealed product for the Catalog's sealed tab.
 
@@ -4183,7 +4307,14 @@ async def api_portfolio_sealed_browse(request: Request, set_name: str = "",
     except (TypeError, ValueError):
         offset = 0
 
-    clauses, params = [], []
+    # Optional, so existing callers (no game) keep seeing every product. The
+    # Catalog and the portfolio picker pass one: Pokemon's and Riftbound's
+    # sealed product are separate lists.
+    game = _catalog_game(game) if game else ""
+    game_clause, game_params = ("game = $1", [game]) if game else ("TRUE", [])
+    clauses, params = [], list(game_params)
+    if game:
+        clauses.append(game_clause)
     if set_name:
         params.append(set_name[:120])
         clauses.append("set_name = $" + str(len(params)))
@@ -4204,14 +4335,16 @@ async def api_portfolio_sealed_browse(request: Request, set_name: str = "",
             "market_price FROM sealed_products " + where +
             " ORDER BY set_name, name LIMIT $" + str(len(params) + 1) +
             " OFFSET $" + str(len(params) + 2), *params, limit, offset)
-        # Filter options come from the WHOLE table so the dropdowns are
-        # complete no matter which page is being viewed.
+        # Filter options come from the WHOLE table (for this game) so the
+        # dropdowns are complete no matter which page is being viewed.
         set_rows = await conn.fetch(
             "SELECT set_name, COUNT(*) AS n FROM sealed_products "
-            "WHERE set_name <> '' GROUP BY set_name ORDER BY set_name")
+            "WHERE set_name <> '' AND " + game_clause + " GROUP BY set_name ORDER BY set_name",
+            *game_params)
         type_rows = await conn.fetch(
             "SELECT product_type, COUNT(*) AS n FROM sealed_products "
-            "GROUP BY product_type ORDER BY product_type")
+            "WHERE " + game_clause + " GROUP BY product_type ORDER BY product_type",
+            *game_params)
 
     return JSONResponse({
         "items": [{
@@ -4315,7 +4448,7 @@ async def _existing_card_keys(conn) -> tuple:
     return exact, by_number
 
 def _validate_import_params(game: str, set_id: str, rarity: str) -> None:
-    if game not in ("pokemon", "one_piece"):
+    if game not in games.keys_with("set_import"):
         raise HTTPException(status_code=400, detail="Invalid game")
     if not set_id or len(set_id) > 40:
         raise HTTPException(status_code=400, detail="Invalid set")
@@ -4330,12 +4463,62 @@ _SET_LIST_CACHE = {}          # game -> {"sets": [...], "at": epoch}
 _SET_LIST_TTL = 6 * 3600
 
 
+async def _catalog_import_sets(pool, game: str) -> list:
+    """The set import's list for a game priced from its catalog: the sets the
+    catalog holds, newest first, with each one's card count."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT set_id, MAX(set_name) AS set_name, COUNT(*) AS n FROM catalog_cards "
+            "WHERE game = $1 AND source_id IS NOT NULL GROUP BY set_id", game)
+    releases = await _catalog_set_releases(game)
+    order = {s["id"]: i for i, s in enumerate(releases)}
+    released = {s["id"]: s["released"] for s in releases}
+    out = [{"id": r["set_id"], "name": r["set_name"], "release_date": released.get(r["set_id"]),
+            "total": r["n"]} for r in rows]
+    out.sort(key=lambda s: (order.get(s["id"], len(order)), s["name"]))
+    return out
+
+
+async def _catalog_import_candidates(pool, game: str, set_id: str, rarity: str) -> tuple:
+    """(set_name, cards) for importing one set of a game priced from its
+    catalog — straight from catalog_cards, so it costs no request and needs
+    no 250-card cap (that cap guards against a bad API response; this is our
+    own table). Each card carries its catalog_id and the exact tracked-card
+    identity it will get (card_tracker.catalog_set_identities)."""
+    async with pool.acquire() as conn:
+        cards = await catalog_set_identities(conn, game, set_id)
+        tracked = {r["source_id"] for r in await conn.fetch(
+            "SELECT source_id FROM tracked_cards WHERE game = $1 AND source_id IS NOT NULL",
+            game)}
+    if rarity:
+        cards = [c for c in cards if rarity.lower() in c["rarity"].lower()]
+    for c in cards:
+        c["already_tracked"] = c["source_id"] in tracked
+    return (cards[0]["set_name"] if cards else ""), cards
+
+
+async def _price_imported_cards(app, game: str) -> None:
+    """Today's prices and first history for a just-imported set, in the
+    background — the import itself returns straight away."""
+    try:
+        if game == riftbound.GAME:
+            result = await run_riftbound_snapshots(app.state.db)
+            if result["snapshots"] or result["backdated"]:
+                await run_scoring(app.state.db)
+    except Exception:
+        logger.exception("Set import: pricing the imported %s cards failed", game)
+
+
 @app.get("/api/card-tracker/import/sets")
 @limiter.limit("30/hour")
 async def api_import_sets(request: Request, game: str = "pokemon"):
     _require_tracker_admin(request)
-    if game not in ("pokemon", "one_piece"):
+    if game not in games.keys_with("set_import"):
         raise HTTPException(status_code=400, detail="Invalid game")
+
+    if games.priced_from_catalog(game):
+        return JSONResponse({"sets": await _catalog_import_sets(request.app.state.db, game),
+                             "stale": False}, headers={"Cache-Control": "no-store"})
 
     cached = _SET_LIST_CACHE.get(game)
     if cached and time.time() - cached["at"] < _SET_LIST_TTL:
@@ -4378,6 +4561,29 @@ async def api_import_preview(request: Request):
     set_id = (body.get("set_id") or "").strip()
     rarity = (body.get("rarity") or "").strip()
     _validate_import_params(game, set_id, rarity)
+    if games.priced_from_catalog(game):
+        pool = request.app.state.db
+        set_name, cards = await _catalog_import_candidates(pool, game, set_id, rarity)
+        if not cards and not rarity:
+            raise HTTPException(status_code=400, detail="That set has no cards in the catalog yet.")
+        async with pool.acquire() as conn:
+            tracked_count = await conn.fetchval("SELECT COUNT(*) FROM tracked_cards")
+            all_rarities = await conn.fetch(
+                "SELECT DISTINCT rarity FROM catalog_cards WHERE game = $1 AND set_id = $2 "
+                "AND rarity <> '' ORDER BY rarity", game, set_id)
+        return JSONResponse({
+            "set_name": set_name,
+            # The number may carry the version (catalog_card_identity), and
+            # catalog_id is what the browser sends back to leave a card out:
+            # versions share a number, so a number can't single one out.
+            "cards": [{"name": c["name"], "card_number": c["card_number"],
+                       "variant": " · ".join(x for x in (c["rarity"], c["version"]) if x),
+                       "catalog_id": c["catalog_id"], "already_tracked": c["already_tracked"]}
+                      for c in cards],
+            "rarities": [r["rarity"] for r in all_rarities],
+            "tracked_count": tracked_count,
+            "max_tracked": MAX_TRACKED_CARDS,
+        }, headers={"Cache-Control": "no-store"})
     try:
         set_name, cards = await _fetch_set_candidates(game, set_id, rarity,
                                                       limit=set_import.MAX_CARDS_PER_IMPORT)
@@ -4406,6 +4612,56 @@ async def api_import_preview(request: Request):
         "max_tracked": MAX_TRACKED_CARDS,
     }, headers={"Cache-Control": "no-store"})
 
+async def _catalog_import_run(request: Request, game: str, set_id: str, rarity: str,
+                              exclude_ids) -> JSONResponse:
+    """The import itself for a game priced from its catalog. Like the other
+    path, the browser only names the set, the rarity and what to leave out
+    (by catalog id); the cards are re-read here, never taken from it."""
+    if not isinstance(exclude_ids, list) or len(exclude_ids) > 2000 or \
+            any(not isinstance(x, int) or isinstance(x, bool) for x in exclude_ids):
+        raise HTTPException(status_code=400, detail="Invalid exclusion list")
+    excluded = set(exclude_ids)
+    pool = request.app.state.db
+    set_name, cards = await _catalog_import_candidates(pool, game, set_id, rarity)
+    skipped = sum(1 for c in cards if c["already_tracked"])
+    new_cards = [c for c in cards if not c["already_tracked"] and c["catalog_id"] not in excluded]
+    released = {s["id"]: s["released"] for s in await _catalog_set_releases(game)}.get(set_id)
+    release_date = datetime.strptime(released, "%Y-%m-%d").date() if released else None
+    added = 0
+    async with pool.acquire() as conn:
+        tracked_count = await conn.fetchval("SELECT COUNT(*) FROM tracked_cards")
+        if tracked_count + len(new_cards) > MAX_TRACKED_CARDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Import would take the tracker to {tracked_count + len(new_cards)} cards "
+                       f"(cap {MAX_TRACKED_CARDS}, currently {tracked_count}). Trim the selection "
+                       f"or raise MAX_TRACKED_CARDS in card_tracker.py deliberately.")
+        async with conn.transaction():
+            for c in new_cards:
+                result = await conn.execute(
+                    """
+                    INSERT INTO tracked_cards
+                        (name, game, set_name, card_number, variant, release_date, language,
+                         source_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    ON CONFLICT (game, name, set_name, card_number, language) DO NOTHING
+                    """,
+                    c["name"], game, c["set_name"], c["card_number"], c["variant"],
+                    release_date, c["language"], c["source_id"])
+                if result.endswith("1"):
+                    added += 1
+                else:
+                    skipped += 1
+        total = await conn.fetchval("SELECT COUNT(*) FROM tracked_cards")
+    if added:
+        asyncio.create_task(_price_imported_cards(request.app, game))
+    logger.info("Set import: %s/%s rarity=%r -> +%d added, %d skipped as duplicates (total %d)",
+                game, set_id, rarity or "all", added, skipped, total)
+    return JSONResponse({"ok": True, "set_name": set_name, "added": added,
+                         "skipped_duplicates": skipped, "total_tracked": total,
+                         "priced_now": True}, headers={"Cache-Control": "no-store"})
+
+
 @app.post("/api/card-tracker/import/run")
 @limiter.limit("10/hour")
 async def api_import_run(request: Request):
@@ -4420,6 +4676,9 @@ async def api_import_run(request: Request):
             any(not isinstance(x, str) or len(x) > 40 for x in exclude):
         raise HTTPException(status_code=400, detail="Invalid exclusion list")
     excluded = {x.lower() for x in exclude}
+    if games.priced_from_catalog(game):
+        return await _catalog_import_run(request, game, set_id, rarity,
+                                         body.get("exclude_ids") or [])
 
     # Server-side re-fetch — the client only says WHAT set/rarity to import
     # and which numbers to leave out; it can't inject card rows.
@@ -4921,11 +5180,37 @@ def _guest_visible_one_piece_sets() -> list:
     return grading_sets.GRADING_SETS.get("one_piece", [])[:GUEST_GRADING_VISIBLE_SETS]
 
 
+# Games the Grading Calculator offers (games.py).
+GRADING_GAMES = games.keys_with("grading")
+
+
+async def _catalog_guest_sets(pool, game: str) -> list:
+    """[{id, name}] of the sets a guest may see for a game priced from its
+    catalog — the Catalog's own guest window (_catalog_guest_ceiling), so the
+    two pages can never disagree about it."""
+    ids = await _catalog_guest_ceiling(pool, game, list(games.get(game).languages[:1]))
+    if not ids:
+        return []
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT DISTINCT set_id, set_name FROM catalog_cards "
+            "WHERE game = $1 AND set_id = ANY($2::text[])", game, list(ids))
+    names = {r["set_id"]: r["set_name"] for r in rows}
+    return [{"id": i, "name": names.get(i, "")} for i in ids]
+
+
 async def _guest_grading_allowed(pool, game: str, language: str, set_name: str) -> bool:
     if game == "one_piece":
         needle = _norm_set_name(set_name)
         return any(needle in (_norm_set_name(s.get("id")), _norm_set_name(s.get("name")))
                    for s in _guest_visible_one_piece_sets())
+    if games.priced_from_catalog(game):
+        # Matched on the set's id (what /set-cards sends) or its name (what
+        # /quotes may carry), like One Piece above.
+        needle = _norm_set_name(set_name)
+        return bool(needle) and any(
+            needle in (_norm_set_name(s["id"]), _norm_set_name(s["name"]))
+            for s in await _catalog_guest_sets(pool, game))
     if game != "pokemon":
         return True
     visible = await _guest_visible_set_ids(pool, language, limit=GUEST_GRADING_VISIBLE_SETS)
@@ -4966,6 +5251,8 @@ async def grading_calculator_page(request: Request):
         # needs the live number, not a hardcoded one that drifts the moment
         # the constant changes.
         "guest_grading_visible_sets": GUEST_GRADING_VISIBLE_SETS,
+        # Riftbound shares the Catalog's window instead (_catalog_guest_sets).
+        "guest_riftbound_visible_sets": GUEST_RIFTBOUND_VISIBLE_SETS,
     })
 
 
@@ -5012,27 +5299,92 @@ async def _get_population(pool, tcgplayer_id: str, language: str):
     return cached  # stale cache, if any, beats nothing
 
 
+async def _grading_catalog_row(pool, game: str, catalog_id: str, name: str,
+                               set_name: str, card_number: str):
+    """The catalog row a Grading Calculator lookup is about, for a game priced
+    from its catalog: by id when the card came from the picker, otherwise the
+    one row matching the typed name (and set and number, when given). None
+    when nothing — or more than one row — matches."""
+    async with pool.acquire() as conn:
+        if str(catalog_id or "").strip().isdigit():
+            return await conn.fetchrow(
+                "SELECT id, set_id, set_name, card_name, card_number, raw_price, "
+                "price_source, priced_at FROM catalog_cards WHERE id = $1 AND game = $2",
+                int(catalog_id), game)
+        rows = await conn.fetch(
+            "SELECT id, set_id, set_name, card_name, card_number, raw_price, "
+            "price_source, priced_at FROM catalog_cards "
+            "WHERE game = $1 AND lower(card_name) = lower($2) "
+            "AND ($3 = '' OR lower(set_name) = lower($3) OR set_id = $3) "
+            "AND ($4 = '' OR lower(card_number) = lower($4)) LIMIT 2",
+            game, name, set_name, card_number)
+    return rows[0] if len(rows) == 1 else None
+
+
+def _catalog_raw_quote(row):
+    """The catalog's daily price as the lookup's ungraded ("raw") quote."""
+    if row is None or row["raw_price"] is None:
+        return None
+    cardmarket = row["price_source"] == riftbound.SOURCE_CARDMARKET
+    return price_sources.GradedQuote(
+        grade="raw", price=float(row["raw_price"]), basis="market",
+        source="catalog_cardmarket" if cardmarket else "catalog_tcgplayer",
+        as_of=(row["priced_at"] or datetime.now(ZoneInfo("UTC"))).isoformat(),
+        note=("Cardmarket's 7-day average, converted from euros" if cardmarket
+              else "TCGplayer market price"))
+
+
 @app.get("/api/grading-calculator/quotes")
 @limiter.limit("20/minute")
 async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
                              set_name: str = "", card_number: str = "",
                              tcgplayer_id: str = "", language: str = "english",
+                             catalog_id: str = "",
                              user=Depends(get_current_user_or_guest)):
     """Live graded prices for one card, merged across configured vendors.
     Open to members and guests (like the rest of the grading calculator).
     Spends PokemonPriceTracker credits and eBay's daily budget, so it keeps
-    the per-IP rate limit above — watch aggregate usage if traffic grows."""
+    the per-IP rate limit above — watch aggregate usage if traffic grows.
+
+    A game priced from its catalog (Riftbound) takes its ungraded price from
+    the catalog row — `catalog_id` when the card came from the picker — and
+    its graded prices from eBay alone."""
     name = (name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="A card name is required")
-    if game not in ("pokemon", "one_piece"):
+    if game not in GRADING_GAMES:
         raise HTTPException(status_code=400, detail="Unknown game")
 
     tcg_id = (tcgplayer_id or "").strip()[:32]
     language = price_sources.ppt_language(language)
     set_name_clean = (set_name or "").strip()[:120]
+    card_number_clean = (card_number or "").strip()[:40]
 
-    if user.get("guest"):
+    catalog_row = None
+    if games.priced_from_catalog(game):
+        language = games.get(game).languages[0]
+        tcg_id = ""
+        catalog_row = await _grading_catalog_row(
+            request.app.state.db, game, catalog_id[:20], name[:120], set_name_clean,
+            card_number_clean)
+        if user.get("guest"):
+            # The row's own set decides, never the set the request names —
+            # the same reason a pinned tcgPlayerId is checked below. A guest
+            # needs a card the catalog actually holds: with no row there's
+            # no set to check, and the eBay search doesn't use the set name.
+            allowed = catalog_row is not None and await _guest_grading_allowed(
+                request.app.state.db, game, language, catalog_row["set_id"])
+            if not allowed:
+                raise HTTPException(
+                    status_code=403,
+                    detail="That card's set isn't available on the guest tier — pick a card from "
+                           "the Set dropdown, or sign in with Discord for the full set list.")
+        if catalog_row is not None:
+            name = catalog_row["card_name"]
+            set_name_clean = catalog_row["set_name"]
+            card_number_clean = catalog_row["card_number"]
+
+    if user.get("guest") and catalog_row is None:
         # tcg_id pinning only ever happens for Pokemon — One Piece's picker
         # never populates a tcgplayer_id (see _grading_set_cache), so tcg_id
         # is always empty for a one_piece call and this branch is skipped.
@@ -5060,7 +5412,7 @@ async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
 
     card = price_sources.CardRef(game=game, name=name[:120],
                                  set_name=set_name_clean,
-                                 card_number=(card_number or "").strip()[:40],
+                                 card_number=card_number_clean,
                                  tcgplayer_id=tcg_id or None,
                                  language=language)
     try:
@@ -5068,6 +5420,12 @@ async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
     except Exception:
         logger.exception("Graded quote lookup failed for %r", card.query())
         raise HTTPException(status_code=502, detail="Price lookup failed")
+    raw_quote = _catalog_raw_quote(catalog_row)
+    if raw_quote:
+        # Outranks eBay's ungraded asking price (price_sources.SOURCE_PRIORITY).
+        result["quotes"] = price_sources.merge_quotes([raw_quote], list(result["quotes"].values()))
+        result["all"].insert(0, raw_quote)
+        result["sources"].insert(0, raw_quote.source)
 
     # Only when the card came from the PPT-backed picker (a real tcgPlayerId
     # pins the exact printing) and only for Pokemon — PPT has no One Piece
@@ -5160,6 +5518,56 @@ async def api_grading_calc(request: Request, user=Depends(get_current_user_or_gu
 _grading_set_cache: dict[tuple[str, str], list] = {}
 
 
+async def _catalog_set_releases(game: str) -> list:
+    """[{id, released}] newest release first, from the game's own API — the
+    catalog table keeps no release dates. [] when there's no list to go by."""
+    if game == riftbound.GAME:
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                return [{"id": s["id"], "released": s["released"]}
+                        for s in await riftbound.cached_episodes(client)]
+        except Exception:
+            logger.exception("Riftbound set list failed — sets shown alphabetically")
+    return []
+
+
+async def _catalog_set_release_order(game: str) -> list:
+    """Set ids newest release first (see _catalog_set_releases)."""
+    return [s["id"] for s in await _catalog_set_releases(game)]
+
+
+async def _grading_catalog_sets(pool, game: str, guest: bool) -> list:
+    """The set picker for a game priced from its catalog: the sets the
+    catalog holds, newest release first (alphabetical when the release order
+    isn't known), cut to the guest window for guests. Read from our own
+    tables, so picking a set costs no API request."""
+    if guest:
+        sets = await _catalog_guest_sets(pool, game)
+    else:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT set_id, MAX(set_name) AS set_name FROM catalog_cards "
+                "WHERE game = $1 GROUP BY set_id ORDER BY MAX(set_name)", game)
+        sets = [{"id": r["set_id"], "name": r["set_name"]} for r in rows]
+        order = {set_id: i for i, set_id in enumerate(await _catalog_set_release_order(game))}
+        sets.sort(key=lambda s: order.get(s["id"], len(order)))
+    return [{"id": s["id"], "name": s["name"], "year": ""} for s in sets]
+
+
+async def _grading_catalog_cards(pool, game: str, set_id: str) -> list:
+    """The card picker for one set of a game priced from its catalog. Each
+    card carries its catalog_id, so the lookup prices that exact version."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, card_name, card_number, rarity, version, set_name FROM catalog_cards "
+            "WHERE game = $1 AND set_id = $2 "
+            "ORDER BY number_sort, card_number, card_name, version", game, set_id)
+    return [{"name": r["card_name"], "card_number": r["card_number"],
+             "variant": " · ".join(x for x in (r["rarity"], r["version"]) if x),
+             "set_name": r["set_name"], "tcgplayer_id": "", "catalog_id": r["id"]}
+            for r in rows]
+
+
 @app.get("/api/grading-calculator/sets")
 @limiter.limit("120/hour")
 async def api_grading_sets(request: Request, game: str = "pokemon",
@@ -5172,9 +5580,14 @@ async def api_grading_sets(request: Request, game: str = "pokemon",
     removes the set-name matching that caused every missed lookup. Falls back
     to the baked catalog list if PPT isn't configured or errors.
     """
-    if game not in ("pokemon", "one_piece"):
+    if game not in GRADING_GAMES:
         raise HTTPException(status_code=400, detail="Unknown game")
     language = price_sources.ppt_language(language)
+
+    if games.priced_from_catalog(game):
+        sets = await _grading_catalog_sets(request.app.state.db, game, bool(user.get("guest")))
+        return JSONResponse({"source": "catalog", "language": games.get(game).languages[0],
+                             "sets": sets}, headers={"Cache-Control": "no-store"})
 
     if game == "pokemon" and price_sources.pokemonpricetracker_available():
         try:
@@ -5221,7 +5634,7 @@ async def api_grading_sets(request: Request, game: str = "pokemon",
 async def api_grading_set_cards(request: Request, game: str, set_id: str,
                                 language: str = "english",
                                 user=Depends(get_current_user_or_guest)):
-    if game not in ("pokemon", "one_piece"):
+    if game not in GRADING_GAMES:
         raise HTTPException(status_code=400, detail="Unknown game")
     set_id = (set_id or "").strip()
     # PPT set ids ARE set names, so this is longer than a catalog set code.
@@ -5231,6 +5644,12 @@ async def api_grading_set_cards(request: Request, game: str, set_id: str,
 
     if user.get("guest") and not await _guest_grading_allowed(request.app.state.db, game, language, set_id):
         raise HTTPException(status_code=403, detail="That set isn't available on the guest tier.")
+
+    if games.priced_from_catalog(game):
+        cards = await _grading_catalog_cards(request.app.state.db, game, set_id)
+        return JSONResponse({"set_id": set_id, "source": "catalog",
+                             "language": games.get(game).languages[0], "cards": cards},
+                            headers={"Cache-Control": "no-store"})
 
     # Pokemon: take the card list from PPT so each card carries its
     # tcgPlayerId. A lookup can then pin the exact printing instead of
@@ -5280,6 +5699,42 @@ async def api_grading_set_cards(request: Request, game: str, set_id: str,
                         headers={"Cache-Control": "no-store"})
 
 
+@app.get("/api/grading-calculator/find-card")
+@limiter.limit("30/minute")
+async def api_grading_find_card(request: Request, game: str, number: str = "",
+                                name: str = "", user=Depends(get_current_user_or_guest)):
+    """Where a scanned card sits in the catalog, for a game priced from its
+    catalog: {set_id, catalog_id}, or 404.
+
+    Riftbound cards print a set CODE with the number ("OGN-066/298"), not a
+    set name, so matching the scan's set against the picker's names guesses
+    ("Origins" fits three sets). The number pins it. With no number, a name
+    only counts when every card by that name is in one set."""
+    if not games.priced_from_catalog(game):
+        raise HTTPException(status_code=400, detail="Unknown game")
+    code = (number or "").split("/")[0].strip()[:40]
+    name = (name or "").strip()[:120]
+    if not code and not name:
+        raise HTTPException(status_code=400, detail="A number or name is required")
+    async with request.app.state.db.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, set_id, card_name FROM catalog_cards WHERE game = $1 "
+            "AND ($2 = '' OR lower(split_part(card_number, '/', 1)) = lower($2)) "
+            "AND ($2 <> '' OR lower(card_name) = lower($3)) "
+            "ORDER BY version, id LIMIT 25", game, code, name)
+    if code and name:
+        named = [r for r in rows if r["card_name"].lower() == name.lower()]
+        rows = named or rows
+    if not rows or len({r["set_id"] for r in rows}) > 1:
+        raise HTTPException(status_code=404, detail="No single matching card")
+    row = rows[0]
+    if user.get("guest") and not await _guest_grading_allowed(
+            request.app.state.db, game, games.get(game).languages[0], row["set_id"]):
+        raise HTTPException(status_code=403, detail="That set isn't available on the guest tier.")
+    return JSONResponse({"set_id": row["set_id"], "catalog_id": row["id"]},
+                        headers={"Cache-Control": "no-store"})
+
+
 # ---- Card catalog ----
 # Browse/filter every card the dashboard has seen, by set, rarity and raw
 # price. Reads come from the local `catalog_cards` cache, never from a vendor:
@@ -5304,12 +5759,14 @@ CATALOG_GAME = "pokemon"
 # Discord-members-only. Neither restriction applies to a real Discord
 # session (member or admin) — only to `is_guest`.
 #
-# Was 3 (roughly 6-9 months of releases); widened to 8 (~1.5-2 years) since a
-# cold visitor's first search landing on an older set read as broken rather
-# than restricted — 3 sets wasn't enough for a search to plausibly succeed,
-# which is the wrong first impression for someone converting from a cold
-# link, not a returning member who already knows the restriction exists.
-GUEST_CATALOG_VISIBLE_SETS = int(os.getenv("GUEST_CATALOG_VISIBLE_SETS", "8"))
+# Was 3 (roughly 6-9 months of releases), then widened to 8 (~1.5-2 years)
+# because a cold visitor's first search landing on an older set read as
+# broken rather than restricted. Cut back to 4 (2026-11-01) to keep more of
+# the catalog behind the premium role. See MEMORY.md.
+GUEST_CATALOG_VISIBLE_SETS = int(os.getenv("GUEST_CATALOG_VISIBLE_SETS", "4"))
+# Riftbound's window is its own number: it releases far fewer sets than
+# Pokemon, so 3 main sets is already about a year of releases.
+GUEST_RIFTBOUND_VISIBLE_SETS = int(os.getenv("GUEST_RIFTBOUND_VISIBLE_SETS", "3"))
 # The grading calculator has its own, tighter guest window — decoupled from
 # the Catalog's so tightening/widening one never silently changes the other.
 GUEST_GRADING_VISIBLE_SETS = int(os.getenv("GUEST_GRADING_VISIBLE_SETS", "5"))
@@ -5359,6 +5816,63 @@ async def _guest_visible_set_ids(pool, language: str, limit: int = None) -> list
         if len(out) >= limit:
             break
     return out
+
+
+# Games the Catalog page offers (games.py). One Piece is allowed in the table
+# but has no prices yet (see catalog.GAMES), so it isn't one of them.
+CATALOG_GAMES = games.keys_with("catalog")
+
+
+def _catalog_game(raw) -> str:
+    game = str(raw or CATALOG_GAME).strip().lower()
+    if game not in CATALOG_GAMES:
+        raise HTTPException(status_code=400, detail="Unknown game.")
+    return game
+
+
+def _catalog_languages(game: str, raw: str) -> list:
+    """A one-language game (Riftbound) always gets that language; Pokemon
+    reads the language param as ever."""
+    langs = games.get(game).languages
+    return [langs[0]] if len(langs) == 1 else _language_list(raw)
+
+
+async def _riftbound_guest_set_ids(pool, limit: int = None) -> list:
+    """Riftbound's guest ceiling, by the same rule as _guest_visible_set_ids:
+    the newest N released, stocked, main sets. Promos, collections and
+    bundles are skipped (riftbound.is_main_set) the way Pokemon's promo era
+    is. Fails closed — no set list means nothing shown."""
+    limit = GUEST_RIFTBOUND_VISIBLE_SETS if limit is None else limit
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            sets = await riftbound.cached_episodes(client)
+    except Exception:
+        logger.exception("Guest catalog restriction: couldn't fetch the Riftbound set list")
+        sets = []
+    have = await catalog.cached_set_ids(pool, riftbound.GAME, riftbound.LANGUAGE)
+    today = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d")
+    out = []
+    for s in sets:
+        if not s["released"] or s["released"] > today or not s["main"]:
+            continue
+        if s["id"] in have:
+            out.append(s["id"])
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def _catalog_guest_ceiling(pool, game: str, languages) -> list:
+    if game == riftbound.GAME:
+        return await _riftbound_guest_set_ids(pool)
+    return await _guest_visible_set_ids_multi(pool, languages)
+
+
+def _annotate_catalog_sets(game: str, sets: list, name_key: str = "set_name") -> list:
+    """Group sets for the set picker: Pokemon by era, Riftbound into sets and promos."""
+    if game == riftbound.GAME:
+        return riftbound.annotate_sets(sets, name_key=name_key)
+    return card_eras.annotate(sets, name_key=name_key)
 
 
 def _language_list(raw: str) -> list:
@@ -5903,6 +6417,229 @@ async def _catalog_price_sweep_scheduler(app: FastAPI) -> None:
             logger.exception("Catalog price sweep scheduler failed — retrying tomorrow")
 
 
+# ---- Riftbound catalog sync ----
+# The whole game — every set, card and sealed product — re-fetched from the
+# Riftbound Prices API (riftbound.py) into the same tables Pokemon uses. There
+# is no per-card cost to work around, unlike PPT: the API bills per request at
+# 20 rows each, so the ~1,800 cards are ~95 requests and simply refreshed
+# whole, once a day. A member browsing never causes a call.
+#
+# "Due" is read from the database, not from process memory: a set is fetched
+# again once its rows are RIFTBOUND_SYNC_EVERY_H old. So a redeploy never
+# re-spends the day's requests, and a run cut short (rate limit, restart)
+# resumes with exactly the sets it didn't reach, at the next check.
+RIFTBOUND_SYNC_EVERY_H = float(os.getenv("RIFTBOUND_SYNC_EVERY_H", "20"))
+RIFTBOUND_SYNC_CHECK_S = float(os.getenv("RIFTBOUND_SYNC_CHECK_S", str(2 * 3600)))
+RIFTBOUND_SYNC_START_DELAY_S = float(os.getenv("RIFTBOUND_SYNC_START_DELAY_S", "120"))
+# Consecutive failed sets (not empty ones — unreleased sets have no cards
+# yet) that stop a run, so an outage can't spend the budget on errors.
+RIFTBOUND_SYNC_MAX_ERRORS = 3
+
+
+def _riftbound_sync_state(app) -> dict:
+    st = getattr(app.state, "riftbound_sync", None)
+    if st is None:
+        st = {"running": False, "started_at": None, "finished_at": None, "planned": 0,
+              "done": 0, "cards": 0, "products": 0, "current": None, "error": None,
+              "last_result": None, "products_synced": 0.0}
+        app.state.riftbound_sync = st
+    return st
+
+
+async def _riftbound_set_ages(pool) -> dict:
+    """{set_id: when its rows were last refreshed} for stocked Riftbound sets."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT set_id, MAX(refreshed_at) AS at FROM catalog_cards "
+            "WHERE game = $1 GROUP BY set_id", riftbound.GAME)
+    return {r["set_id"]: r["at"] for r in rows}
+
+
+def _riftbound_products_due(app, newest_price) -> bool:
+    """Sealed is due when neither the database (newest priced product) nor
+    this process (last products run, priced or not) says it was done within
+    RIFTBOUND_SYNC_EVERY_H. Both, because a list with no prices at all would
+    otherwise look forever due and be re-fetched on every check."""
+    window_s = RIFTBOUND_SYNC_EVERY_H * 3600
+    if time.monotonic() - _riftbound_sync_state(app)["products_synced"] < window_s:
+        return False
+    if newest_price is not None:
+        age = datetime.now(ZoneInfo("UTC")) - newest_price
+        return age.total_seconds() >= window_s
+    return True
+
+
+async def _riftbound_sync_due(app) -> bool:
+    async with app.state.db.acquire() as conn:
+        newest_price = await conn.fetchval(
+            "SELECT MAX(price_updated_at) FROM sealed_products WHERE game = $1", riftbound.GAME)
+    ages = await _riftbound_set_ages(app.state.db)
+    cutoff = datetime.now(ZoneInfo("UTC")) - timedelta(hours=RIFTBOUND_SYNC_EVERY_H)
+    return (not ages or min(ages.values()) < cutoff
+            or _riftbound_products_due(app, newest_price))
+
+
+async def _load_riftbound_factor(pool) -> None:
+    """Use the newest recorded TCGplayer number, if the sync has ever
+    recorded one (catalog.price_factor_changes); else the starting value."""
+    changes = await catalog.price_factor_changes(pool, riftbound.GAME, limit=1)
+    if changes:
+        riftbound.set_usd_per_eur(changes[0]["factor"])
+
+
+async def _check_riftbound_factor(pool, fetched) -> None:
+    """Compare today's API figures with the dollar prices stored last time,
+    and switch to a new TCGplayer number if the API has changed its own
+    (riftbound.detect_factor_change). Runs before today's prices are
+    written, so a change is caught the day it happens, at no request cost."""
+    figures = {}
+    for _entry, rows in fetched:
+        for row in rows:
+            figure = riftbound.tcgplayer_figure(row)
+            if figure is not None and row.get("id") is not None:
+                figures[str(row["id"])] = figure
+    if not figures:
+        return
+    async with pool.acquire() as conn:
+        stored = await conn.fetch(
+            "SELECT source_id, raw_price FROM catalog_cards "
+            "WHERE game = $1 AND price_source = $2 AND source_id = ANY($3::text[]) "
+            "AND raw_price IS NOT NULL AND priced_at >= NOW() - INTERVAL '3 days'",
+            riftbound.GAME, riftbound.SOURCE_TCGPLAYER, list(figures))
+    current = riftbound.usd_per_eur()
+    change = riftbound.detect_factor_change(
+        [(figures[r["source_id"]], float(r["raw_price"])) for r in stored], current)
+    if not change:
+        return
+    await catalog.record_price_factor_change(pool, riftbound.GAME, change["factor"], current,
+                                             change["cards"], change["share"])
+    riftbound.set_usd_per_eur(change["factor"])
+    logger.warning("Riftbound: the price API changed its TCGplayer number from %.4f to %.4f "
+                   "(%d cards moved %+.1f%% together) — using the new one",
+                   current, change["factor"], change["cards"], change["shift"] * 100)
+
+
+async def _run_riftbound_sync(app, force: bool = False) -> None:
+    """Refresh Riftbound sets, cards and sealed product, then portfolio
+    prices. Never raises.
+
+    force=True (the admin button) re-fetches every set regardless of age.
+    """
+    st = _riftbound_sync_state(app)
+    if st["running"]:
+        return
+    if not riftbound.available():
+        st["error"] = "The Riftbound price API isn't configured (RIFTBOUND_API_KEY)."
+        return
+    st.update(running=True, started_at=datetime.utcnow().isoformat() + "Z", finished_at=None,
+              planned=0, done=0, cards=0, products=0, current=None, error=None)
+    pool = app.state.db
+    try:
+        # Another instance may have recorded a new number since this one booted.
+        await _load_riftbound_factor(pool)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            eur_usd = await riftbound.eur_usd_rate(client)
+            if eur_usd is None:
+                logger.warning("Riftbound sync: no exchange rate — cards priced only by "
+                               "Cardmarket stay unpriced until one is available")
+            episodes, status = await riftbound.fetch_episodes(client)
+            if not episodes:
+                st["error"] = ("The Riftbound price API is rate-limiting — it picks up on "
+                               "its next check." if status == "rate_limited"
+                               else "The Riftbound price API returned no sets.")
+                return
+
+            cutoff = datetime.now(ZoneInfo("UTC")) - timedelta(hours=RIFTBOUND_SYNC_EVERY_H)
+            ages = await _riftbound_set_ages(pool)
+            todo = [e for e in episodes
+                    if force or ages.get(e["id"]) is None or ages[e["id"]] < cutoff]
+            st["planned"] = len(todo)
+            # Every due set is fetched before anything is written, so the
+            # API's TCGplayer number can be checked across all of them
+            # (_check_riftbound_factor) before a single price is stored with
+            # a number that's just gone stale.
+            fetched, error_streak = [], 0
+            for entry in todo:
+                st["current"] = entry["name"]
+                rows, status = await riftbound.fetch_episode_cards(client, entry["id"])
+                # Partial pages are still written: nothing is ever removed for
+                # being absent, and the rest comes in on the next pass.
+                if rows:
+                    fetched.append((entry, rows))
+                if status == "rate_limited":
+                    st["error"] = ("The Riftbound price API is rate-limiting, so the update "
+                                   "stopped at " + entry["name"] + ". It resumes on its "
+                                   "next check with the sets it didn't reach.")
+                    break
+                st["done"] += 1
+                if status in ("ok", "empty"):
+                    error_streak = 0
+                    continue
+                error_streak += 1
+                if error_streak >= RIFTBOUND_SYNC_MAX_ERRORS:
+                    st["error"] = (f"Stopped after {error_streak} failed sets in a row — the "
+                                   "Riftbound price API looks unreachable.")
+                    break
+
+            await _check_riftbound_factor(pool, fetched)
+            for entry, rows in fetched:
+                st["current"] = entry["name"]
+                cards = [c for c in (riftbound.parse_card(r, eur_usd, entry["name"])
+                                     for r in rows) if c]
+                if cards:
+                    stats = await catalog.upsert_set_cards(
+                        pool, riftbound.GAME, riftbound.LANGUAGE, entry["id"], cards)
+                    st["cards"] += stats["cards"]
+
+            async with pool.acquire() as conn:
+                newest_price = await conn.fetchval(
+                    "SELECT MAX(price_updated_at) FROM sealed_products WHERE game = $1",
+                    riftbound.GAME)
+            if not st["error"] and (force or _riftbound_products_due(app, newest_price)):
+                st["current"] = "sealed product"
+                rows, status = await riftbound.fetch_products(client)
+                items, seen = [], set()
+                for row in rows:
+                    item = riftbound.parse_product(row, eur_usd, portfolios.classify_sealed_type)
+                    key = item and (item["set_name"].lower(), item["name"].lower(),
+                                    item["product_type"])
+                    if item and key not in seen:
+                        seen.add(key)
+                        items.append(item)
+                if items:
+                    await portfolios.import_sealed_products(
+                        pool, items, language=riftbound.LANGUAGE, game=riftbound.GAME)
+                    st["products"] = len(items)
+                if status in ("ok", "empty"):
+                    st["products_synced"] = time.monotonic()
+
+            snaps = await run_riftbound_snapshots(pool, client)
+        if snaps["snapshots"] or snaps["backdated"]:
+            await run_scoring(pool)
+        st["last_result"] = (f"Riftbound updated — {st['cards']:,} cards across {st['done']} "
+                             f"set(s), {st['products']} sealed product(s).")
+        logger.info("Riftbound sync: %s", st["last_result"])
+    except Exception:
+        logger.exception("Riftbound sync failed")
+        st["error"] = "The Riftbound update failed — see the server logs."
+    finally:
+        st.update(running=False, current=None,
+                  finished_at=datetime.utcnow().isoformat() + "Z")
+
+
+async def _riftbound_sync_scheduler(app: FastAPI) -> None:
+    await asyncio.sleep(RIFTBOUND_SYNC_START_DELAY_S)
+    while True:
+        try:
+            if riftbound.available() and await _riftbound_sync_due(app):
+                await _run_riftbound_sync(app)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Riftbound sync check failed — retrying next interval")
+        await asyncio.sleep(RIFTBOUND_SYNC_CHECK_S)
+
+
 @app.get("/catalog", response_class=HTMLResponse)
 async def catalog_page(request: Request):
     # Demo/role-less Discord accounts reach this page too (guest-tier access,
@@ -5915,7 +6652,8 @@ async def catalog_page(request: Request):
     elif not is_guest(request) and not await account_has_access(request):
         return login_redirect_or_preview(
             request, title="Card Catalog — Nexus Card Co",
-            description="Browse every stocked Pokémon and One Piece set with live prices. "
+            description="Browse " + " and ".join(games.get(g).label for g in CATALOG_GAMES)
+                        + " singles and sealed product with daily prices. "
                         "Sign in with Discord or continue as a guest to use it.")
     return templates.TemplateResponse(request, "catalog.html", {
         "default_costs": {k: str(v) for k, v in portfolios.DEFAULT_SEALED_COST.items()},
@@ -5926,6 +6664,7 @@ async def catalog_page(request: Request):
         "ebay_affiliate": catalog.ebay_affiliate_enabled(),
         "refresh_min_age_hours": CATALOG_MANUAL_REFRESH_MIN_AGE_HOURS,
         "guest_catalog_visible_sets": GUEST_CATALOG_VISIBLE_SETS,
+        "guest_riftbound_visible_sets": GUEST_RIFTBOUND_VISIBLE_SETS,
         # Drives the admin Stock/Refresh button labels — read from the same
         # constants the backend defaults to, so a batch-size change can never
         # leave the button text stale again.
@@ -5945,16 +6684,17 @@ async def api_catalog_cards(request: Request, sets: str = "", rarities: str = ""
                             exclude_variant: str = "", exclude_card_types: str = "",
                             sort: str = catalog.DEFAULT_SORT,
                             limit: int = 50, offset: int = 0,
-                            language: str = "english",
+                            language: str = "english", game: str = CATALOG_GAME,
                             user=Depends(get_current_user_or_guest)):
     """Filtered, paginated catalog rows. Pure DB read — spends no vendor quota,
     which is why it carries a generous rate limit."""
-    languages = _language_list(language)
-    restrict_set_ids = (await _guest_visible_set_ids_multi(request.app.state.db, languages)
+    game = _catalog_game(game)
+    languages = _catalog_languages(game, language)
+    restrict_set_ids = (await _catalog_guest_ceiling(request.app.state.db, game, languages)
                         if user.get("guest") else None)
     result = await catalog.query_cards(
         request.app.state.db,
-        game=CATALOG_GAME,
+        game=game,
         language=languages,
         set_ids=_csv_list(sets),
         rarities=_csv_list(rarities),
@@ -5987,7 +6727,7 @@ async def api_catalog_cards(request: Request, sets: str = "", rarities: str = ""
         },
     )
     if result.get("facets"):
-        card_eras.annotate(result["facets"]["sets"], name_key="set_name")
+        _annotate_catalog_sets(game, result["facets"]["sets"], name_key="set_name")
     return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
 
@@ -6001,7 +6741,7 @@ async def api_catalog_export(request: Request, sets: str = "", rarities: str = "
                              exclude_rarities: str = "", exclude_price: str = "",
                              exclude_variant: str = "", exclude_card_types: str = "",
                              sort: str = catalog.DEFAULT_SORT,
-                             language: str = "english",
+                             language: str = "english", game: str = CATALOG_GAME,
                              user=Depends(get_current_user_or_guest)):
     """CSV download of every card matching the current filters — not just the
     page on screen. Same filter logic as /api/catalog/cards (down to sharing
@@ -6009,12 +6749,13 @@ async def api_catalog_export(request: Request, sets: str = "", rarities: str = "
     table itself wouldn't. Capped at catalog.EXPORT_MAX_ROWS rows; a lower
     rate limit than the table's own fetch since a full export is a heavier
     single request, even though it's still a pure DB read with no vendor cost."""
-    languages = _language_list(language)
-    restrict_set_ids = (await _guest_visible_set_ids_multi(request.app.state.db, languages)
+    game = _catalog_game(game)
+    languages = _catalog_languages(game, language)
+    restrict_set_ids = (await _catalog_guest_ceiling(request.app.state.db, game, languages)
                         if user.get("guest") else None)
     rows = await catalog.export_rows(
         request.app.state.db,
-        game=CATALOG_GAME,
+        game=game,
         language=languages,
         set_ids=_csv_list(sets),
         rarities=_csv_list(rarities),
@@ -6044,7 +6785,9 @@ async def api_catalog_export(request: Request, sets: str = "", rarities: str = "
     for r in rows:
         writer.writerow([
             r["set_name"] or r["set_id"], r["name"], r["card_number"], r["rarity"],
-            r["card_type"] or "", r["language"], r["variant"] or "",
+            # A Riftbound card's version ("V.4 - Showcase") fills the Variant
+            # column; Pokemon cards carry a printing there instead.
+            r["card_type"] or "", r["language"], r["variant"] or r["version"] or "",
             r["raw_price"] if r["raw_price"] is not None else "",
             r["price_source"] or "", r["priced_at"] or "", r["refreshed_at"] or "",
             r["tcgplayer_url"] or "", r["ebay_url"] or "",
@@ -6061,6 +6804,7 @@ async def api_catalog_export(request: Request, sets: str = "", rarities: str = "
 @app.get("/api/catalog/facets")
 @limiter.limit("60/minute")
 async def api_catalog_facets(request: Request, language: str = "english",
+                             game: str = CATALOG_GAME,
                              user=Depends(get_current_user_or_guest)):
     """Filter options plus coverage.
 
@@ -6068,13 +6812,51 @@ async def api_catalog_facets(request: Request, language: str = "english",
     UI can show which sets have no data yet instead of pretending the catalog
     is complete. The set list is cached for a day in price_sources.
     """
-    languages = _language_list(language)
-    restrict_set_ids = (await _guest_visible_set_ids_multi(request.app.state.db, languages)
+    game = _catalog_game(game)
+    languages = _catalog_languages(game, language)
+    restrict_set_ids = (await _catalog_guest_ceiling(request.app.state.db, game, languages)
                         if user.get("guest") else None)
-    data = await catalog.facets(request.app.state.db, CATALOG_GAME, languages,
+    data = await catalog.facets(request.app.state.db, game, languages,
                                restrict_set_ids=restrict_set_ids)
     data["is_guest_restricted"] = restrict_set_ids is not None
     data["languages"] = languages
+    data["game"] = game
+
+    if game == riftbound.GAME:
+        # Riftbound fills itself (the daily sync), so there's no stock picker:
+        # the set list is only coverage, and "backfill" is the sync's progress
+        # in the shape the page already renders.
+        available = []
+        if riftbound.available():
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    available = [{"id": s["id"], "name": s["name"], "released": s["released"],
+                                  "language": riftbound.LANGUAGE}
+                                 for s in await riftbound.cached_episodes(client)]
+            except Exception:
+                logger.exception("Catalog: Riftbound set list failed — showing stocked sets only")
+        riftbound.annotate_sets(data["sets"], name_key="set_name")
+        riftbound.annotate_sets(available, name_key="name")
+        st = _riftbound_sync_state(request.app)
+        data.update(available_sets=available,
+                    era_order=[key for key, _ in riftbound.ERA_ORDER],
+                    era_labels=dict(riftbound.ERA_ORDER),
+                    language=riftbound.LANGUAGE, can_stock=False,
+                    can_sync=riftbound.available(),
+                    backfill={k: st[k] for k in ("running", "planned", "done", "cards",
+                                                 "current", "error", "finished_at",
+                                                 "last_result")} | {"mode": "riftbound"})
+        uid = user.get("id")
+        if uid and not user.get("guest") and not user.get("account") \
+                and int(uid) in ADMIN_USER_IDS:
+            # The admin panel's note on the API's TCGplayer number.
+            last = await catalog.price_factor_changes(request.app.state.db, riftbound.GAME, 1)
+            data["factor"] = {
+                "value": riftbound.usd_per_eur(),
+                "changed_at": last[0]["detected_at"].isoformat() if last else None,
+                "previous": float(last[0]["previous"]) if last and last[0]["previous"] else None,
+            }
+        return JSONResponse(data, headers={"Cache-Control": "no-store"})
 
     # PPT's set list is per-language, so fetch each and tag the rows — the
     # admin stock picker needs to know which language a set would be stocked
@@ -6282,6 +7064,21 @@ async def api_catalog_backfill(request: Request, user=Depends(require_admin)):
                         headers={"Cache-Control": "no-store"})
 
 
+@app.post("/api/catalog/riftbound/sync")
+@limiter.limit("10/hour")
+async def api_catalog_riftbound_sync(request: Request, user=Depends(require_admin)):
+    """Admin: re-fetch every Riftbound set and sealed product now, rather than
+    waiting for the daily pass. ~95 API requests, so admin-only and limited.
+    Runs in the background; poll /api/catalog/facets?game=riftbound."""
+    if not riftbound.available():
+        raise HTTPException(status_code=503,
+                            detail="The Riftbound price API isn't configured.")
+    if _riftbound_sync_state(request.app)["running"]:
+        raise HTTPException(status_code=409, detail="A Riftbound update is already running.")
+    asyncio.create_task(_run_riftbound_sync(request.app, force=True))
+    return JSONResponse({"started": True}, headers={"Cache-Control": "no-store"})
+
+
 # ---- Monitor alert preferences ----
 # Members pick which products should ping them when Zephyr posts a restock.
 # This app only writes the rows; the bot that reads them and sends the pings
@@ -6298,6 +7095,8 @@ def _alert_json(row: dict) -> dict:
         "id": row["id"],
         "keyword": row["keyword"],
         "match_all": row["match_all"],
+        # "...but not if the name contains" (monitor_alerts.parse_excludes).
+        "exclude_keywords": list(row.get("exclude_keywords") or []),
         # Snowflakes as strings: a channel id is larger than JavaScript's
         # safe integer range, and the browser only ever echoes it back.
         "channel_ids": [str(c) for c in (row["channel_ids"] or [])],
@@ -6594,6 +7393,7 @@ async def get_analytics(
             WHERE date >= $1
               AND channel_name NOT IN (
                   'online-restock-information',
+                  'retailers-online-restocks',
                   'other-online-restocks',
                   'pokemon-center-drops'
               )
@@ -6925,7 +7725,7 @@ async def get_contributor_points(request: Request, period: str = "3months",
                     COUNT(*) AS restock_count
                 FROM restock_reports
                 WHERE date >= $1
-                  AND channel_name NOT IN ('online-restock-information','other-online-restocks','pokemon-center-drops')
+                  AND channel_name NOT IN ('online-restock-information','retailers-online-restocks','other-online-restocks','pokemon-center-drops')
                 GROUP BY user_id
             ),
             empty_points AS (
@@ -7082,7 +7882,7 @@ async def get_contributor_regions(request: Request, region: str, period: str = "
                 """ + _restock_locations_join(ids_ready) + """
                 WHERE rr.date >= $1
                   AND l.state = $2
-                  AND rr.channel_name NOT IN ('online-restock-information','other-online-restocks','pokemon-center-drops')
+                  AND rr.channel_name NOT IN ('online-restock-information','retailers-online-restocks','other-online-restocks','pokemon-center-drops')
                 GROUP BY rr.user_id
             ),
             empty_pts_cte AS (
@@ -7367,10 +8167,10 @@ async def api_grading_scan(request: Request, user=Depends(get_current_user_or_gu
         return JSONResponse({"error": "Failed to process image — please try again."}, status_code=500)
 
     # Only normalization applied: the raw game string maps to the grading
-    # calculator's own game-select values ("one piece" -> "one_piece"); every
-    # other field is passed through as Claude produced it.
+    # calculator's own game-select values ("one piece" -> "one_piece", via
+    # games.py); every other field is passed through as Claude produced it.
     raw_game = (parsed.get("game") or "other").lower().strip()
-    game = {"pokemon": "pokemon", "one piece": "one_piece"}.get(raw_game, raw_game)
+    game = games.from_scan(raw_game) or raw_game
     card_name = parsed.get("name")
     card_number = parsed.get("number")
     is_sp = bool(parsed.get("is_sp", False))
@@ -7461,6 +8261,7 @@ async def get_restocks(
             AND rr.non_tcg = FALSE
             AND (rr.channel_name IS NULL OR rr.channel_name NOT IN (
                 'online-restock-information',
+                'retailers-online-restocks',
                 'other-online-restocks',
                 'pokemon-center-drops'
             ))
@@ -7582,6 +8383,7 @@ async def get_map_data(
               AND rr.date >= $1
               AND (rr.channel_name IS NULL OR rr.channel_name NOT IN (
                   'online-restock-information',
+                  'retailers-online-restocks',
                   'other-online-restocks',
                   'pokemon-center-drops'
               ))

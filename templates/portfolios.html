@@ -275,9 +275,16 @@
     <div class="card-title" id="addTitle">Add an item</div>
 
     <div id="pickStep">
-      <div class="seg" style="margin-bottom:12px;">
-        <button id="segCard" class="on" onclick="setKind('card')">Card</button>
-        <button id="segSealed" onclick="setKind('sealed')">Sealed product</button>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+        <div class="seg" role="group" aria-label="Game" id="segGame">
+          {% for g in GAMES if g.catalog %}<button data-game="{{ g.key }}" class="{{ 'on' if loop.first }}"
+                  onclick="setAddGame('{{ g.key }}')">{{ g.label }}</button>
+          {% endfor %}
+        </div>
+        <div class="seg">
+          <button id="segCard" class="on" onclick="setKind('card')">Card</button>
+          <button id="segSealed" onclick="setKind('sealed')">Sealed product</button>
+        </div>
       </div>
 
       <!-- Set first, then narrow. Searching the whole catalog by name meant
@@ -1106,7 +1113,7 @@ function showAdd(pos) {
   setKind("card");
   if (pos) {
     // "Buy more" of something already held: skip the search entirely.
-    chosenItem = { kind: pos.kind, id: pos.item_id, label: pos.name,
+    chosenItem = { kind: pos.kind, id: pos.item_id, label: pos.name, game: pos.game,
                    productType: pos.product_type, marketPrice: pos.unit_price };
     document.getElementById("pickStep").style.display = "none";
     showChosen();
@@ -1149,7 +1156,20 @@ function fillConditions(kind) {
 // cuts a 400-card set down to something readable.
 let pickTimer = null;
 let pickSeq = 0;
-const setCache = { card: null, sealed: null };
+// Keyed "<kind>:<game>" — each game's sets are a separate list.
+const setCache = {};
+// Games with a priced catalog (games.py), for the picker and its placeholders.
+const GAME_INFO = Object.fromEntries({{ GAMES | tojson }}.filter(g => g.catalog).map(g => [g.key, g]));
+let addGame = Object.keys(GAME_INFO)[0];
+
+// Which game's catalog the picker draws from. Same pick-a-set-then-narrow
+// flow for every game; a switch starts the pick over, like changing Card/Sealed.
+function setAddGame(game) {
+  addGame = GAME_INFO[game] ? game : Object.keys(GAME_INFO)[0];
+  document.querySelectorAll("#segGame button[data-game]")
+    .forEach(b => b.classList.toggle("on", b.dataset.game === addGame));
+  setKind(addKind);
+}
 
 function pickEls() {
   return {
@@ -1169,7 +1189,9 @@ function setKind(kind) {
   const el = pickEls();
   el.typeLabel.textContent = kind === "sealed"
     ? "Product type (optional)" : "Rarity (optional)";
-  el.search.placeholder = kind === "sealed" ? "Elite Trainer Box" : "Charizard";
+  el.search.placeholder = kind === "sealed"
+    ? (addGame === "pokemon" ? "Elite Trainer Box" : "Booster Box")
+    : (GAME_INFO[addGame].card_example || "");
   el.set.value = "";
   el.type.innerHTML = '<option value="">Any</option>';
   el.results.style.display = "none";
@@ -1181,14 +1203,15 @@ function setKind(kind) {
 
 async function loadPickSets(kind) {
   const el = pickEls();
-  if (setCache[kind]) { renderPickSets(setCache[kind], kind); return; }
+  const cacheKey = kind + ":" + addGame;
+  if (setCache[cacheKey]) { renderPickSets(setCache[cacheKey], kind); return; }
   el.set.innerHTML = '<option value="">Loading sets…</option>';
   try {
     if (kind === "sealed") {
-      const data = await api("/api/portfolios/sealed/browse?limit=1");
-      setCache.sealed = { sets: data.sets || [], types: data.types || [] };
+      const data = await api("/api/portfolios/sealed/browse?limit=1&game=" + addGame);
+      setCache[cacheKey] = { sets: data.sets || [], types: data.types || [] };
     } else {
-      const data = await api("/api/catalog/facets");
+      const data = await api("/api/catalog/facets?game=" + addGame);
       // Facet rows arrive per (set_id, language); collapse to one per set.
       const bySet = new Map();
       (data.sets || []).forEach(s => {
@@ -1196,13 +1219,13 @@ async function loadPickSets(kind) {
         if (prev) prev.count += s.cards;
         else bySet.set(s.set_id, { value: s.set_id, name: s.set_name, count: s.cards });
       });
-      setCache.card = {
+      setCache[cacheKey] = {
         sets: [...bySet.values()],
         types: (data.rarities || []).map(r => ({ key: r.rarity || r, label: r.rarity || r,
                                                  count: r.count || 0 })),
       };
     }
-    renderPickSets(setCache[kind], kind);
+    renderPickSets(setCache[cacheKey], kind);
   } catch (e) {
     el.set.innerHTML = '<option value="">Could not load sets</option>';
     el.hint.textContent = e.message;
@@ -1243,23 +1266,23 @@ async function runPick() {
   try {
     let rows = [];
     if (addKind === "sealed") {
-      const p = new URLSearchParams({ set_name: setValue, limit: "200" });
+      const p = new URLSearchParams({ set_name: setValue, limit: "200", game: addGame });
       if (el.type.value) p.set("product_type", el.type.value);
       if (el.search.value.trim()) p.set("q", el.search.value.trim());
       const data = await api("/api/portfolios/sealed/browse?" + p.toString());
       rows = (data.items || []).map(r => ({
-        kind: "sealed", id: r.id, label: r.name, productType: r.product_type,
+        kind: "sealed", game: addGame, id: r.id, label: r.name, productType: r.product_type,
         marketPrice: r.market_price,
         sub: [r.set_name, r.type_label].filter(Boolean).join(" · "),
       }));
     } else {
-      const p = new URLSearchParams({ sets: setValue, limit: "200" });
+      const p = new URLSearchParams({ sets: setValue, limit: "200", game: addGame });
       if (el.type.value) p.set("rarities", el.type.value);
       if (el.search.value.trim()) p.set("search", el.search.value.trim());
       const data = await api("/api/catalog/cards?" + p.toString());
       rows = (data.cards || data.items || []).map(c => ({
-        kind: "card", card: c, label: c.name,
-        sub: [c.set_name, c.card_number ? "#" + c.card_number : "", c.rarity]
+        kind: "card", game: addGame, card: c, label: c.name,
+        sub: [c.set_name, c.card_number ? "#" + c.card_number : "", c.rarity, c.version]
           .filter(Boolean).join(" · "),
       }));
     }
@@ -1292,7 +1315,7 @@ async function choosePicked(row) {
   msg.innerHTML = "";
   if (row.kind === "sealed") {
     // productType carries through so the cost default can be looked up.
-    chosenItem = { kind: "sealed", id: row.id, label: row.label,
+    chosenItem = { kind: "sealed", id: row.id, label: row.label, game: row.game,
                    productType: row.productType, marketPrice: row.marketPrice };
     showChosen();
     return;
@@ -1303,7 +1326,10 @@ async function choosePicked(row) {
     const data = await api("/api/portfolios/resolve-card", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        game: "pokemon", name: row.card.name, set_name: row.card.set_name,
+        // Riftbound: the server reads the card from catalog_id, so the exact
+        // version picked is the one that's priced.
+        game: row.game || "pokemon", catalog_id: row.card.id,
+        name: row.card.name, set_name: row.card.set_name,
         card_number: row.card.card_number, variant: row.card.rarity,
         tcgplayer_id: row.card.tcgplayer_id, language: row.card.language,
       })
@@ -1344,7 +1370,10 @@ function showChosen() {
 function applyDefaultCost() {
   const box = document.getElementById("fUnitCost");
   const note = document.getElementById("costNote");
+  // Pokémon retail prices, so other games get none — a blank price there
+  // falls back to the market price instead (portfolios.sealed_product_type).
   const preset = chosenItem && chosenItem.kind === "sealed"
+      && (chosenItem.game || "pokemon") === "pokemon"
     ? DEFAULT_COSTS[chosenItem.productType] : null;
   if (preset && !box.value) box.value = preset;
   if (note) {
@@ -1759,10 +1788,16 @@ async function runImportSearch(i) {
     if (r.kind === "sealed") {
       rows = await api("/api/portfolios/sealed?limit=10&q=" + encodeURIComponent(q));
     } else {
-      rows = await api("/api/card-tracker/portfolio/search", {
+      // Collectr's text doesn't say which game a card is, so both are searched;
+      // Riftbound hits are labelled so they can't be mistaken for Pokémon ones.
+      const search = game => api("/api/card-tracker/portfolio/search", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ game: "pokemon", query: q })
+        body: JSON.stringify({ game, query: q })
       });
+      const [poke, rift] = await Promise.all([search("pokemon"), search("riftbound")]);
+      rows = (poke || []).concat((rift || []).map(r => Object.assign({}, r, {
+        set_name: [r.set_name, r.version, "Riftbound"].filter(Boolean).join(" · ")
+      })));
     }
     // Held in state and referenced by position: passing names through an
     // onclick attribute means escaping them twice, and half this catalog has

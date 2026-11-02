@@ -270,8 +270,8 @@
     <div class="table-header">
       <span class="table-header-title">Add a card to your portfolio</span>
       <select id="addGame" onchange="onAddGameChange()" style="font-size:12px;height:30px;padding:0 8px;border:1px solid #ddd;border-radius:6px;background:#fff;color:#111;">
-        <option value="pokemon">Pokémon</option>
-        <option value="one_piece">One Piece</option>
+        {% for g in GAMES %}<option value="{{ g.key }}">{{ g.label }}</option>
+        {% endfor %}
       </select>
       <select id="addLanguage" onchange="onAddSearchInput()" style="font-size:12px;height:30px;padding:0 8px;border:1px solid #ddd;border-radius:6px;background:#fff;color:#111;">
         <option value="english">English</option>
@@ -374,8 +374,8 @@
             <th class="left" data-col="game">
               <select class="col-filter" id="fGame" onchange="onFilterChange()">
                 <option value="all">All</option>
-                <option value="pokemon">Pokémon</option>
-                <option value="one_piece">One Piece</option>
+                {% for g in GAMES %}<option value="{{ g.key }}">{{ g.label }}</option>
+                {% endfor %}
               </select>
             </th>
             <th data-col="price"><div class="range-pair"><input class="range-input" type="number" id="fPriceMin" placeholder="min" oninput="onFilterChange()"><input class="range-input" type="number" id="fPriceMax" placeholder="max" oninput="onFilterChange()"></div></th>
@@ -430,7 +430,7 @@
 <script>
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 
-const GAME_LABELS = { pokemon: 'Pokémon', one_piece: 'One Piece' };
+const GAME_LABELS = Object.fromEntries({{ GAMES | tojson }}.map(g => [g.key, g.label]));
 const IS_ADMIN = {{ 'true' if is_admin else 'false' }};
 // 'portfolio': the caller's own tracked cards (everyone, incl. admins by
 // default). 'catalog': the whole shared list — admin-only, reachable only
@@ -1238,10 +1238,11 @@ function renderAddResults(){
     list.innerHTML = '<div class="add-empty">No matches — it may not be cataloged yet.</div>';
     return;
   }
+  const showLang = document.getElementById('addGame').value === 'pokemon';
   list.innerHTML = addSearchResults.map((c, i) => `
     <div class="add-row" onclick="addCardToPortfolio(${i})">
-      <span class="pname">${esc(c.name)}${langBadge(c.language)}</span>
-      <span class="pmeta">${esc(c.set_name)}${c.card_number ? ' #' + esc(c.card_number) : ''}${c.variant ? ' · ' + esc(c.variant) : ''}</span>
+      <span class="pname">${esc(c.name)}${showLang ? langBadge(c.language) : ''}</span>
+      <span class="pmeta">${esc(c.set_name)}${c.card_number ? ' #' + esc(c.card_number) : ''}${c.variant ? ' · ' + esc(c.variant) : ''}${c.version ? ' · ' + esc(c.version) : ''}</span>
       <span class="add-btn">+ Add</span>
     </div>`).join('');
 }
@@ -1253,8 +1254,11 @@ async function addCardToPortfolio(i){
   try {
     const resp = await fetch('/api/card-tracker/portfolio/add', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ game, name: c.name, set_name: c.set_name, card_number: c.card_number,
-                             variant: c.variant, tcgplayer_id: c.tcgplayer_id, language: c.language })
+      // catalog_id: Riftbound adds are read back from that catalog row, so
+      // the exact version picked is the one tracked.
+      body: JSON.stringify({ game, catalog_id: c.id, name: c.name, set_name: c.set_name,
+                             card_number: c.card_number, variant: c.variant,
+                             tcgplayer_id: c.tcgplayer_id, language: c.language })
     });
     const d = await resp.json();
     if (!resp.ok || !d.ok) throw new Error(d.detail || ('HTTP ' + resp.status));

@@ -24,9 +24,12 @@ from datetime import datetime, timezone
 
 import httpx
 
+import catalog
+import games
 import justtcg
 import price_sources
 import portfolios
+import riftbound
 from watchlist import WATCHLIST
 
 logger = logging.getLogger("dashboard.card_tracker")
@@ -110,7 +113,20 @@ MAX_TRACKED_CARDS = 3000
 # against the PPT plan) rather than lowering this one back.
 MAX_USER_PORTFOLIO_CARDS = 250
 
-VALID_GAMES = ("pokemon", "one_piece")
+VALID_GAMES = games.KEYS
+
+# Riftbound pricing (see run_riftbound_snapshots). Labels written to
+# price_snapshots.source — distinct per source so card_scoring never runs
+# momentum across a TCGplayer series and a Cardmarket one.
+RIFTBOUND_TCGPLAYER_SOURCE = "riftbound-tcgplayer"
+RIFTBOUND_CARDMARKET_SOURCE = "riftbound-cardmarket"
+RIFTBOUND_HISTORY_SOURCE = "riftbound-tcgplayer-history"
+# Price-history lookups per run for newly tracked Riftbound cards — one API
+# request each (often two), against the API plan's daily budget.
+RIFTBOUND_BACKDATE_RUN_CAP = int(os.getenv("RIFTBOUND_BACKDATE_RUN_CAP", "25"))
+# A catalog price older than this isn't copied into today's snapshot: if the
+# daily sync stopped, yesterday's number must not pass for today's.
+RIFTBOUND_SNAPSHOT_MAX_AGE_H = 26
 
 # set_name / card_number are NOT NULL DEFAULT '' (not nullable) so the UNIQUE
 # constraint dedupes watchlist syncs — Postgres treats NULLs as distinct in
@@ -120,7 +136,7 @@ CARD_TRACKER_SCHEMA = [
     CREATE TABLE IF NOT EXISTS tracked_cards (
         id              SERIAL PRIMARY KEY,
         name            TEXT NOT NULL,
-        game            TEXT NOT NULL CHECK (game IN ('pokemon','one_piece')),
+        game            TEXT NOT NULL CHECK (game IN ('pokemon','one_piece','riftbound')),
         language        TEXT NOT NULL DEFAULT 'english',
         set_name        TEXT NOT NULL DEFAULT '',
         card_number     TEXT NOT NULL DEFAULT '',
@@ -175,6 +191,10 @@ CARD_TRACKER_SCHEMA = [
     # 'english' so every pre-existing row (all implicitly English before this
     # column existed) keeps its current identity with no data change.
     "ALTER TABLE tracked_cards ADD COLUMN IF NOT EXISTS language TEXT NOT NULL DEFAULT 'english'",
+    # Riftbound only: the catalog row's source_id (TCGGO's card id), so the
+    # card's daily price is read from exactly that catalog row — never
+    # re-matched by name, which two versions of one card would share.
+    "ALTER TABLE tracked_cards ADD COLUMN IF NOT EXISTS source_id TEXT",
     # Per-member portfolio membership. Deliberately just a join table — the
     # card itself and its price history are shared (see module docstring):
     # two members tracking the same card cost one PPT credit/day, not two,
@@ -245,6 +265,7 @@ async def ensure_card_tracker_schema(pool) -> None:
     async with pool.acquire() as conn:
         for ddl in CARD_TRACKER_SCHEMA:
             await conn.execute(ddl)
+    await catalog.widen_game_check(pool, "tracked_cards")
     await portfolios.ensure_portfolio_schema(pool)
     logger.info("Card tracker schema ensured")
 
@@ -759,12 +780,28 @@ async def run_ppt_backdate(pool, card_ids: list, days: int) -> dict:
 
     async with pool.acquire() as conn:
         cards = await conn.fetch(
-            "SELECT id, name, game, tcgplayer_id, language FROM tracked_cards "
+            "SELECT id, name, game, tcgplayer_id, language, source_id FROM tracked_cards "
             "WHERE id = ANY($1::int[]) ORDER BY id", card_ids)
     summary["cards"] = len(cards)
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         for c in cards:
+            if c["game"] == "riftbound":
+                # Riftbound's own history endpoint, not PPT — no PPT credits.
+                if not c["source_id"] or not riftbound.available():
+                    summary["skipped"].append(f"{c['name']}: not linked to the Riftbound catalog yet")
+                    continue
+                result = await _riftbound_backdate(client, pool, c["id"], c["name"],
+                                                   c["source_id"], days)
+                if result["status"] == "rate_limited":
+                    summary["rate_limited"] = True
+                    summary["failed"].append("stopped: the Riftbound price API is rate-limiting")
+                    break
+                if result["status"] != "ok":
+                    summary["skipped"].append(f"{c['name']}: no history returned ({result['status']})")
+                    continue
+                summary["inserted"] += result["inserted"]
+                continue
             if c["game"] != "pokemon":
                 summary["skipped"].append(f"{c['name']}: One Piece isn't covered by PokemonPriceTracker")
                 continue
@@ -976,6 +1013,211 @@ async def run_ingest(pool) -> dict:
     return summary
 
 
+# ── Riftbound pricing ──────────────────────────────────────────────────────
+# No per-card price calls. The daily catalog sync (main.py's
+# _run_riftbound_sync) already refreshes every Riftbound card's price into
+# catalog_cards, so a tracked card's snapshot for the day is a copy of its own
+# catalog row's price — joined on source_id, never re-matched by name. The
+# only API spend here is a one-time price-history lookup per newly tracked
+# card, capped per run.
+#
+# EVERY tracked Riftbound card is priced, not only the ones a watchlist or
+# portfolio points at (Pokemon's rule in _MISSING_TODAY_SQL). That rule exists
+# because each Pokemon price costs a PPT credit; a Riftbound copy costs
+# nothing, so a set imported in Tracker Management gets prices and scores
+# straight away. History lookups do cost requests, which the per-run cap
+# spreads out.
+
+# Card ids whose history was already looked up by this process. In memory on
+# purpose (like main.py's _catalog_known_empty): a card the API had no history
+# for gets one more try after a redeploy, not one on every run.
+_riftbound_backdated: set = set()
+
+
+def forget_riftbound_history(card_id: int = None) -> None:
+    """Let a card's history be looked up again (all cards when None) — for
+    "Reset history", which deletes the rows this set says are already
+    fetched. Without it, a reset card would wait for a redeploy."""
+    if card_id is None:
+        _riftbound_backdated.clear()
+    else:
+        _riftbound_backdated.discard(card_id)
+
+
+def _catalog_identity(row, has_sibling: bool) -> dict:
+    """tracked_cards fields for one catalog row — see catalog_card_identity."""
+    number = row["card_number"]
+    label = " · ".join(x for x in (row["rarity"], row["version"]) if x)
+    if has_sibling and label:
+        number = f"{number} ({label})"
+    return {"name": row["card_name"][:200], "set_name": row["set_name"][:200],
+            "card_number": number[:120], "variant": row["rarity"] or None,
+            "source_id": row["source_id"], "language": row["language"]}
+
+
+async def catalog_card_identity(conn, game: str, catalog_id: int):
+    """The tracked_cards fields for one catalog row of a game priced from its
+    catalog (games.priced_from_catalog — Riftbound today), or None.
+
+    tracked_cards is unique on (game, name, set_name, card_number, language)
+    — no rarity or version — so two versions of one card sharing a name and
+    number in a set (Ezreal 082b as V.3 and as V.4) would collide there and
+    quietly share one price. When the catalog holds such a sibling, rarity
+    and version are folded into the tracked card's number, "082b (Showcase ·
+    V.4 - Showcase)"; a card with no sibling keeps its plain number. Both are
+    included because together they're what makes the catalog row unique.
+    """
+    row = await conn.fetchrow(
+        "SELECT id, set_id, set_name, card_name, card_number, rarity, version, source_id, "
+        "language FROM catalog_cards WHERE id = $1 AND game = $2", int(catalog_id), game)
+    if row is None or not row["source_id"]:
+        return None
+    siblings = await conn.fetchval(
+        "SELECT COUNT(*) FROM catalog_cards WHERE game = $1 AND set_id = $2 "
+        "AND card_name = $3 AND card_number = $4 AND id <> $5",
+        game, row["set_id"], row["card_name"], row["card_number"], row["id"])
+    return _catalog_identity(row, bool(siblings))
+
+
+async def catalog_set_identities(conn, game: str, set_id: str) -> list:
+    """catalog_card_identity for every card in one set, in set order, each
+    with its `catalog_id` and `rarity` — Tracker Management's set import.
+    Siblings are counted across the whole set before rows without a
+    source_id are dropped, so the number folding matches the one-card path."""
+    rows = await conn.fetch(
+        """
+        SELECT * FROM (
+            SELECT id, set_name, card_name, card_number, rarity, version, source_id,
+                   language, number_sort,
+                   COUNT(*) OVER (PARTITION BY card_name, card_number) AS same_number
+            FROM catalog_cards WHERE game = $1 AND set_id = $2
+        ) c
+        WHERE source_id IS NOT NULL
+        ORDER BY number_sort NULLS LAST, card_number, card_name, version
+        """, game, set_id)
+    return [{**_catalog_identity(r, r["same_number"] > 1),
+             "catalog_id": r["id"], "rarity": r["rarity"] or "", "version": r["version"] or ""}
+            for r in rows]
+
+
+async def _riftbound_backdate(client: httpx.AsyncClient, pool, card_id: int,
+                              card_name: str, source_id: str, days: int = AUTO_BACKDATE_DAYS) -> dict:
+    """Insert the days of TCGplayer price history we don't have yet for one
+    Riftbound card. Same idempotent day-skip as _backdate_one_card; today is
+    always left to the live snapshot. Returns {"inserted", "status"}."""
+    points, status = await riftbound.fetch_history(client, source_id)
+    if status != "ok":
+        return {"inserted": 0, "status": status}
+    today = datetime.now(timezone.utc).date()
+    oldest = today.toordinal() - days
+    async with pool.acquire() as conn:
+        known_days = {r["day"] for r in await conn.fetch(
+            "SELECT DISTINCT (captured_at AT TIME ZONE 'UTC')::date AS day "
+            "FROM price_snapshots WHERE card_id = $1", card_id)}
+        inserted = 0
+        for point in points:
+            day = point["date"]
+            if day >= today or day in known_days or day.toordinal() < oldest:
+                continue
+            await conn.execute(
+                "INSERT INTO price_snapshots (card_id, captured_at, price_mid, source) "
+                "VALUES ($1, $2, $3, $4)",
+                card_id, datetime(day.year, day.month, day.day, 12, tzinfo=timezone.utc),
+                point["market"], RIFTBOUND_HISTORY_SOURCE)
+            known_days.add(day)
+            inserted += 1
+    if inserted:
+        logger.info("Riftbound backdate: %r -> %d day(s) of history", card_name, inserted)
+    return {"inserted": inserted, "status": "ok"}
+
+
+async def run_riftbound_snapshots(pool, client: httpx.AsyncClient = None,
+                                  only_card_id: int = None) -> dict:
+    """Give every tracked Riftbound card today's price, copied from the
+    catalog, then fetch history for cards tracked for the first time.
+
+    Idempotent: a card with a snapshot today is skipped, so this runs after
+    every sync and on every price sweep at no cost. A catalog price older
+    than RIFTBOUND_SNAPSHOT_MAX_AGE_H is not copied — if the sync stopped,
+    an old number must not be recorded as today's.
+
+    `only_card_id` narrows it to one card (the "just added" refresh).
+    """
+    summary = {"linked": 0, "snapshots": 0, "backdated": 0, "history_points": 0}
+    async with pool.acquire() as conn:
+        # A tracked card without a source_id (added before the column, or by
+        # hand) is linked by exact name/set/number — only when exactly one
+        # catalog row has them, so two versions are never guessed between.
+        linked = await conn.execute(
+            """
+            UPDATE tracked_cards t SET source_id = c.source_id
+            FROM catalog_cards c
+            WHERE t.game = 'riftbound' AND t.source_id IS NULL
+              AND c.game = 'riftbound' AND c.source_id IS NOT NULL
+              AND c.card_name = t.name AND c.set_name = t.set_name
+              AND c.card_number = t.card_number
+              AND NOT EXISTS (SELECT 1 FROM catalog_cards d
+                              WHERE d.game = 'riftbound' AND d.id <> c.id
+                                AND d.card_name = c.card_name AND d.set_name = c.set_name
+                                AND d.card_number = c.card_number)
+            """)
+        summary["linked"] = int(linked.split()[-1]) if linked else 0
+        added = await conn.execute(
+            """
+            INSERT INTO price_snapshots (card_id, price_mid, source)
+            SELECT DISTINCT ON (t.id) t.id, c.raw_price,
+                   CASE WHEN c.price_source = 'tcgplayer' THEN $1 ELSE $2 END
+            FROM tracked_cards t
+            JOIN catalog_cards c ON c.game = 'riftbound' AND c.source_id = t.source_id
+            WHERE t.game = 'riftbound'
+              AND ($4::INT IS NULL OR t.id = $4)
+              AND c.raw_price IS NOT NULL
+              AND c.priced_at >= NOW() - make_interval(hours => $3)
+              AND NOT EXISTS (
+                  SELECT 1 FROM price_snapshots p
+                  WHERE p.card_id = t.id
+                    AND (p.captured_at AT TIME ZONE 'UTC')::date
+                        = (NOW() AT TIME ZONE 'UTC')::date)
+            ORDER BY t.id, c.priced_at DESC
+            """,
+            RIFTBOUND_TCGPLAYER_SOURCE, RIFTBOUND_CARDMARKET_SOURCE,
+            RIFTBOUND_SNAPSHOT_MAX_AGE_H, only_card_id)
+        summary["snapshots"] = int(added.split()[-1]) if added else 0
+        # First-time history: cards with no history rows yet.
+        due = await conn.fetch(
+            """
+            SELECT t.id, t.name, t.source_id FROM tracked_cards t
+            WHERE t.game = 'riftbound' AND t.source_id IS NOT NULL
+              AND ($1::INT IS NULL OR t.id = $1)
+              AND NOT EXISTS (SELECT 1 FROM price_snapshots p
+                              WHERE p.card_id = t.id AND p.source = $2)
+            ORDER BY t.id
+            """, only_card_id, RIFTBOUND_HISTORY_SOURCE)
+    due = [c for c in due if c["id"] not in _riftbound_backdated][:RIFTBOUND_BACKDATE_RUN_CAP]
+
+    if due and riftbound.available():
+        own_client = client is None
+        client = client or httpx.AsyncClient(timeout=30.0)
+        try:
+            for c in due:
+                _riftbound_backdated.add(c["id"])
+                result = await _riftbound_backdate(client, pool, c["id"], c["name"], c["source_id"])
+                if result["status"] == "rate_limited":
+                    _riftbound_backdated.discard(c["id"])
+                    break
+                if result["inserted"]:
+                    summary["backdated"] += 1
+                    summary["history_points"] += result["inserted"]
+        finally:
+            if own_client:
+                await client.aclose()
+    if summary["snapshots"] or summary["linked"] or summary["backdated"]:
+        logger.info("Tracker (Riftbound): %d snapshot(s), %d card(s) linked to the catalog, "
+                    "%d backdated (%d history point(s))", summary["snapshots"],
+                    summary["linked"], summary["backdated"], summary["history_points"])
+    return summary
+
+
 async def _score_one_card(conn, card_id: int, release_date) -> bool:
     """Compute + insert a card_scores row for ONE card from its last 190 days
     of snapshots (180d momentum needs a baseline at or before that cutoff —
@@ -1071,6 +1313,11 @@ async def refresh_one_card(client: httpx.AsyncClient, pool, card_id: int) -> dic
                     card_id, prices.get("low"), prices.get("market"),
                     prices.get("high"), PPT_SOURCE)
             result["snapshot_added"] = True
+    elif card["game"] == "riftbound" and not card["priced_today"]:
+        # Free: copied from the catalog. History for a first-time card costs
+        # a request or two, the same as every other Riftbound backdate.
+        rb = await run_riftbound_snapshots(pool, client, only_card_id=card_id)
+        result["snapshot_added"] = rb["snapshots"] > 0
 
     async with pool.acquire() as conn:
         result["scored"] = await _score_one_card(conn, card_id, card["release_date"])

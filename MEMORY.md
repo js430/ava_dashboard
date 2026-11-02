@@ -2062,3 +2062,82 @@ Cross-repo change (decision logged in ava_bot MEMORY.md, "Auto-delete rules: "*"
 - `term_problem()` refuses what the bot would skip: a "*" with no word on one side, or a term that's only dashes. Saved terms get canonical `a * b` spacing (`_gap_spacing`). `_read_conditions` marks stored rules with such terms unusable, matching the bot.
 - "Test a post" (templates/auto_delete_rules.html) mirrors the bot: `norm` turns dashes into spaces, `postText` keeps line breaks, `contains` builds the same gap regex (`GAP_CHAR` excludes space, newline, NUL and `, ; / | + & •`). The chip input rejects bad "*" placement immediately; the short-word warning checks each side of a "*". The hint explains "*" and dashes.
 - Parity: 6,000 random posts/terms gave identical results here and in the bot; both refuse the same terms.
+
+## 2026-10-24 — Online restock channel renamed: `retailers-online-restocks`
+
+Cross-repo change (decision logged in ava_bot MEMORY.md, "Batch 2 of the code review"). The bot's online restock channel was renamed from `online-restock-information` to `retailers-online-restocks`. `restock_reports.channel_name` holds the channel's name when the restock was saved, so online restocks since the rename slipped past every "leave out online channels" filter. Jeffrey: add the new name everywhere.
+- All 5 `channel_name NOT IN (...)` lists in main.py now also leave out `retailers-online-restocks`; the old name stays for older rows.
+- Same change in the bot (daily summary, all 9 leaderboard queries), so both still leave out the same channels.
+
+## 2026-10-31 — Lighter watermark on phones and tablets
+
+Members said the username watermark drowned out the dashboard on mobile. On small or touch screens (width under 768px, or `(hover: none) and (pointer: coarse)`), `drawWatermark` on the Dashboard, Map and Status pages now:
+- spaces names by their measured width + 44px, rows 64px apart, every other row shifted half a step (was a fixed 72x48px grid, so names ran into each other);
+- draws at 20% (light) / 14% (dark), down from 50% / 30%.
+
+Desktop is unchanged (only mobile was asked). Text stays 12px so a cropped screenshot still shows a readable name, which is the watermark's job (leak tracing, Terms section 8). Rejected: smaller text (harder to read in a leaked screenshot) and fewer copies (a cropped card could miss the name).
+
+## 2026-10-31 — Riftbound in the catalog, sealed tab and portfolios
+
+Riftbound (Riot's League of Legends TCG) sits alongside Pokémon, from TCGGO's "Riftbound Prices API" on RapidAPI (`riftbound.py`, key `RIFTBOUND_API_KEY`). Same tables as Pokémon, `game = 'riftbound'`: catalog_cards, sealed_products, tracked_cards/price_snapshots. Jeffrey chose each of these:
+
+- **Main price: TCGplayer's market price; Cardmarket's 7-day average where TCGplayer has none.** `price_source` records which (`tcgplayer` / `cardmarket`). His first pick was Cardmarket's 7-day average, made when the docs suggested only European prices; changed once live data showed TCGplayer prices and ids on most cards (352 of 354 in Origins).
+- **Pro plan ($9.90/mo, 2,500 requests/day), whole game refreshed daily.** `per_page` is ignored (always 20), so a full pass is ~95 requests. Rejected: free plan (100/day) with every card refreshed every other day.
+- **`version` is part of catalog_cards' identity.** Same name + number + rarity exists twice as different versions (Ezreal 082b V.3/V.4). New unique index `idx_catalog_cards_identity_v2`; the old one is dropped (built first, so the table is never without one). Rejected: folding version into rarity (the rarity filter would fill with "Showcase · V.3" combinations).
+- **Full portfolio support**, not catalog-only.
+
+How it works / why:
+- **The API's TCGplayer figure is TCGplayer's US price divided by a fixed 1.17**, though labelled EUR — 17 of 20 cards matched TCGplayer's own market price at exactly 1.17x. Multiplied back by 1.17 (`RIFTBOUND_TCGPLAYER_USD_PER_EUR`, in case TCGGO changes it). Rejected: today's ECB rate, which read 4-5% low. Cardmarket figures are real euros and use the day's ECB rate (Frankfurter, no key).
+- **Daily sync, "due" read from the DB** (`_run_riftbound_sync`): a set is re-fetched once its rows are 20h old, so redeploys never re-spend requests and a cut-short run resumes where it stopped. Admin "Update Riftbound now" forces it.
+- **Portfolio prices cost nothing extra**: a tracked card's daily snapshot is copied from its catalog row, joined on the new `source_id` (TCGGO's card id) — never re-matched by name. History comes from `/history-prices` once per newly tracked card (capped 25/run). Snapshot sources `riftbound-tcgplayer` / `riftbound-cardmarket` are separate scoring families.
+- **tracked_cards' unique key has no version**, so when two catalog versions share name + number in a set, rarity and version are folded into the tracked card's number ("082b (Showcase · V.4 - Showcase)"). Rejected: changing tracked_cards' unique key, which every Pokémon insert path's ON CONFLICT depends on.
+- **Riftbound adds send the catalog row id; the server reads the card from it** (`_riftbound_add_fields`) and ignores client-sent names.
+- Pokémon's retail defaults for sealed (`DEFAULT_SEALED_COST`) are not applied to Riftbound; a blank price falls back to market value.
+- The admin sealed **purge is now Pokémon-only** — `portfolio_lots.sealed_id` cascades, so a purge would have destroyed members' Riftbound holdings.
+- **CSP `img-src` gains `https://images.tcggo.com`** (images only; URLs checked against that host before they're stored, like PPT_IMAGE_HOSTS).
+- The `game` CHECKs on the three tables are widened at startup by `catalog.widen_game_check`: the constraint is looked up rather than its name guessed, and drop + add share a transaction (race-tested: 6 concurrent boots x 15 trials, 0 failures).
+
+API doc mismatches: `per_page` ignored; history is `/history-prices`, not `/riftbound/history-prices`, and has no 7-day average; many rows have empty `rarity` (taken from `version` instead).
+
+Not included: the grading calculator and Tracker Management's set import stay Pokémon-only.
+
+Shared DB: ava_bot's card_identifier reads catalog_cards with `game = 'pokemon'`, so new rows, columns and the index swap don't affect it. Recorded in data-system.md, which didn't list catalog_cards as bot-read before.
+
+## 2026-11-01 — Guest catalog window: Pokémon 4 sets, Riftbound 3 main sets
+
+Guests and role-less Discord members (the guest tier) see a smaller slice of the Catalog. Jeffrey's call:
+- **Pokémon: newest 4 main sets** (`GUEST_CATALOG_VISIBLE_SETS`, was 8). This partly reverses the earlier widening from 3 to 8, whose reason was that a cold visitor's first search often landed on a hidden set and read as broken. 4 is a deliberate trade toward keeping more behind the premium role.
+- **Riftbound: newest 3 main sets**, its own setting (`GUEST_RIFTBOUND_VISIBLE_SETS`) so the two never move together. Today that's Radiance, Vendetta and Unleashed.
+- **"Main set" for Riftbound excludes promos, collections and bundles** (`riftbound.is_main_set`, a word match on the set name). Without it the T1 2025 Worlds Champion Collection and Secret Garden Bundle would take two of the three slots. The set picker uses the same rule, so those two now sit under "Promos & extras".
+
+Unchanged: the window counts only sets that are released and stocked (same as Pokémon), and the Sealed tab has no guest limit for either game. The Grading Calculator's guest window stays at 5 sets, now wider than the Catalog's.
+
+## 2026-11-01 — Riftbound in the Grading Calculator and Tracker Management; game registry; 1.17 watch
+
+Jeffrey asked for Riftbound in the Grading Calculator and Tracker Management, prep for One Piece's catalog, and a monthly euro-rate update. His choices:
+
+- **Watch the API's TCGplayer number instead of a monthly rate update.** The Cardmarket conversion already uses the ECB rate, refreshed every 6 hours. The fixed piece is the 1.17 the API divides TCGplayer's dollar price by. Each sync fetches every due set *before* writing, compares each card's new API figure with the dollar price stored last time, and if the catalog shifted as one, the number changed: it's recorded in `price_factor_changes` (new, dashboard-owned) and used from then on (`riftbound.detect_factor_change`, `main._check_riftbound_factor`). The test is a *spike*: on an ordinary day many cards keep exactly yesterday's price; when the number changes, that spike moves to a new percentage and nothing stays put. A market rally spreads out instead of spiking. Tested on synthetic catalogs down to 20% of cards unmoved. Rejected: a monthly ECB rate (the API doesn't use it, so prices would read 4-5% low today) and a monthly check against TCGplayer's own price (the only source found is their website's internal endpoint, unofficial and likely against their terms). Known blind spot: a change smaller than 1% isn't caught, and a move where literally every card changed by the same amount would be read as the API's number.
+- **Game registry (`games.py`), not a generic refresh job.** One list of games and their features. Allowed-game checks, every page's game picker, the scanner's game names, and the add / import / grading paths for games priced from their catalog read from it. Riftbound's daily sync stays Riftbound-specific: designing a generic sync around one API's shape would be a guess until One Piece's API is chosen. Rejected: a checklist only (One Piece would still touch every place Riftbound did).
+- **Imported Riftbound cards are priced even when nobody holds them.** Pokémon prices only referenced cards because each price costs a PPT credit; a Riftbound price is a free copy from the catalog, so `run_riftbound_snapshots` no longer filters on "referenced". History lookups still cost requests and stay capped at 25 cards per run.
+
+How it works:
+- **Grading Calculator:** Riftbound sets and cards come from catalog_cards (no API cost). The ungraded price is the catalog's (TCGplayer market, or the Cardmarket fallback), outranking eBay's asking price. Graded prices are eBay asking prices only: the Riftbound API's graded field is empty on every card seen, and PPT's sold prices and population are Pokémon-only. eBay is searched as "Riftbound <name> <code>" — listings rarely carry the API's set names. Guests get the Catalog's Riftbound window (3 main sets), checked against the card's real set, and need a card the catalog holds.
+- **Photo scanner:** the prompt now knows Riftbound. Its cards print a set code ("OGN-066/298"), not a set name, so a scan is placed by its number first (`/api/grading-calculator/find-card`). Matching the scanned set name would guess between "Origins Main Set", "Origins: Promos" and "Origins Proving Grounds".
+- **Tracker Management:** the Riftbound set import reads catalog_cards. There's no 250-card cap (that guards a bad external response), and cards to leave out are sent by catalog id, because versions share a number. The single-card search has a game picker. Riftbound cards still count toward MAX_TRACKED_CARDS, though they cost no PPT credits.
+- **Reset history** on a Riftbound card now re-pulls its history at the next sweep (`card_tracker.forget_riftbound_history`). Before, it waited for a redeploy.
+
+## 2026-11-02 — Monitor alerts: exception words ("but not if the name contains")
+
+Cross-repo change (linked from ava_bot MEMORY.md, "Product alerts: 'but not if the name contains' words"). Jeffrey asked for "match all except xyz, in regex".
+
+**Decided: plain exception words, not regex.** A comma-separated box under the keyword. Any one word in the product name stops the alert. Matching works like the keyword: case-insensitive, anywhere in the name. It applies to keyword alerts and "everything" alerts alike (his call), so "151" except "japanese, jp" pings for English 151 only.
+- Rejected **regex**: most members don't know it, a typo silently matches nothing or everything, Postgres's flavour differs from what people copy off regex sites, and a bad pattern runs against every restock for every alert in the bot's matcher.
+- Rejected **the auto-delete rules' "*" gap**: it can't be done in the bot's single SQL match query without moving matching into Python. It can be added later if members ask for word-order patterns.
+
+How:
+- `exclude_keywords TEXT[] NOT NULL DEFAULT '{}'` on `product_subscriptions`, added by BOTH apps' startup ALTERs. Either may create the table, and the bot's matcher reads it.
+- `monitor_alerts.parse_excludes` takes a list or one comma string, drops case-insensitive duplicates, and applies the keyword's 2-100 character rule, up to 20 words. It **refuses a word that's part of the keyword** ("151 booster" except "booster" would never fire), the kind of mistake that otherwise looks like a broken bot.
+- `dedupe_key` appends `not:<sorted words>` only when there are exceptions, so existing alerts keep their stored keys.
+- Bot: `NOT EXISTS (SELECT 1 FROM unnest(exclude_keywords) x WHERE x <> '' AND strpos(lower($1), lower(x)) > 0)`. The `x <> ''` guard matters because `strpos(anything, '') > 0` is true.
+- Tested against Postgres with the bot's query read from its file: "151 except japanese, jp" skips "Pokemon 151 Japanese Booster Box" and "SV 151 Booster Box (JP)" and still matches "Pokemon Mini Tin 151".
+- **Deploy order:** the bot first or together. Exceptions saved before the bot's update would be ignored, and the member would still be pinged.
