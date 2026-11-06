@@ -241,6 +241,7 @@
   .scratch-foot button { flex: 1; padding: 6px 8px; border-radius: 6px;
                          border: 1px solid #43444c; background: #2a2b31;
                          color: #fff; cursor: pointer; font-size: 12px; }
+  .scratch-foot button:disabled { opacity: .5; cursor: default; }
   .scratch-note { padding: 0 12px 10px; font-size: 11px; opacity: .6; }
   /* Plain until something is in the tally, or "on" would look identical to
      the default .btn blue and the state would be invisible. */
@@ -497,6 +498,8 @@
   </div>
   <div class="scratch-note" id="scratchNote"></div>
   <div class="scratch-foot">
+    <button type="button" id="scratchExport" onclick="exportScratch()"
+            title="Download this list as a spreadsheet file">Export CSV</button>
     <button type="button" onclick="clearScratch()">Clear list</button>
   </div>
 </div>
@@ -1096,6 +1099,46 @@ function clearScratch(){
   renderScratch();
 }
 
+// One spreadsheet cell. The apostrophe stops Excel and Sheets running a name
+// that starts with = + - or @ as a formula; these names come from price APIs,
+// so they aren't ours to trust.
+function csvCell(value){
+  let text = String(value === null || value === undefined ? '' : value);
+  if (/^[=+\-@\t\r]/.test(text)) text = "'" + text;
+  return /[",\r\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+}
+
+// Numbers stay plain (no $ or commas) so a spreadsheet can add them up.
+function scratchCsv(){
+  let total = 0, units = 0;
+  const rows = [['Name', 'Set', 'Number', 'Printing or Type', 'Quantity', 'Unit Price', 'Line Total']];
+  scratch.forEach(it => {
+    const priced = it.price !== null && it.price !== undefined;
+    const line = priced ? Number(it.price) * it.qty : null;
+    units += it.qty;
+    total += line || 0;
+    // A list started before these columns existed only has the joined label.
+    rows.push([it.name, it.set === undefined ? it.sub : it.set, it.number, it.variant, it.qty,
+               priced ? Number(it.price).toFixed(2) : '', priced ? line.toFixed(2) : '']);
+  });
+  rows.push(['Total', '', '', '', units, '', total.toFixed(2)]);
+  return rows.map(row => row.map(csvCell).join(',')).join('\r\n') + '\r\n';
+}
+
+function exportScratch(){
+  if (!scratch.length) return;
+  // The BOM is how Excel knows the file is UTF-8; without it Pokémon comes
+  // out as PokÃ©mon.
+  const url = URL.createObjectURL(new Blob(['\ufeff' + scratchCsv()], {type: 'text/csv;charset=utf-8'}));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'tally-' + new Date().toLocaleDateString('en-CA') + '.csv';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function toggleScratch(){
   const bar = document.getElementById('scratchBar');
   if (bar) setScratchOpen(!bar.classList.contains('open'));
@@ -1133,6 +1176,7 @@ function renderScratch(){
   const bar = document.getElementById('scratchBar');
   if (!bar) return;
   const empty = document.getElementById('scratchEmpty');
+  document.getElementById('scratchExport').disabled = !scratch.length;
   if (!scratch.length){
     document.getElementById('scratchCount').textContent = 'Quick tally';
     document.getElementById('scratchTotal').textContent = '';
@@ -1217,6 +1261,7 @@ function onScratchClick(btn){
     addToScratch({
       key: key, name: c.name,
       sub: [c.set_name, c.card_number, c.shown_variant].filter(Boolean).join(' · '),
+      set: c.set_name, number: c.card_number, variant: c.shown_variant,
       price: c.shown_price === undefined ? c.raw_price : c.shown_price });
   } else {
     const r = sealedRows.filter(x => String(x.id) === parts[1])[0];
@@ -1224,6 +1269,7 @@ function onScratchClick(btn){
     addToScratch({
       key: key, name: r.name,
       sub: [r.set_name, r.type_label].filter(Boolean).join(' · '),
+      set: r.set_name, number: '', variant: r.type_label,
       price: r.market_price });
   }
 }
