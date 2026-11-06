@@ -3,6 +3,32 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-10-31 — Catalog search indexes (pg_trgm) now created at startup
+
+Follows the entry below. `catalog.ensure_catalog_search_indexes()` runs at
+startup as its OWN step (not in CATALOG_SCHEMA): `CREATE EXTENSION IF NOT
+EXISTS pg_trgm`, then GIN trigram indexes `idx_catalog_cards_name_trgm` and
+`idx_catalog_cards_number_trgm`. It never raises: if pg_trgm is unavailable or
+refused, it logs a warning and search runs unindexed, as before. It also
+warns about an INVALID leftover index (an interrupted
+`CREATE INDEX CONCURRENTLY`), which `IF NOT EXISTS` would otherwise skip
+forever.
+
+**Plain CREATE INDEX at startup, not CONCURRENTLY:** seconds on this table,
+and a failed CONCURRENTLY build leaves an invalid index. It blocks writes to
+catalog_cards (never reads) while it builds. Creating them by hand in pgAdmin
+first, with CONCURRENTLY and the same names, makes the startup step a no-op.
+
+**Shared DB note:** `CREATE EXTENSION` is database-wide. pg_trgm only adds
+functions/operators and is a "trusted" extension (Postgres 13+), so it can't
+affect ava_bot. The indexes are on catalog_cards, which only this app writes.
+
+**Not verified:** the success path. The local test Postgres has no pg_trgm,
+so only the refused path, the invalid-index warning and SQL syntax were
+tested; the live result is confirmed with EXPLAIN in pgAdmin.
+
+---
+
 ## 2026-10-31 — Catalog: faster live search, Tally drawer, Trade calculator
 
 **Search: 6 sequential queries -> 2 concurrent.** `query_cards` ran the page,
