@@ -37,6 +37,9 @@
   .promo-sub { font-size: 12px; color: #666; line-height: 1.5; }
   .cta-btn { font-size: 13px; font-weight: 600; color: #fff; background: #5865F2; border: none; border-radius: 8px; padding: 9px 18px; text-decoration: none; white-space: nowrap; cursor: pointer; }
   .cta-btn:hover { background: #4752d4; }
+  .cta-wrap { display: flex; flex-direction: column; align-items: center; }
+  .refresh-link { display: block; font-size: 12px; margin-top: 6px; color: #5865F2; text-align: center; text-decoration: none; }
+  .refresh-link:hover { text-decoration: underline; }
 
   .table-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; overflow: hidden; margin-bottom: 16px; }
   .table-header { padding: 12px 16px; border-bottom: 1px solid #e4e4e7; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -175,7 +178,8 @@
       <div class="promo-title">You're viewing a live sample portfolio</div>
       <div class="promo-sub">Real cards, real prices, real scores — just a random 10-card slice, view-only. Get the Intel or Monitor role to build and manage your own portfolio of up to {{ max_portfolio_cards }} cards.</div>
     </div>
-    {% if upgrade_url %}<a class="cta-btn" href="{{ upgrade_url }}" target="_blank" rel="noopener noreferrer">Get Intel or Monitor role</a>{% endif %}
+    {% if upgrade_url %}<div class="cta-wrap"><a class="cta-btn" href="{{ upgrade_url }}" target="_blank" rel="noopener noreferrer">Get Intel or Monitor role</a>
+      <a class="refresh-link" href="/refresh-access?next={{ request.url.path | urlencode }}">Just bought premium? Refresh my access</a></div>{% endif %}
   </div>
 
   <div class="detail-card" id="detailCard">

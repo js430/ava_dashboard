@@ -2141,3 +2141,14 @@ How:
 - Bot: `NOT EXISTS (SELECT 1 FROM unnest(exclude_keywords) x WHERE x <> '' AND strpos(lower($1), lower(x)) > 0)`. The `x <> ''` guard matters because `strpos(anything, '') > 0` is true.
 - Tested against Postgres with the bot's query read from its file: "151 except japanese, jp" skips "Pokemon 151 Japanese Booster Box" and "SV 151 Booster Box (JP)" and still matches "Pokemon Mini Tin 151".
 - **Deploy order:** the bot first or together. Exceptions saved before the bot's update would be ignored, and the member would still be pinged.
+
+## 2026-11-09 — Dashboard picks up Discord role changes (member_roles re-check, branch claude/role-refresh)
+
+Cross-repo with ava_bot (decision logged there, "Dashboard access follows Discord roles"). Access used to be computed only in the OAuth callback and frozen in the 7-day cookie, so new Monitor/Intel buyers saw the sample until re-login and lapsed members kept premium for up to 7 days.
+- `_apply_member_roles(session, user, role_ids)` holds all the role rules; the OAuth callback and the re-check both use it, so they can't drift. Rules unchanged.
+- `session["roles_at"]` is set at login (just before the Discord role fetch). `RoleRefreshMiddleware` (added just before SessionMiddleware so it runs inside it) reads `member_roles` (bot-owned) for logged-in Discord users; if `updated_at > roles_at` it re-applies roles. in_guild FALSE = no roles (ADMIN_USER_IDS keep admin). No row = session unchanged. Pre-deploy sessions (no roles_at) re-check once.
+- ~30 s per-user cache (max 5000), one shared in-flight query per user; skips static/health/guest/anonymous. Table missing → logged once, check paused 10 min; other DB errors → paused 60 s; a failed check never changes the session.
+- Deny-listed non-member on re-check → signed out (login refuses them with the restricted message). Chosen over a sample session because login gives deny-listed users no sample access.
+- "Refresh my access": `/refresh-access?next=` goes back through Discord login; the validated local return path rides in the HMAC-signed OAuth state (old 3-part states still verify). Link sits under the "Get Intel or Monitor role" button on the 4 sample pages.
+- Rejected: a FastAPI dependency (access is read from the session in templates and routes without a user dependency); calling Discord per request/timer; shorter cookie.
+- Tested: 54 checks (tests/test_role_refresh.py, local Postgres); cross-checked against the bot's real upsert. Not tested in a browser or against live Discord/Whop.
