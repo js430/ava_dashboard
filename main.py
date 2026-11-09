@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from zoneinfo import ZoneInfo
 from collections import defaultdict
+from urllib.parse import urlsplit
 from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -432,8 +433,112 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                     status_code=403)
         return await call_next(request)
 
+# ---- Discord role re-check (shared member_roles table) ----
+# Access (member / mod / regions / ...) is worked out from Discord roles at
+# login and kept in the 7-day session cookie. ava_bot keeps member_roles up to
+# date (Whop grants and removes Monitor/Intel roles), and this middleware
+# re-applies a user's roles whenever that table says they changed after the
+# session last looked. Contract (the bot creates the table):
+#   member_roles(user_id BIGINT PRIMARY KEY, role_ids BIGINT[] NOT NULL,
+#                in_guild BOOLEAN NOT NULL, updated_at TIMESTAMPTZ NOT NULL)
+# with updated_at moving ONLY when a member's roles or membership change.
+#
+# Middleware rather than a Depends: access is read straight from the session in
+# many places (templates, is_demo, require_*, allowed_regions) and not every
+# route has a user dependency, so a dependency would miss some. It must sit
+# INSIDE SessionMiddleware (request.session), so it is added just before it —
+# add_middleware puts the newest one outermost.
+#
+# Failure policy: any problem (table missing, DB down) leaves the session as it
+# is. A missing table disables the check and retries every ROLE_TABLE_RETRY_S.
+ROLE_CACHE_TTL_S = 30
+ROLE_CACHE_MAX = 5000
+ROLE_TABLE_RETRY_S = 600
+ROLE_ERROR_RETRY_S = 60
+ROLE_CHECK_SKIP_PREFIXES = ("/static/", "/health", "/favicon")
+# user_id -> (expires_at monotonic, (updated_at epoch seconds, role_ids, in_guild) | None)
+_role_cache: "dict[int, tuple[float, tuple | None]]" = {}
+_role_inflight: "dict[int, asyncio.Future]" = {}
+_role_check = {"disabled_until": 0.0, "missing_logged": False}
+
+
+async def _fetch_member_roles(pool, user_id: int):
+    """One member_roles lookup, cached ~ROLE_CACHE_TTL_S per user. Returns
+    (updated_at epoch seconds, [role id strings], in_guild), None when the bot
+    has no row for them, or the string "skip" when the check is off/failed."""
+    now = time.monotonic()
+    if now < _role_check["disabled_until"]:
+        return "skip"
+    hit = _role_cache.get(user_id)
+    if hit and hit[0] > now:
+        return hit[1]
+    pending = _role_inflight.get(user_id)
+    if pending is not None:          # parallel requests share one query
+        return await asyncio.shield(pending)
+    fut = asyncio.get_running_loop().create_future()
+    _role_inflight[user_id] = fut
+    result = "skip"
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT role_ids, in_guild, updated_at FROM member_roles "
+                "WHERE user_id = $1", user_id)
+        if _role_check["missing_logged"]:
+            logger.info("member_roles table is now available — role re-check enabled")
+            _role_check["missing_logged"] = False
+        result = (None if row is None else
+                  (row["updated_at"].timestamp(),
+                   [str(r) for r in row["role_ids"]], bool(row["in_guild"])))
+        if len(_role_cache) >= ROLE_CACHE_MAX:
+            for k in [k for k, v in _role_cache.items() if v[0] <= now] or \
+                     [next(iter(_role_cache))]:
+                _role_cache.pop(k, None)
+        _role_cache[user_id] = (now + ROLE_CACHE_TTL_S, result)
+    except asyncpg.UndefinedTableError:
+        _role_check["disabled_until"] = now + ROLE_TABLE_RETRY_S
+        if not _role_check["missing_logged"]:
+            _role_check["missing_logged"] = True
+            logger.warning("member_roles table not found — role re-check is off; "
+                           "retrying every %d min", ROLE_TABLE_RETRY_S // 60)
+    except Exception:
+        _role_check["disabled_until"] = now + ROLE_ERROR_RETRY_S
+        logger.exception("member_roles lookup failed — role re-check paused for %ds",
+                         ROLE_ERROR_RETRY_S)
+    finally:
+        _role_inflight.pop(user_id, None)
+        fut.set_result(result)
+    return result
+
+
+class RoleRefreshMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if "session" in request.scope and not path.startswith(ROLE_CHECK_SKIP_PREFIXES):
+            session = request.session
+            user = session.get("user")
+            pool = getattr(request.app.state, "db", None)
+            if user and pool is not None and not session.get("guest"):
+                try:
+                    found = await _fetch_member_roles(pool, int(user["id"]))
+                    if (isinstance(found, tuple)
+                            and found[0] > session.get("roles_at", 0)):
+                        _, role_ids, in_guild = found
+                        # Left the server -> no roles at all (admins still keep
+                        # their ADMIN_USER_IDS access, as at login).
+                        _apply_member_roles(session, user, role_ids if in_guild else [])
+                        if "user" in session:      # not signed out by the deny list
+                            session["roles_at"] = found[0]
+                        else:
+                            logger.info("Deny-listed user %s signed out by role re-check",
+                                        user.get("id"))
+                except Exception:
+                    logger.exception("Role re-check failed — session left unchanged")
+        return await call_next(request)
+
+
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(CSRFMiddleware)
+app.add_middleware(RoleRefreshMiddleware)   # before SessionMiddleware = inside it
 app.add_middleware(
     SessionMiddleware,
     secret_key=os.getenv("SESSION_SECRET"),
@@ -848,27 +953,45 @@ def _oauth_secret() -> bytes:
 # missing until a security review flagged the gap.
 OAUTH_STATE_MAX_AGE_S = int(os.getenv("OAUTH_STATE_MAX_AGE_S", str(10 * 60)))
 
-def make_oauth_state() -> str:
-    """Return a signed state token: '<timestamp>.<nonce>.<hmac-sha256-hex>'."""
+def make_oauth_state(next_path: str | None = None) -> str:
+    """Return a signed state token: '<timestamp>.<nonce>.<hmac-sha256-hex>'.
+    With *next_path* (already checked by _safe_next_path) it is
+    '<timestamp>.<nonce>.<next-b64>.<hmac>' and the signature covers the path,
+    so the page to return to survives the Discord round-trip without a cookie
+    and cannot be swapped for another."""
     ts = str(int(time.time()))
     nonce = secrets.token_hex(24)
     msg = f"{ts}.{nonce}"
+    if next_path:
+        msg += "." + base64.urlsafe_b64encode(next_path.encode()).decode().rstrip("=")
     sig = hmac.new(_oauth_secret(), msg.encode(), hashlib.sha256).hexdigest()
     return f"{msg}.{sig}"
 
 def verify_oauth_state(state: str | None) -> bool:
     """Return True iff *state* carries a valid, non-expired HMAC signature."""
-    if not state or state.count(".") != 2:
+    if not state or state.count(".") not in (2, 3):
         return False
     try:
-        ts, nonce, sig = state.split(".", 2)
-        msg = f"{ts}.{nonce}"
+        msg, sig = state.rsplit(".", 1)
+        ts = msg.split(".", 1)[0]
         expected = hmac.new(_oauth_secret(), msg.encode(), hashlib.sha256).hexdigest()
         if not secrets.compare_digest(sig, expected):
             return False
         return (time.time() - int(ts)) <= OAUTH_STATE_MAX_AGE_S
     except Exception:
         return False
+
+def oauth_state_next(state: str | None) -> str | None:
+    """The return path carried by a state token, re-checked as local. Call only
+    after verify_oauth_state(state) is True."""
+    if not state or state.count(".") != 3:
+        return None
+    try:
+        raw = state.split(".")[2]
+        raw += "=" * (-len(raw) % 4)
+        return _safe_next_path(base64.urlsafe_b64decode(raw).decode())
+    except Exception:
+        return None
 
 # ---- Scan-page proof token (lightweight anti-automation friction) ----
 # Not a CAPTCHA — no external service or account to provision. A signed,
@@ -1086,6 +1209,75 @@ def _get_max_position(roles: list[str]) -> int:
     return min(best, 12)  # clamp to valid slider range
 
 
+_ACCESS_SESSION_KEYS = ("user", "member", "mod", "all_mods", "inventory_access",
+                        "max_position", "regions", "roles_at")
+
+
+def _apply_member_roles(session, user: dict, member_roles) -> bool:
+    """Work out and store a Discord user's access from their role ids (strings).
+    The ONE place these rules live — used by the login callback and by the
+    role re-check, so they cannot drift.
+
+    Returns False when the user is on the deny list and is not an admin or a
+    member: their access keys are removed from the session (signed out) and
+    nothing is granted. Login refuses them with a message; the re-check just
+    signs them out, and the next login shows the same message. Signed-out was
+    chosen over a sample session because the deny list means "no sample
+    access" at login, and the re-check must not be more generous than login."""
+    roles = set(member_roles)
+    is_admin_user = int(user["id"]) in ADMIN_USER_IDS
+    denied = bool(DENY_ROLE_IDS & roles)
+    # Same as check_discord_role: a deny-listed role means no member status.
+    is_member = (bool(REQUIRED_ROLE_IDS & roles) and not denied) or is_admin_user
+
+    if not is_member and denied:
+        for key in _ACCESS_SESSION_KEYS:
+            session.pop(key, None)
+        return False
+
+    session["user"] = {
+        "id": user["id"],
+        "username": user["username"],
+        "avatar": user.get("avatar")
+    }
+    session["member"] = is_member
+    session["mod"] = bool(MOD_ROLE_IDS & roles) or is_admin_user
+    session["all_mods"] = bool(ALL_MODS_ROLE_IDS & roles) or is_admin_user
+    session["inventory_access"] = bool(INVENTORY_ROLE_IDS & roles) or is_admin_user
+    # Regional viewers: only for non-members (a member already sees every
+    # region). Always cleared first, so access ends once the role is gone.
+    session.pop("regions", None)
+    region_access = sorted({code for rid in roles
+                            for code in REGION_ACCESS_ROLES.get(rid, ())})
+    if is_member:
+        session["max_position"] = _get_max_position(list(roles))
+    elif region_access:
+        session["regions"] = region_access
+        session["max_position"] = _get_max_position(list(roles) + [ACTIVE_ROLE_ID])
+    else:
+        session.pop("max_position", None)
+    return True
+
+
+_NEXT_BLOCKED_PREFIXES = ("/login", "/logout", "/callback", "/refresh-access")
+
+
+def _safe_next_path(value: str | None) -> str | None:
+    """A same-site path to return to after login, or None. Only plain paths
+    starting with a single "/" pass: no scheme, host, "//", backslashes or
+    control characters, and never the login/logout pages themselves."""
+    if not value or len(value) > 300 or not value.startswith("/"):
+        return None
+    if value.startswith("//") or "\\" in value or any(ord(c) < 32 or ord(c) == 127 for c in value):
+        return None
+    parts = urlsplit(value)
+    if parts.scheme or parts.netloc:
+        return None
+    if parts.path.rstrip("/").lower().startswith(_NEXT_BLOCKED_PREFIXES):
+        return None
+    return value
+
+
 
 async def check_discord_role(access_token: str) -> tuple[bool, dict, list[str]]:
     """Returns (has_role, user_info, member_roles)"""
@@ -1270,6 +1462,14 @@ async def accept_terms(request: Request):
 async def login(request: Request):
     state = make_oauth_state()
     return RedirectResponse(DISCORD_OAUTH_BASE_URL + f"&state={state}")
+
+@app.get("/refresh-access")
+async def refresh_access(request: Request, next: str = None):
+    """"Just bought premium? Refresh my access": sends the member back through
+    the normal Discord login, which re-reads their roles, then returns them to
+    the page they were on. Only local paths are accepted for `next`."""
+    return RedirectResponse(DISCORD_OAUTH_BASE_URL
+                            + f"&state={make_oauth_state(_safe_next_path(next))}")
 
 @app.get("/guest", response_class=HTMLResponse)
 async def guest_entry(request: Request):
@@ -1751,42 +1951,23 @@ async def callback(request: Request, code: str = None, error: str = None, state:
     tokens = token_resp.json()
     access_token = tokens.get("access_token")
 
+    # Taken before the roles are read, so a role change landing mid-login is
+    # still picked up by the re-check afterwards.
+    roles_at = time.time()
     has_role, user, member_roles = await check_discord_role(access_token)
 
     if not user:
         return HTMLResponse("<h3>Could not verify your Discord account.</h3>", status_code=403)
 
-    is_admin_user = int(user["id"]) in ADMIN_USER_IDS
-    is_member = bool(has_role) or is_admin_user
-
     # Users explicitly on the deny list are hard-blocked — no sample access.
-    if not is_member and (DENY_ROLE_IDS & set(member_roles)):
+    if not _apply_member_roles(request.session, user, member_roles):
         return HTMLResponse(
             "<h3>Access denied.</h3><p>Your access to this dashboard has been restricted.</p>",
             status_code=403
         )
-
-    request.session["user"] = {
-        "id": user["id"],
-        "username": user["username"],
-        "avatar": user.get("avatar")
-    }
-    request.session["member"] = is_member
-    request.session["mod"] = bool(MOD_ROLE_IDS & set(member_roles)) or is_admin_user
-    request.session["all_mods"] = bool(ALL_MODS_ROLE_IDS & set(member_roles)) or is_admin_user
-    request.session["inventory_access"] = bool(INVENTORY_ROLE_IDS & set(member_roles)) or is_admin_user
-    # Regional viewers: only for non-members (a member already sees every
-    # region). Always cleared first, so access ends at the next login once the
-    # role is gone. Deny-listed users were refused above and never get here.
-    request.session.pop("regions", None)
-    region_access = sorted({code for rid in member_roles
-                            for code in REGION_ACCESS_ROLES.get(rid, ())})
-    if is_member:
-        request.session["max_position"] = _get_max_position(member_roles)
-    elif region_access:
-        request.session["regions"] = region_access
-        request.session["max_position"] = _get_max_position(
-            list(member_roles) + [ACTIVE_ROLE_ID])
+    request.session["roles_at"] = roles_at
+    is_member = request.session["member"]
+    region_access = request.session.get("regions") or []
 
     ip_address = get_real_ip(request)
     try:
@@ -1807,7 +1988,10 @@ async def callback(request: Request, code: str = None, error: str = None, state:
     except Exception as e:
         logger.error(f"Failed to log dashboard session: {e}")
 
-    return RedirectResponse("/" if is_member or region_access else "/sample")
+    # Back to the page they came from (refresh-access), if it is a local path.
+    # Sample pages send members on to the live version themselves.
+    return RedirectResponse(oauth_state_next(state)
+                            or ("/" if is_member or region_access else "/sample"))
 
 @app.get("/logout")
 async def logout(request: Request):

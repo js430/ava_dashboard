@@ -42,6 +42,9 @@
   .promo-sub { font-size: 12px; color: #666; line-height: 1.5; }
   .cta-btn { font-size: 13px; font-weight: 600; color: #fff; background: #5865F2; border: none; border-radius: 8px; padding: 9px 18px; text-decoration: none; white-space: nowrap; cursor: pointer; }
   .cta-btn:hover { background: #4752d4; }
+  .cta-wrap { display: flex; flex-direction: column; align-items: center; }
+  .refresh-link { display: block; font-size: 12px; margin-top: 6px; color: #5865F2; text-align: center; text-decoration: none; }
+  .refresh-link:hover { text-decoration: underline; }
 
   .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 16px; background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px 14px; }
   .ctrl-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -164,7 +167,8 @@
       <div class="promo-title">You're viewing a sample with demo data</div>
       <div class="promo-sub">Everything below is randomly generated — not real restocks. Get the Intel or Monitor role in the server to unlock live restock tracking, the store map, and the card scanner.</div>
     </div>
-    {% if upgrade_url %}<a class="cta-btn" href="{{ upgrade_url }}" target="_blank" rel="noopener noreferrer">Get Intel or Monitor role</a>{% endif %}
+    {% if upgrade_url %}<div class="cta-wrap"><a class="cta-btn" href="{{ upgrade_url }}" target="_blank" rel="noopener noreferrer">Get Intel or Monitor role</a>
+      <a class="refresh-link" href="/refresh-access?next={{ request.url.path | urlencode }}">Just bought premium? Refresh my access</a></div>{% endif %}
   </div>
 
   <div class="controls">
