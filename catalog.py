@@ -444,12 +444,12 @@ def number_sort_key(card_number: str, game: str = "") -> int:
     Python, so a set reads the same way from the cache as it does from the
     live picker.
 
-    Riftbound numbers lead with the set's code ("OGN-303a/298"), so for that
-    game the number is read after it. Only for that game: a Pokemon number
-    with a hyphen in it keeps sorting exactly as before.
+    Riftbound ("OGN-303a/298") and One Piece ("OP01-120") numbers lead with
+    the set's code, so for those games the number is read after it. Only for
+    those: a Pokemon number with a hyphen in it keeps sorting exactly as before.
     """
     text = str(card_number or "")
-    if game == "riftbound":
+    if game in ("riftbound", "one_piece"):
         text = re.sub(r"^\s*[A-Za-z0-9]+-", "", text)
     match = re.match(r"^\s*(\d+)", text)
     if not match:
@@ -1352,3 +1352,48 @@ async def cached_set_incomplete_counts(pool, game: str,
             game, language)
     return {r["set_id"]: int(r["n"]) for r in rows}
 
+
+
+async def update_prices_by_source_id(pool, game: str, language: str, rows) -> int:
+    """Re-price cached cards in one statement, matched on the API's own id.
+
+    `rows` is [(source_id, price|None, price_source|None)]. One Piece's whole
+    price list (optcg.index_prices) arrives in one weekly download, so there
+    is no reason to re-fetch each set just to move a number.
+
+    Same rules as upsert_set_cards: the API's answer is truth, so a None price
+    CLEARS the cached one (and its source) rather than leaving an old figure
+    looking current, and `priced_at` is set only when a price is stored.
+    Cards that aren't cached yet are simply not touched. Returns how many
+    cached cards were updated.
+    """
+    ids, prices, sources = [], [], []
+    for source_id, price, source in rows or []:
+        sid = str(source_id or "").strip()[:40]
+        if not sid:
+            continue
+        value = _as_numeric(price)
+        ids.append(sid)
+        prices.append(value)
+        sources.append(str(source).strip()[:40] if value is not None and source else None)
+    if not ids:
+        return 0
+    async with pool.acquire() as conn:
+        status = await conn.execute(
+            """
+            UPDATE catalog_cards AS c
+               SET raw_price    = v.price,
+                   price_source = CASE WHEN v.price IS NULL THEN NULL ELSE v.src END,
+                   priced_at    = CASE WHEN v.price IS NULL THEN NULL ELSE NOW() END,
+                   refreshed_at = NOW()
+              FROM unnest($3::text[], $4::numeric[], $5::text[]) AS v(source_id, price, src)
+             WHERE c.game = $1 AND c.language = $2 AND c.source_id = v.source_id
+            """,
+            game, language, ids, prices, sources)
+    try:
+        updated = int(str(status).rsplit(" ", 1)[-1])
+    except ValueError:
+        updated = 0
+    logger.info("Catalog: re-priced %d cached card(s) for %s [%s] from %d price row(s)",
+                updated, game, language, len(ids))
+    return updated

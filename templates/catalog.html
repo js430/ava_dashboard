@@ -643,10 +643,13 @@
           Cardmarket's 7-day average instead, converted from euros and marked
           <span class="src-tag">EU</span>. Every card updates once a day.
         </div>
+        <div class="hint one_piece-only" style="padding:0 16px 10px">
+          One Piece prices are market prices, mostly from TCGplayer. They update once a week.
+        </div>
         {% if is_guest and not user_id %}
         <div class="hint guest-note" style="padding:0 16px 10px">
           <strong>Guest account restriction:</strong> showing the newest
-          <span class="pokemon-only">{{ guest_catalog_visible_sets }} stocked set(s)</span><span class="riftbound-only">{{ guest_riftbound_visible_sets }} main set(s)</span>
+          <span class="pokemon-only">{{ guest_catalog_visible_sets }} stocked set(s)</span><span class="riftbound-only">{{ guest_riftbound_visible_sets }} main set(s)</span><span class="one_piece-only">{{ guest_one_piece_visible_sets }} newest booster set(s)</span>
           only, and manual price refresh is Discord-members-only.
           <a href="/login">Sign in with Discord</a> for the full catalog, or sign up for the paid
           tier (coming soon via Stripe) for full access without a Discord account.
@@ -654,7 +657,7 @@
         {% elif is_guest %}
         <div class="hint guest-note" style="padding:0 16px 10px">
           <strong>Limited access:</strong> showing the newest
-          <span class="pokemon-only">{{ guest_catalog_visible_sets }} stocked set(s)</span><span class="riftbound-only">{{ guest_riftbound_visible_sets }} main set(s)</span>
+          <span class="pokemon-only">{{ guest_catalog_visible_sets }} stocked set(s)</span><span class="riftbound-only">{{ guest_riftbound_visible_sets }} main set(s)</span><span class="one_piece-only">{{ guest_one_piece_visible_sets }} newest booster set(s)</span>
           only, and manual price refresh requires a premium role. Get the
           <strong>Intel</strong> or <strong>Monitor</strong> role
           <a href="{{ upgrade_url }}" target="_blank" rel="noopener">here</a> for the
@@ -791,8 +794,24 @@
             Every Riftbound set is added automatically, and every card's price is updated
             once a day. There's nothing to stock by hand.
           </div>
+          <div class="hint one_piece-only" style="margin-bottom:10px">
+            Every One Piece set is added automatically, and prices are updated once a week.
+            There's nothing to stock by hand.
+          </div>
           <div class="setlist" id="stockedSets"></div>
           {% if is_admin %}
+          <div class="one_piece-only" style="border-top:1px solid #f0f0f0; padding-top:12px; margin-top:12px">
+            <button class="btn btn-plain btn-sm" id="opSyncBtn" onclick="runOnePieceSync()">
+              Update One Piece now
+            </button>
+            <span class="hint" style="margin-left:6px">
+              Checks for new sets and refreshes card details right away instead of waiting for
+              the weekly update. Prices only change once a week, and the price service allows a
+              limited number of requests per day, so this may stop part-way and carry on later.
+            </span>
+            <div class="hint" id="opFetchedNote" style="margin-top:8px"></div>
+            <div class="warn" id="opSyncMsg" style="display:none"></div>
+          </div>
           <div class="riftbound-only" style="border-top:1px solid #f0f0f0; padding-top:12px; margin-top:12px">
             <button class="btn btn-plain btn-sm" id="rbSyncBtn" onclick="runRiftboundSync()">
               Update Riftbound now
@@ -854,6 +873,9 @@
             day &mdash; not live. TCGplayer reports one price per card: the regular (non-foil)
             printing where there are both. A blank price means neither TCGplayer nor Cardmarket
             reported one for that card, not that it's worthless.</span>
+            <span class="one_piece-only">Prices are market prices, mostly from TCGplayer, and are
+            updated once a week &mdash; not live. A blank price means the price service had no
+            price for that card, not that it's worthless.</span>
             {% if ebay_affiliate %}
             <br><br>
             <strong>Heads up:</strong> card names that link to eBay are affiliate links.
@@ -974,6 +996,12 @@
     </div>
   </div>
   {% endif %}
+
+  <!-- Required credit for the One Piece card data. Outside the Browse, Sealed
+       and Trade views so it shows under whichever one is open. -->
+  <div class="hint one_piece-only" id="optcgCredit" style="text-align:center; padding:18px 0 4px">
+    Powered by <a href="https://opbindr.com" target="_blank" rel="noopener noreferrer">OPTCG API</a>
+  </div>
 
 </div>
 
@@ -1750,7 +1778,8 @@ function refreshEligible(c){
   // A one-card refresh is a PokemonPriceTracker call; other games refresh
   // whole, once a day.
   if (currentGame !== 'pokemon')
-    return { ok: false, reason: GAME_INFO[currentGame].label + ' prices update once a day on their own' };
+    return { ok: false, reason: GAME_INFO[currentGame].label + ' prices update '
+      + (currentGame === 'one_piece' ? 'once a week' : 'once a day') + ' on their own' };
   if (!c.tcgplayer_url) return { ok: false, reason: 'No direct TCGplayer link — can’t be refreshed this way' };
   if (c.priced_at){
     const ageMs = Date.now() - new Date(c.priced_at).getTime();
@@ -1793,6 +1822,9 @@ async function loadPortfolioKeys(){
   } catch(e){ /* non-fatal — Track buttons just start off unmarked */ }
 }
 function trackButtonHtml(c){
+  // One Piece cards are still added from the Card Tracker's own search, which
+  // prices them separately; a catalog row would merge alt arts into one card.
+  if (currentGame === 'one_piece') return '';
   if (portfolioKeys.has(cardKey(c))){
     return `<button type="button" class="btn btn-plain btn-sm track-btn added" disabled>In tracker</button>`;
   }
@@ -2438,7 +2470,9 @@ async function loadCards(){
     let msg = total === 0 && !filtering
       ? (currentGame === 'riftbound'
           ? 'Riftbound cards haven’t been loaded yet — they’re added automatically, so check back shortly.'
-          : 'Nothing stocked yet. Open a set in the Grading Calculator and it’ll show up here.')
+          : currentGame === 'one_piece'
+            ? 'One Piece cards haven’t been loaded yet — they’re added automatically, so check back shortly.'
+            : 'Nothing stocked yet. Open a set in the Grading Calculator and it’ll show up here.')
       : 'No cards match those filters.';
     // A guest searching for a card from an older set gets a real zero-result
     // page that looks identical to "that card doesn't exist" — this is the
@@ -2519,6 +2553,23 @@ async function loadFacets(){
   const rbBtn = document.getElementById('rbSyncBtn');
   if (rbBtn) rbBtn.disabled = currentGame === 'riftbound' && d.can_sync === false;
   const factorNote = document.getElementById('rbFactorNote');
+  const opBtn = document.getElementById('opSyncBtn');
+  if (opBtn) opBtn.disabled = currentGame === 'one_piece' && d.can_sync === false;
+  const opNote = document.getElementById('opFetchedNote');
+  if (opNote && currentGame === 'one_piece'){
+    const parts = [];
+    if (d.index_fetched_at){
+      const fetched = new Date(d.index_fetched_at);
+      if (!isNaN(fetched)) parts.push('Prices last fetched '
+        + fetched.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) + '.');
+    } else {
+      parts.push('Prices haven’t been fetched yet.');
+    }
+    if (typeof d.requests_today === 'number')
+      parts.push(d.requests_today.toLocaleString() + ' price service requests used today.');
+    if (d.can_sync === false) parts.push('The price service isn’t set up, so updates are off.');
+    opNote.textContent = parts.join(' ');
+  }
   if (factorNote && d.factor){
     const f = d.factor;
     const when = f.changed_at
@@ -2542,6 +2593,23 @@ async function runRiftboundSync(){
     const d = await resp.json().catch(() => ({}));
     if (!resp.ok) show(d.detail || 'Couldn’t start the update.');
     else { show('Updating every Riftbound set — progress shows above.'); loadFacets(); }
+  } catch(e){
+    show('Network error — please try again.');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function runOnePieceSync(){
+  const btn = document.getElementById('opSyncBtn');
+  const msg = document.getElementById('opSyncMsg');
+  const show = text => { msg.textContent = text; msg.style.display = 'block'; };
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/api/catalog/one-piece/sync', { method: 'POST' });
+    const d = await resp.json().catch(() => ({}));
+    if (!resp.ok) show(d.detail || 'Couldn’t start the update.');
+    else { show('Updating One Piece sets — progress shows above.'); loadFacets(); }
   } catch(e){
     show('Network error — please try again.');
   } finally {
@@ -2623,7 +2691,8 @@ function renderBackfill(bf){
     const skipped = bf.empty ? `, ${bf.empty} with no data yet` : '';
     const already = bf.skipped ? `, ${bf.skipped} already complete` : '';
     const verb = bf.mode === 'refresh' ? 'Refreshing already-stocked sets'
-               : bf.mode === 'riftbound' ? 'Updating Riftbound sets' : 'Stocking the newest sets';
+               : bf.mode === 'riftbound' ? 'Updating Riftbound sets'
+               : bf.mode === 'one_piece' ? 'Updating One Piece sets' : 'Stocking the newest sets';
     el.className = 'backfill';
     el.textContent = `${verb} — ${bf.done}${of} done${skipped}${already}`
       + (bf.current ? ` (currently ${bf.current})` : '')
@@ -2987,7 +3056,9 @@ function renderSealed() {
       ? 'Nothing matches those filters.'
       : currentGame === 'riftbound'
         ? 'Riftbound sealed product hasn’t been loaded yet — it’s added automatically once a day.'
-        : 'No sealed product has been added yet. An admin or server mod stocks it '
+        : currentGame === 'one_piece'
+          ? 'Sealed product prices aren’t available for One Piece yet. Card prices are on the Singles tab.'
+          : 'No sealed product has been added yet. An admin or server mod stocks it '
           + 'per set from Tracker Management.');
     return;
   }

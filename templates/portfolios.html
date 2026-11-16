@@ -277,7 +277,7 @@
     <div id="pickStep">
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
         <div class="seg" role="group" aria-label="Game" id="segGame">
-          {% for g in GAMES if g.catalog %}<button data-game="{{ g.key }}" class="{{ 'on' if loop.first }}"
+          {% for g in GAMES if g.catalog_picker %}<button data-game="{{ g.key }}" class="{{ 'on' if loop.first }}"
                   onclick="setAddGame('{{ g.key }}')">{{ g.label }}</button>
           {% endfor %}
         </div>
@@ -1159,7 +1159,7 @@ let pickSeq = 0;
 // Keyed "<kind>:<game>" — each game's sets are a separate list.
 const setCache = {};
 // Games with a priced catalog (games.py), for the picker and its placeholders.
-const GAME_INFO = Object.fromEntries({{ GAMES | tojson }}.filter(g => g.catalog).map(g => [g.key, g]));
+const GAME_INFO = Object.fromEntries({{ GAMES | tojson }}.filter(g => g.catalog_picker).map(g => [g.key, g]));
 let addGame = Object.keys(GAME_INFO)[0];
 
 // Which game's catalog the picker draws from. Same pick-a-set-then-narrow

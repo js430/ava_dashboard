@@ -57,6 +57,7 @@ import tips
 import monitor_alerts
 import auto_delete_rules
 import riftbound
+import optcg
 import games
 
 load_dotenv()
@@ -225,6 +226,11 @@ async def lifespan(app: FastAPI):
         await _load_riftbound_factor(app.state.db)
     except Exception:
         logger.exception("Catalog schema ensure failed — /catalog may be unavailable")
+    try:
+        # Its own step: the One Piece API's request counter and cache tables.
+        await optcg.ensure_optcg_schema(app.state.db)
+    except Exception:
+        logger.exception("One Piece schema ensure failed — the One Piece sync may be unavailable")
     # Its own step, after the table exists: can be refused (logged inside)
     # without costing anything but search speed. Never raises.
     if await catalog.ensure_catalog_search_indexes(app.state.db):
@@ -264,6 +270,8 @@ async def lifespan(app: FastAPI):
     catalog_price_sweep_task = asyncio.create_task(_catalog_price_sweep_scheduler(app))
     # Checks every couple of hours, fetches only what's past its daily age.
     riftbound_sync_task = asyncio.create_task(_riftbound_sync_scheduler(app))
+    # Weekly: the One Piece card list is cached for 7+ days by design.
+    one_piece_sync_task = asyncio.create_task(_one_piece_sync_scheduler(app))
     try:
         yield
     finally:
@@ -273,6 +281,7 @@ async def lifespan(app: FastAPI):
         price_sweep_task.cancel()
         catalog_price_sweep_task.cancel()
         riftbound_sync_task.cancel()
+        one_piece_sync_task.cancel()
         await app.state.db.close()
 
 
@@ -382,8 +391,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             # images.tcggo.com: Riftbound card images, same arrangement with
             # riftbound.IMAGE_HOSTS (https on that host only, checked before
             # the URL is stored). Images only — no script or connect access.
+            # en.onepiece-cardgame.com and optcg-api.arjunbansal-ai.workers.dev:
+            # One Piece card images, same arrangement with optcg.IMAGE_HOSTS
+            # (https on those two hosts only, checked before the URL is stored).
             "img-src 'self' data: blob: https://cdn.discordapp.com https://images.pokemontcg.io "
             "https://tcgplayer-cdn.tcgplayer.com https://images.tcggo.com "
+            "https://en.onepiece-cardgame.com https://optcg-api.arjunbansal-ai.workers.dev "
             "https://api.scryfall.com https://db.ygoprodeck.com https://www.optcgapi.com "
             "https://maps.googleapis.com https://maps.gstatic.com https://assets.pokemon.com; "
             "connect-src 'self' https://maps.googleapis.com; "
@@ -3633,7 +3646,7 @@ async def _collectr_catalog(pool, kinds):
                 "SELECT id, game, card_name AS name, set_name, card_number, "
                 "rarity AS variant, tcgplayer_id, language "
                 "FROM catalog_cards WHERE game = ANY($1::TEXT[]) LIMIT 60000",
-                list(CATALOG_GAMES))
+                list(CATALOG_PICKER_GAMES))
             singles = [dict(r) for r in rows]
     # Indexed once here rather than rescanned per item: matching a hundred
     # items against a few thousand rows is otherwise a minute of string
@@ -3657,7 +3670,7 @@ async def _catalog_row(conn, kind: str, item_id: int):
         row = await conn.fetchrow(
             "SELECT id, game, card_name AS name, set_name, card_number, "
             "rarity AS variant, tcgplayer_id, language FROM catalog_cards "
-            "WHERE id = $1 AND game = ANY($2::TEXT[])", item_id, list(CATALOG_GAMES))
+            "WHERE id = $1 AND game = ANY($2::TEXT[])", item_id, list(CATALOG_PICKER_GAMES))
     return dict(row) if row else None
 
 
@@ -4045,6 +4058,12 @@ async def api_portfolio_resolve_card(request: Request,
     language = price_sources.ppt_language(body.get("language"))
     source_id = None
     pool = request.app.state.db
+    if game in VALID_GAMES and game not in CATALOG_PICKER_GAMES:
+        # A game with a catalog but no way to price a held card from it yet
+        # (One Piece): refuse plainly rather than add a card that never prices.
+        raise HTTPException(status_code=400,
+                            detail=f"{games.get(game).label} cards can't be added to a "
+                                   "portfolio yet.")
     if games.priced_from_catalog(game):
         ident = await _catalog_add_fields(pool, game, body)
         name, set_name, card_number = ident["name"], ident["set_name"], ident["card_number"]
@@ -5712,6 +5731,15 @@ async def _catalog_set_releases(game: str) -> list:
                         for s in await riftbound.cached_episodes(client)]
         except Exception:
             logger.exception("Riftbound set list failed — sets shown alphabetically")
+    elif game == optcg.GAME:
+        # From the cached /sets list — never a live call. The API gives no
+        # release dates, so "released" is blank and the order is
+        # optcg.set_release_order's approximation.
+        try:
+            sets = await _one_piece_cached_sets(app.state.db)
+            return [{"id": set_id, "released": ""} for set_id in optcg.set_release_order(sets)]
+        except Exception:
+            logger.exception("One Piece set list failed — sets shown alphabetically")
     return []
 
 
@@ -5932,9 +5960,9 @@ async def api_grading_find_card(request: Request, game: str, number: str = "",
 #   2. Admin "stock this set" below, for seeding popular sets deliberately.
 # A member browsing the catalog NEVER triggers a vendor call.
 #
-# Pokemon-only for now: One Piece's catalog source (optcgapi) returns rarity
-# but no prices at all, so OP cards would sit in a price-filtered table with
-# nothing to filter on. See MEMORY.md.
+# Pokemon is the default game. Riftbound and One Piece fill themselves from
+# their own weekly/daily syncs (see below); One Piece's prices come from the
+# OPTCG API (optcg.py) rather than optcgapi, which had none. See MEMORY.md.
 CATALOG_GAME = "pokemon"
 
 # Guest tier: catalog browsing (and the grading calculator's set picker,
@@ -5951,6 +5979,9 @@ GUEST_CATALOG_VISIBLE_SETS = int(os.getenv("GUEST_CATALOG_VISIBLE_SETS", "4"))
 # Riftbound's window is its own number: it releases far fewer sets than
 # Pokemon, so 3 main sets is already about a year of releases.
 GUEST_RIFTBOUND_VISIBLE_SETS = int(os.getenv("GUEST_RIFTBOUND_VISIBLE_SETS", "3"))
+# One Piece's too: the newest 3 stocked booster sets (starter decks, extra
+# boosters and promos don't count — optcg.set_era).
+GUEST_ONE_PIECE_VISIBLE_SETS = int(os.getenv("GUEST_ONE_PIECE_VISIBLE_SETS", "3"))
 # The grading calculator has its own, tighter guest window — decoupled from
 # the Catalog's so tightening/widening one never silently changes the other.
 GUEST_GRADING_VISIBLE_SETS = int(os.getenv("GUEST_GRADING_VISIBLE_SETS", "5"))
@@ -6002,9 +6033,13 @@ async def _guest_visible_set_ids(pool, language: str, limit: int = None) -> list
     return out
 
 
-# Games the Catalog page offers (games.py). One Piece is allowed in the table
-# but has no prices yet (see catalog.GAMES), so it isn't one of them.
+# Games the Catalog page offers (games.py): Pokemon, One Piece and Riftbound.
 CATALOG_GAMES = games.keys_with("catalog")
+# The subset whose cards can be picked from the catalog and added to a
+# portfolio or the shared tracker. One Piece browses the catalog but isn't
+# in this list: it has no sealed prices, and a held card is still priced the
+# Card Tracker's way, not copied from the catalog.
+CATALOG_PICKER_GAMES = games.keys_with("catalog_picker")
 
 
 def _catalog_game(raw) -> str:
@@ -6046,16 +6081,44 @@ async def _riftbound_guest_set_ids(pool, limit: int = None) -> list:
     return out
 
 
+async def _one_piece_guest_set_ids(pool, limit: int = None) -> list:
+    """One Piece's guest ceiling: the newest N STOCKED booster-era sets, from
+    the cached /sets list (no live call), newest first by
+    optcg.set_release_order. Starter decks, extra boosters and promos are
+    skipped, the way Pokemon's promo era is. Fails closed — no cached set list
+    means nothing shown."""
+    limit = GUEST_ONE_PIECE_VISIBLE_SETS if limit is None else limit
+    try:
+        sets = await _one_piece_cached_sets(pool)
+    except Exception:
+        logger.exception("Guest catalog restriction: couldn't read the One Piece set list")
+        return []
+    have = await catalog.cached_set_ids(pool, optcg.GAME, optcg.LANGUAGE)
+    out = []
+    for set_id in optcg.set_release_order(sets):
+        if optcg.set_era(set_id) != "one_piece_boosters" or set_id not in have:
+            continue
+        out.append(set_id)
+        if len(out) >= limit:
+            break
+    return out
+
+
 async def _catalog_guest_ceiling(pool, game: str, languages) -> list:
     if game == riftbound.GAME:
         return await _riftbound_guest_set_ids(pool)
+    if game == optcg.GAME:
+        return await _one_piece_guest_set_ids(pool)
     return await _guest_visible_set_ids_multi(pool, languages)
 
 
 def _annotate_catalog_sets(game: str, sets: list, name_key: str = "set_name") -> list:
-    """Group sets for the set picker: Pokemon by era, Riftbound into sets and promos."""
+    """Group sets for the set picker: Pokemon by era, Riftbound into sets and
+    promos, One Piece into boosters, extras, starter decks and promos."""
     if game == riftbound.GAME:
         return riftbound.annotate_sets(sets, name_key=name_key)
+    if game == optcg.GAME:
+        return optcg.annotate_sets(sets, name_key=name_key)
     return card_eras.annotate(sets, name_key=name_key)
 
 
@@ -6824,6 +6887,245 @@ async def _riftbound_sync_scheduler(app: FastAPI) -> None:
         await asyncio.sleep(RIFTBOUND_SYNC_CHECK_S)
 
 
+# ---- One Piece catalog sync ----
+# One Piece's cards and prices come from the OPTCG API (optcg.py), which
+# allows 2,000 requests a day on a shared key, so this sync is deliberately
+# frugal and weekly:
+#   * The card list ("/cards/index", 5,500+ cards) is the API's own
+#     weekly-priced dataset, cached in Postgres for optcg.INDEX_TTL_DAYS (7+)
+#     and never re-fetched sooner — not even by the admin's button.
+#   * A set's cards are fetched (one request each) only when the set isn't
+#     stocked yet, its card count changed, or its rows are older than
+#     optcg.SET_REFRESH_DAYS. The admin's button fetches every set, still
+#     under optcg's rate limiter and daily cap.
+#   * A member browsing never causes a call.
+# "Due" is read from the database (the api_cache table plus catalog_cards), so
+# a redeploy never re-spends requests and a cut-short run resumes at the next
+# check. Cards are NOT priced into portfolios or the Card Tracker from here
+# (games.py: no priced_from_catalog) — those keep their JustTCG pricing.
+ONE_PIECE_SYNC_CHECK_S = float(os.getenv("OPTCG_SYNC_CHECK_S", str(6 * 3600)))
+ONE_PIECE_SYNC_START_DELAY_S = float(os.getenv("OPTCG_SYNC_START_DELAY_S", "180"))
+# Consecutive failed sets that stop a run, so an outage can't burn the budget.
+ONE_PIECE_SYNC_MAX_ERRORS = 3
+# The api_cache resource holding {set_id: when that set's cards were last
+# fetched}. catalog_cards.refreshed_at can't say this: the weekly price
+# update from the card list bumps it for every set.
+ONE_PIECE_SET_FETCHED = "set_fetched_at"
+# Only these fields of the card list are kept in the database (~2 MB less).
+ONE_PIECE_INDEX_FIELDS = ("id", "name", "langs", "rarity", "variant_type", "parallel",
+                          "price", "price_source")
+
+
+def _one_piece_sync_state(app) -> dict:
+    st = getattr(app.state, "one_piece_sync", None)
+    if st is None:
+        st = {"running": False, "started_at": None, "finished_at": None, "planned": 0,
+              "done": 0, "cards": 0, "priced": 0, "current": None, "error": None,
+              "last_result": None}
+        app.state.one_piece_sync = st
+    return st
+
+
+async def _one_piece_cached_sets(pool) -> list:
+    """The API's set list as last stored (optcg.fetch_sets) — never a live call."""
+    body, _fetched_at = await optcg.cached(pool, "sets")
+    return [s for s in (body or []) if isinstance(s, dict) and s.get("id") is not None]
+
+
+async def _one_piece_set_ages(pool) -> dict:
+    """{set_id: when its rows were last refreshed} for stocked One Piece sets."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT set_id, MAX(refreshed_at) AS at FROM catalog_cards "
+            "WHERE game = $1 GROUP BY set_id", optcg.GAME)
+    return {r["set_id"]: r["at"] for r in rows}
+
+
+def _one_piece_parse_time(value):
+    try:
+        at = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return at if at.tzinfo else at.replace(tzinfo=ZoneInfo("UTC"))
+
+
+def _one_piece_due_set_ids(sets, ages, counts, fetched, now, force=False) -> list:
+    """Ids of the sets whose cards need fetching, newest first: not stocked
+    yet, a card count that differs from the one at the last fetch, or a last
+    fetch older than optcg.SET_REFRESH_DAYS. `force` takes every set."""
+    window = timedelta(days=optcg.SET_REFRESH_DAYS)
+    by_id = {str(s["id"]): s for s in sets}
+    due = []
+    for set_id in optcg.set_release_order(sets):
+        sid = str(set_id)
+        entry = by_id.get(sid)
+        if entry is None:
+            continue
+        last = _one_piece_parse_time(fetched.get(sid)) or ages.get(sid)
+        if (force or last is None or counts.get(sid) != entry.get("card_count")
+                or last < now - window):
+            due.append(sid)
+    return due
+
+
+async def _one_piece_sync_due(app) -> bool:
+    pool = app.state.db
+    index_rows, index_at = await optcg.cached(pool, "cards/index")
+    if index_rows is None or optcg.index_due(index_at):
+        return True
+    sets = await _one_piece_cached_sets(pool)
+    if not sets:
+        return True
+    counts, _ = await optcg.cached(pool, "set_card_counts")
+    fetched, _ = await optcg.cached(pool, ONE_PIECE_SET_FETCHED)
+    return bool(_one_piece_due_set_ids(
+        sets, await _one_piece_set_ages(pool), counts or {}, fetched or {},
+        datetime.now(ZoneInfo("UTC"))))
+
+
+def _one_piece_stop_message(status: str, where: str = "") -> str:
+    """Plain-English reason a run stopped early (rate_limited / quota)."""
+    if status == "quota":
+        return ("Today's request allowance for the One Piece price service is used up"
+                + (", so the update stopped at " + where if where else "")
+                + ". It picks up again on its own once the day rolls over.")
+    return ("The One Piece price service is rate-limiting"
+            + (", so the update stopped at " + where if where else "")
+            + ". It resumes on its next check with the sets it didn't reach.")
+
+
+async def _run_one_piece_sync(app, force: bool = False) -> None:
+    """Refresh One Piece sets, cards and prices. Never raises.
+
+    force=True (the admin button) fetches every set's cards regardless of age.
+    It does NOT bypass the 7-day cache of the card list: the API asks clients
+    to cache it, and the daily request cap is shared.
+    """
+    st = _one_piece_sync_state(app)
+    if st["running"]:
+        return
+    if not optcg.available():
+        st["error"] = "The One Piece price service isn't configured (OPTCG_API_KEY)."
+        return
+    st.update(running=True, started_at=datetime.utcnow().isoformat() + "Z", finished_at=None,
+              planned=0, done=0, cards=0, priced=0, current=None, error=None)
+    pool = app.state.db
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            index_rows, index_at = await optcg.cached(pool, "cards/index")
+            sets = await _one_piece_cached_sets(pool)
+            fresh_index = False
+
+            if index_rows is None or optcg.index_due(index_at) or not sets:
+                st["current"] = "set list"
+                new_sets, status = await optcg.fetch_sets(client, pool)
+                if new_sets:
+                    sets = new_sets
+                    await optcg.store_cache(pool, "sets", new_sets)
+                elif status in ("rate_limited", "quota"):
+                    if not sets:
+                        st["error"] = _one_piece_stop_message(status)
+                        return
+                if index_rows is None or optcg.index_due(index_at):
+                    st["current"] = "card list"
+                    new_index, status = await optcg.fetch_index(client, pool)
+                    if new_index:
+                        index_rows = [{k: row.get(k) for k in ONE_PIECE_INDEX_FIELDS}
+                                      for row in new_index if isinstance(row, dict)]
+                        await optcg.store_cache(pool, "cards/index", index_rows)
+                        fresh_index = True
+                    elif index_rows is None:
+                        st["error"] = (_one_piece_stop_message(status)
+                                       if status in ("rate_limited", "quota")
+                                       else "The One Piece price service returned no cards.")
+                        return
+                    else:
+                        # An older copy is still good for browsing; try again
+                        # at the next check.
+                        logger.warning("One Piece sync: card list refresh failed (%s) — "
+                                       "using the copy from %s", status, index_at)
+            if not sets:
+                st["error"] = "The One Piece price service returned no sets."
+                return
+
+            english = optcg.english_ids(index_rows)
+            versions = optcg.version_labels(index_rows)
+            counts, _ = await optcg.cached(pool, "set_card_counts")
+            counts = dict(counts or {})
+            fetched, _ = await optcg.cached(pool, ONE_PIECE_SET_FETCHED)
+            fetched = dict(fetched or {})
+            now = datetime.now(ZoneInfo("UTC"))
+            todo = _one_piece_due_set_ids(
+                sets, await _one_piece_set_ages(pool), counts, fetched, now, force=force)
+            by_id = {str(s["id"]): s for s in sets}
+            st["planned"] = len(todo)
+
+            error_streak = 0
+            for sid in todo:
+                entry = by_id[sid]
+                name = optcg.set_display_name(entry.get("label") or "", sid)
+                st["current"] = name
+                rows, status = await optcg.fetch_set_cards(client, pool, sid)
+                if status in ("rate_limited", "quota"):
+                    st["error"] = _one_piece_stop_message(status, name)
+                    break
+                st["done"] += 1
+                # not_found is recorded like empty below, so a set the API
+                # lists but can't serve isn't re-requested every check.
+                if status not in ("ok", "empty", "not_found"):
+                    error_streak += 1
+                    if error_streak >= ONE_PIECE_SYNC_MAX_ERRORS:
+                        st["error"] = (f"Stopped after {error_streak} failed sets in a row — "
+                                       "the One Piece price service looks unreachable.")
+                        break
+                    continue
+                error_streak = 0
+                cards = [c for c in (optcg.parse_card(r, name, versions, english)
+                                     for r in (rows or [])) if c]
+                if cards:
+                    stats = await catalog.upsert_set_cards(
+                        pool, optcg.GAME, optcg.LANGUAGE, sid, cards, price_source="optcg")
+                    st["cards"] += stats["cards"]
+                # Remembered right away, so a run cut short resumes with only
+                # the sets it didn't reach. The count is the set list's own
+                # figure (not len(rows)), so the next comparison is like for like.
+                counts[sid] = entry.get("card_count")
+                fetched[sid] = now.isoformat()
+                await optcg.store_cache(pool, "set_card_counts", counts)
+                await optcg.store_cache(pool, ONE_PIECE_SET_FETCHED, fetched)
+
+            # The card list carries the weekly price for every card, including
+            # sets not fetched this run. Only applied when it was fetched just
+            # now — an older cached copy would overwrite fresher set prices.
+            if fresh_index:
+                st["current"] = "prices"
+                st["priced"] = await catalog.update_prices_by_source_id(
+                    pool, optcg.GAME, optcg.LANGUAGE, optcg.index_prices(index_rows, english))
+        st["last_result"] = (f"One Piece updated — {st['cards']:,} cards across {st['done']} "
+                             f"set(s)" + (f", {st['priced']:,} prices refreshed."
+                                          if fresh_index else "."))
+        logger.info("One Piece sync: %s", st["last_result"])
+    except Exception:
+        logger.exception("One Piece sync failed")
+        st["error"] = "The One Piece update failed — see the server logs."
+    finally:
+        st.update(running=False, current=None,
+                  finished_at=datetime.utcnow().isoformat() + "Z")
+
+
+async def _one_piece_sync_scheduler(app: FastAPI) -> None:
+    await asyncio.sleep(ONE_PIECE_SYNC_START_DELAY_S)
+    while True:
+        try:
+            if optcg.available() and await _one_piece_sync_due(app):
+                await _run_one_piece_sync(app)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("One Piece sync check failed — retrying next interval")
+        await asyncio.sleep(ONE_PIECE_SYNC_CHECK_S)
+
+
 @app.get("/catalog", response_class=HTMLResponse)
 async def catalog_page(request: Request):
     # Demo/role-less Discord accounts reach this page too (guest-tier access,
@@ -6836,8 +7138,8 @@ async def catalog_page(request: Request):
     elif not is_guest(request) and not await account_has_access(request):
         return login_redirect_or_preview(
             request, title="Card Catalog — Nexus Card Co",
-            description="Browse " + " and ".join(games.get(g).label for g in CATALOG_GAMES)
-                        + " singles and sealed product with daily prices. "
+            description="Browse " + ", ".join(games.get(g).label for g in CATALOG_GAMES)
+                        + " singles and sealed product with up-to-date prices. "
                         "Sign in with Discord or continue as a guest to use it.")
     return templates.TemplateResponse(request, "catalog.html", {
         "default_costs": {k: str(v) for k, v in portfolios.DEFAULT_SEALED_COST.items()},
@@ -6849,6 +7151,7 @@ async def catalog_page(request: Request):
         "refresh_min_age_hours": CATALOG_MANUAL_REFRESH_MIN_AGE_HOURS,
         "guest_catalog_visible_sets": GUEST_CATALOG_VISIBLE_SETS,
         "guest_riftbound_visible_sets": GUEST_RIFTBOUND_VISIBLE_SETS,
+        "guest_one_piece_visible_sets": GUEST_ONE_PIECE_VISIBLE_SETS,
         # Drives the admin Stock/Refresh button labels — read from the same
         # constants the backend defaults to, so a batch-size change can never
         # leave the button text stale again.
@@ -7040,6 +7343,51 @@ async def api_catalog_facets(request: Request, language: str = "english",
                 "changed_at": last[0]["detected_at"].isoformat() if last else None,
                 "previous": float(last[0]["previous"]) if last and last[0]["previous"] else None,
             }
+        return JSONResponse(data, headers={"Cache-Control": "no-store"})
+
+    if game == optcg.GAME:
+        # One Piece fills itself (the weekly sync), so there's no stock picker.
+        # The set list is the API's cached one — never a live call from here —
+        # and "backfill" is the sync's progress in the shape the page renders.
+        pool = request.app.state.db
+        available = []
+        try:
+            cached_sets = await _one_piece_cached_sets(pool)
+            names = {str(s["id"]): optcg.set_display_name(s.get("label") or "", str(s["id"]))
+                     for s in cached_sets}
+            # Newest first (optcg.set_release_order is an approximation: the
+            # API has no release dates, so "released" is blank).
+            available = [{"id": sid, "name": names[str(sid)], "released": "",
+                          "language": optcg.LANGUAGE}
+                         for sid in optcg.set_release_order(cached_sets)
+                         if str(sid) in names]
+        except Exception:
+            logger.exception("Catalog: One Piece set list failed — showing stocked sets only")
+        optcg.annotate_sets(data["sets"], name_key="set_name")
+        optcg.annotate_sets(available, name_key="name")
+        st = _one_piece_sync_state(request.app)
+        index_at = None
+        try:
+            _rows, index_at = await optcg.cached(pool, "cards/index")
+        except Exception:
+            logger.exception("Catalog: couldn't read when the One Piece card list was fetched")
+        data.update(available_sets=available,
+                    era_order=[key for key, _ in optcg.ERA_ORDER],
+                    era_labels=dict(optcg.ERA_ORDER),
+                    language=optcg.LANGUAGE, can_stock=False,
+                    can_sync=optcg.available(),
+                    index_fetched_at=index_at.isoformat() if index_at else None,
+                    backfill={k: st[k] for k in ("running", "planned", "done", "cards",
+                                                 "current", "error", "finished_at",
+                                                 "last_result")} | {"mode": "one_piece"})
+        uid = user.get("id")
+        if uid and not user.get("guest") and not user.get("account") \
+                and int(uid) in ADMIN_USER_IDS:
+            # The admin panel's note on how much of the day's allowance is used.
+            try:
+                data["requests_today"] = await optcg.requests_today(pool)
+            except Exception:
+                logger.exception("Catalog: couldn't read today's One Piece request count")
         return JSONResponse(data, headers={"Cache-Control": "no-store"})
 
     # PPT's set list is per-language, so fetch each and tag the rows — the
@@ -7260,6 +7608,23 @@ async def api_catalog_riftbound_sync(request: Request, user=Depends(require_admi
     if _riftbound_sync_state(request.app)["running"]:
         raise HTTPException(status_code=409, detail="A Riftbound update is already running.")
     asyncio.create_task(_run_riftbound_sync(request.app, force=True))
+    return JSONResponse({"started": True}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/catalog/one-piece/sync")
+@limiter.limit("10/hour")
+async def api_catalog_one_piece_sync(request: Request, user=Depends(require_admin)):
+    """Admin: fetch every One Piece set's cards now, rather than waiting for
+    the weekly pass. Roughly one API request per set (about 60), spent from a
+    shared 2,000-a-day allowance, so admin-only and limited. The card list
+    itself is still only re-fetched once its 7-day cache runs out. Runs in
+    the background; poll /api/catalog/facets?game=one_piece."""
+    if not optcg.available():
+        raise HTTPException(status_code=503,
+                            detail="The One Piece price service isn't configured.")
+    if _one_piece_sync_state(request.app)["running"]:
+        raise HTTPException(status_code=409, detail="A One Piece update is already running.")
+    asyncio.create_task(_run_one_piece_sync(request.app, force=True))
     return JSONResponse({"started": True}, headers={"Cache-Control": "no-store"})
 
 

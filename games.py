@@ -5,11 +5,13 @@ allowed-game checks, the game pickers on every page, and the names the photo
 scanner returns all read from here. Before this, each page and endpoint kept
 its own hard-coded list, and adding Riftbound meant finding every one.
 
-ADDING A GAME'S PRICES (One Piece, once it has a price API)
------------------------------------------------------------
-One Piece is already here: the Grading Calculator, Tracker Management's set
-import and the Card Tracker all work for it. What it lacks is a price feed,
-which the Catalog, the Sealed tab and portfolio values need. To add one:
+ADDING A GAME'S PRICES
+----------------------
+One Piece now has a Catalog (optcg.py, a weekly sync) with `catalog=True` but
+NOT `priced_from_catalog` or `catalog_picker`: its Card Tracker, set import
+and Grading Calculator still work as before, and it has no sealed prices and
+isn't offered in Portfolios yet. A game that goes all the way follows these
+steps (Riftbound is the worked example):
 
   1. Write its API module, modelled on riftbound.py: fetch sets, cards and
      sealed product, and parse them into the dicts catalog.upsert_set_cards
@@ -17,7 +19,8 @@ which the Catalog, the Sealed tab and portfolio values need. To add one:
      card as `source_id`.
   2. Give it a daily sync like main.py's _run_riftbound_sync, and tracked-card
      pricing like card_tracker.run_riftbound_snapshots.
-  3. Set `catalog=True` and `priced_from_catalog=True` below. From there the
+  3. Set `catalog=True`, `catalog_picker=True` and `priced_from_catalog=True`
+     below. From there the
      Catalog's game switch, the Portfolios picker, every page's game list,
      the add-a-card paths (main._catalog_add_fields), Tracker Management's
      set import (main._catalog_import_*) and the Grading Calculator's set and
@@ -41,9 +44,15 @@ class Game:
     key: str                         # stored in every table's `game` column
     label: str                       # what members see
     languages: tuple = ("english",)  # first is the default
-    # Has a priced catalog: the Catalog page, the Sealed tab, and portfolio
-    # values. A game without one can still be tracked and graded.
+    # Has a priced catalog: the Catalog page (and its Sealed tab, which is
+    # empty for a game with no sealed prices). A game without one can still be
+    # tracked and graded.
     catalog: bool = False
+    # Cards can be picked from the catalog to add to a portfolio or to the
+    # shared tracker (Portfolios' picker, Tracker Management's add-a-card).
+    # Separate from `catalog` because a game can have a browsable catalog whose
+    # cards can't yet be added and priced that way (One Piece).
+    catalog_picker: bool = False
     grading: bool = False            # Grading Calculator
     set_import: bool = False         # Tracker Management's "Import a whole set"
     # Cards are added by their catalog row (the browser sends catalog_id) and
@@ -57,11 +66,12 @@ class Game:
 
 GAMES = (
     Game("pokemon", "Pokémon", languages=("english", "japanese"), catalog=True,
-         grading=True, set_import=True, scan_name="pokemon",
+         catalog_picker=True, grading=True, set_import=True, scan_name="pokemon",
          card_example="Charizard", sealed_example="Prismatic Evolutions"),
-    Game("one_piece", "One Piece", grading=True, set_import=True,
+    Game("one_piece", "One Piece", catalog=True, grading=True, set_import=True,
          scan_name="one piece", card_example="Monkey.D.Luffy"),
-    Game("riftbound", "Riftbound", catalog=True, grading=True, set_import=True,
+    Game("riftbound", "Riftbound", catalog=True, catalog_picker=True,
+         grading=True, set_import=True,
          priced_from_catalog=True, scan_name="riftbound",
          card_example="Ahri", sealed_example="Origins Booster Box"),
 )
