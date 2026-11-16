@@ -646,10 +646,14 @@
         <div class="hint one_piece-only" style="padding:0 16px 10px">
           One Piece prices are market prices, mostly from TCGplayer. They update once a week.
         </div>
+        <div class="hint lorcana-only" style="padding:0 16px 10px">
+          Lorcana prices are TCGplayer market prices and update once a day. A card that comes in
+          both normal and foil is listed twice, once for each, marked Foil in the Variant column.
+        </div>
         {% if is_guest and not user_id %}
         <div class="hint guest-note" style="padding:0 16px 10px">
           <strong>Guest account restriction:</strong> showing the newest
-          <span class="pokemon-only">{{ guest_catalog_visible_sets }} stocked set(s)</span><span class="riftbound-only">{{ guest_riftbound_visible_sets }} main set(s)</span><span class="one_piece-only">{{ guest_one_piece_visible_sets }} newest booster set(s)</span>
+          <span class="pokemon-only">{{ guest_catalog_visible_sets }} stocked set(s)</span><span class="riftbound-only">{{ guest_riftbound_visible_sets }} main set(s)</span><span class="one_piece-only">{{ guest_one_piece_visible_sets }} newest booster set(s)</span><span class="lorcana-only">{{ guest_lorcana_visible_sets }} main set(s)</span>
           only, and manual price refresh is Discord-members-only.
           <a href="/login">Sign in with Discord</a> for the full catalog, or sign up for the paid
           tier (coming soon via Stripe) for full access without a Discord account.
@@ -657,7 +661,7 @@
         {% elif is_guest %}
         <div class="hint guest-note" style="padding:0 16px 10px">
           <strong>Limited access:</strong> showing the newest
-          <span class="pokemon-only">{{ guest_catalog_visible_sets }} stocked set(s)</span><span class="riftbound-only">{{ guest_riftbound_visible_sets }} main set(s)</span><span class="one_piece-only">{{ guest_one_piece_visible_sets }} newest booster set(s)</span>
+          <span class="pokemon-only">{{ guest_catalog_visible_sets }} stocked set(s)</span><span class="riftbound-only">{{ guest_riftbound_visible_sets }} main set(s)</span><span class="one_piece-only">{{ guest_one_piece_visible_sets }} newest booster set(s)</span><span class="lorcana-only">{{ guest_lorcana_visible_sets }} main set(s)</span>
           only, and manual price refresh requires a premium role. Get the
           <strong>Intel</strong> or <strong>Monitor</strong> role
           <a href="{{ upgrade_url }}" target="_blank" rel="noopener">here</a> for the
@@ -798,6 +802,10 @@
             Every One Piece set is added automatically, and prices are updated once a week.
             There's nothing to stock by hand.
           </div>
+          <div class="hint lorcana-only" style="margin-bottom:10px">
+            Every Lorcana set is added automatically, and prices are updated once a day.
+            There's nothing to stock by hand.
+          </div>
           <div class="setlist" id="stockedSets"></div>
           {% if is_admin %}
           <div class="one_piece-only" style="border-top:1px solid #f0f0f0; padding-top:12px; margin-top:12px">
@@ -811,6 +819,16 @@
             </span>
             <div class="hint" id="opFetchedNote" style="margin-top:8px"></div>
             <div class="warn" id="opSyncMsg" style="display:none"></div>
+          </div>
+          <div class="lorcana-only" style="border-top:1px solid #f0f0f0; padding-top:12px; margin-top:12px">
+            <button class="btn btn-plain btn-sm" id="lcSyncBtn" onclick="runLorcanaSync()">
+              Update Lorcana now
+            </button>
+            <span class="hint" style="margin-left:6px">
+              Checks for new sets right away instead of waiting for the daily update. Prices only
+              change once a day, so sets already updated in the last 24 hours are skipped.
+            </span>
+            <div class="warn" id="lcSyncMsg" style="display:none"></div>
           </div>
           <div class="riftbound-only" style="border-top:1px solid #f0f0f0; padding-top:12px; margin-top:12px">
             <button class="btn btn-plain btn-sm" id="rbSyncBtn" onclick="runRiftboundSync()">
@@ -876,6 +894,9 @@
             <span class="one_piece-only">Prices are market prices, mostly from TCGplayer, and are
             updated once a week &mdash; not live. A blank price means the price service had no
             price for that card, not that it's worthless.</span>
+            <span class="lorcana-only">Prices are TCGplayer market prices, updated once a day
+            &mdash; not live. Normal and foil are priced separately. A blank price means the
+            price service had no price for that card, not that it's worthless.</span>
             {% if ebay_affiliate %}
             <br><br>
             <strong>Heads up:</strong> card names that link to eBay are affiliate links.
@@ -1001,6 +1022,10 @@
        and Trade views so it shows under whichever one is open. -->
   <div class="hint one_piece-only" id="optcgCredit" style="text-align:center; padding:18px 0 4px">
     Powered by <a href="https://opbindr.com" target="_blank" rel="noopener noreferrer">OPTCG API</a>
+  </div>
+  <!-- Credit for the Lorcana card data, shown the same way. -->
+  <div class="hint lorcana-only" id="lorcastCredit" style="text-align:center; padding:18px 0 4px">
+    Card data and prices from <a href="https://lorcast.com" target="_blank" rel="noopener noreferrer">Lorcast</a>
   </div>
 
 </div>
@@ -1824,7 +1849,8 @@ async function loadPortfolioKeys(){
 function trackButtonHtml(c){
   // One Piece cards are still added from the Card Tracker's own search, which
   // prices them separately; a catalog row would merge alt arts into one card.
-  if (currentGame === 'one_piece') return '';
+  // Lorcana is catalog-only: the Card Tracker doesn't price it yet.
+  if (currentGame === 'one_piece' || currentGame === 'lorcana') return '';
   if (portfolioKeys.has(cardKey(c))){
     return `<button type="button" class="btn btn-plain btn-sm track-btn added" disabled>In tracker</button>`;
   }
@@ -2472,6 +2498,8 @@ async function loadCards(){
           ? 'Riftbound cards haven’t been loaded yet — they’re added automatically, so check back shortly.'
           : currentGame === 'one_piece'
             ? 'One Piece cards haven’t been loaded yet — they’re added automatically, so check back shortly.'
+            : currentGame === 'lorcana'
+            ? 'Lorcana cards haven’t been loaded yet — they’re added automatically, so check back shortly.'
             : 'Nothing stocked yet. Open a set in the Grading Calculator and it’ll show up here.')
       : 'No cards match those filters.';
     // A guest searching for a card from an older set gets a real zero-result
@@ -2555,6 +2583,8 @@ async function loadFacets(){
   const factorNote = document.getElementById('rbFactorNote');
   const opBtn = document.getElementById('opSyncBtn');
   if (opBtn) opBtn.disabled = currentGame === 'one_piece' && d.can_sync === false;
+  const lcBtn = document.getElementById('lcSyncBtn');
+  if (lcBtn) lcBtn.disabled = currentGame === 'lorcana' && d.can_sync === false;
   const opNote = document.getElementById('opFetchedNote');
   if (opNote && currentGame === 'one_piece'){
     const parts = [];
@@ -2610,6 +2640,23 @@ async function runOnePieceSync(){
     const d = await resp.json().catch(() => ({}));
     if (!resp.ok) show(d.detail || 'Couldn’t start the update.');
     else { show('Updating One Piece sets — progress shows above.'); loadFacets(); }
+  } catch(e){
+    show('Network error — please try again.');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function runLorcanaSync(){
+  const btn = document.getElementById('lcSyncBtn');
+  const msg = document.getElementById('lcSyncMsg');
+  const show = text => { msg.textContent = text; msg.style.display = 'block'; };
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/api/catalog/lorcana/sync', { method: 'POST' });
+    const d = await resp.json().catch(() => ({}));
+    if (!resp.ok) show(d.detail || 'Couldn’t start the update.');
+    else { show('Checking Lorcana sets — progress shows above.'); loadFacets(); }
   } catch(e){
     show('Network error — please try again.');
   } finally {
@@ -2692,7 +2739,8 @@ function renderBackfill(bf){
     const already = bf.skipped ? `, ${bf.skipped} already complete` : '';
     const verb = bf.mode === 'refresh' ? 'Refreshing already-stocked sets'
                : bf.mode === 'riftbound' ? 'Updating Riftbound sets'
-               : bf.mode === 'one_piece' ? 'Updating One Piece sets' : 'Stocking the newest sets';
+               : bf.mode === 'one_piece' ? 'Updating One Piece sets'
+               : bf.mode === 'lorcana' ? 'Updating Lorcana sets' : 'Stocking the newest sets';
     el.className = 'backfill';
     el.textContent = `${verb} — ${bf.done}${of} done${skipped}${already}`
       + (bf.current ? ` (currently ${bf.current})` : '')
@@ -3058,6 +3106,8 @@ function renderSealed() {
         ? 'Riftbound sealed product hasn’t been loaded yet — it’s added automatically once a day.'
         : currentGame === 'one_piece'
           ? 'Sealed product prices aren’t available for One Piece yet. Card prices are on the Singles tab.'
+          : currentGame === 'lorcana'
+          ? 'Sealed product prices aren’t available for Lorcana yet. Card prices are on the Singles tab.'
           : 'No sealed product has been added yet. An admin or server mod stocks it '
           + 'per set from Tracker Management.');
     return;

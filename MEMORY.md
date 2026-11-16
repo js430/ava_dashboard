@@ -3,6 +3,68 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-11-15 — Lorcana in the Catalog, from Lorcast (lorcast.com)
+
+Jeffrey asked for a Lorcana tab starting from lorcana-api.com, then chose
+**Lorcast as the single source** once both were checked live.
+
+- **Rejected: lorcana-api.com.** Free and one call, but it has no prices and
+  no TCGplayer ids at all, no promos, almost no Enchanted / Epic / Iconic
+  cards, and no data change since 2026-08-10 (a set behind). **Rejected:**
+  lorcana-api.com cards joined to Lorcast prices (two sources, an untested
+  join, and it would still miss the promos and Enchanted cards).
+- **Lorcast, checked live 2026-11-15:** no key; 27 sets with real release
+  dates, promo and special sets included; every card in the three sets
+  sampled had a TCGplayer id and a picture, and nearly all had a price. It
+  asks for 50-100 ms between requests and for data to be kept 24h; prices
+  change once a day.
+- **Scope: Catalog only, like One Piece.** `Game("lorcana", catalog=True)` and
+  nothing else: no portfolio or tracker picker, grading, set import or
+  scanner. No "+ Track" button.
+- **New `Game.tracker` flag (default True), False for Lorcana.** The Card
+  Tracker's game pickers listed every game in the registry, so a
+  catalog-only game would have appeared there and been priced down the One
+  Piece path. `card_tracker.VALID_GAMES` is now the games with `tracker`, so
+  the add-a-card routes refuse Lorcana, and the two tracker pickers skip it.
+- **Sync (`lorcana.py`, `main._run_lorcana_sync`):** daily, about 28 requests
+  (set list + one per set), 0.25 s apart, stops on a 429. Each set is fetched
+  at most once per 24h (`LORCANA_SYNC_EVERY_H`, cannot go below 24). "Due" is
+  read from `api_cache` (api = `lorcast`), the same table One Piece uses, so
+  browsing never calls Lorcast. **The admin button re-reads the set list but
+  does not re-fetch a set fetched in the last day** — prices can't have
+  changed, and Lorcast asks for the gap. No key, so the sync is on unless
+  `LORCANA_SYNC_DISABLED` is set.
+- **Normal and foil are separate catalog rows**, told apart by `version` (""
+  and "Foil"), each with its own price. The foil row's `source_id` is the
+  Lorcast card id + `_f`, because the page keys rows by `source_id`. A card
+  with only a foil price (Enchanted, most promos) has just the foil row.
+  **Rejected:** one row with both prices in `printing_prices` (Pokemon's way):
+  the "Variant prices" toggle and variant filter are Pokemon-only on the page,
+  and a foil price kept there can't be sorted or filtered by price.
+- `catalog.clear_prices_not_in` (new): after a set is written, rows of that
+  set whose id wasn't in the response have their price cleared, so a finish
+  that lost its price doesn't keep showing an old one. It does nothing on an
+  empty response.
+- `card_name` is "Name - Subtitle" ("Ariel - On Human Legs"); `set_id` is
+  Lorcast's set code ("1", "14", "P1"); `card_number` is the collector number.
+- **Guest window:** newest 3 released, stocked main sets
+  (`GUEST_LORCANA_VISIBLE_SETS`); numbered set codes are main sets, lettered
+  ones are promos. Fails closed.
+- **Images:** `image_uris.digital.normal` on `cards.lorcast.io` only (https,
+  checked before storing); that host was added to the CSP `img-src`, nothing
+  else changed. Its response carries no header stopping other sites from
+  showing it. Not confirmed in a real browser.
+- **Open: Ravensburger's Community Code Policy has not been read.** Lorcast
+  says it uses the card content under that policy and "is expressly
+  prohibited from charging" for access. Whether a guest limit and a paid tier
+  on our side conflict with it is undecided.
+- **Not verified:** nothing here has run against a database or in the app
+  (no FastAPI or Postgres on the build machine). Only the parsing was run,
+  against three saved Lorcast sets (216, 242 and 41 cards; no duplicate ids
+  or identities).
+
+---
+
 ## 2026-11-15 — One Piece in the Catalog, from the OPTCG API (opbindr.com)
 
 Jeffrey chose **approach A: Catalog only.** One Piece gets `catalog=True` and

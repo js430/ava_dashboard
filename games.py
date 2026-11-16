@@ -10,7 +10,8 @@ ADDING A GAME'S PRICES
 One Piece now has a Catalog (optcg.py, a weekly sync) with `catalog=True` but
 NOT `priced_from_catalog` or `catalog_picker`: its Card Tracker, set import
 and Grading Calculator still work as before, and it has no sealed prices and
-isn't offered in Portfolios yet. A game that goes all the way follows these
+isn't offered in Portfolios yet. Lorcana (lorcana.py, a daily sync) is the
+same kind: `catalog=True` and nothing else. A game that goes all the way follows these
 steps (Riftbound is the worked example):
 
   1. Write its API module, modelled on riftbound.py: fetch sets, cards and
@@ -59,6 +60,10 @@ class Game:
     # priced by copying that row's daily price, instead of Pokemon's
     # name-and-number matching against PokemonPriceTracker.
     priced_from_catalog: bool = False
+    # Can be added to the Card Tracker and priced there. False for a game that
+    # only has a catalog so far (Lorcana): it stays out of the tracker's game
+    # pickers and its add-a-card routes refuse it.
+    tracker: bool = True
     scan_name: str = ""              # what the photo scanner's prompt calls it
     card_example: str = ""           # search-box placeholders
     sealed_example: str = ""
@@ -74,6 +79,10 @@ GAMES = (
          grading=True, set_import=True,
          priced_from_catalog=True, scan_name="riftbound",
          card_example="Ahri", sealed_example="Origins Booster Box"),
+    # Catalog only, like One Piece: browsable and priced (lorcana.py, a daily
+    # sync from Lorcast), but not in the pickers, Card Tracker, grading or scanner.
+    Game("lorcana", "Lorcana", catalog=True, tracker=False,
+         card_example="Elsa - Spirit of Winter"),
 )
 
 KEYS = tuple(g.key for g in GAMES)

@@ -1397,3 +1397,35 @@ async def update_prices_by_source_id(pool, game: str, language: str, rows) -> in
     logger.info("Catalog: re-priced %d cached card(s) for %s [%s] from %d price row(s)",
                 updated, game, language, len(ids))
     return updated
+
+
+async def clear_prices_not_in(pool, game: str, language: str, set_id: str, source_ids) -> int:
+    """Clear the cached price of a set's rows the API no longer lists.
+
+    For a game stored one row per priced finish (Lorcana: a normal row and a
+    foil row, see lorcana.parse_card): when a finish loses its price the API
+    stops producing that row, so upsert_set_cards never touches it and its old
+    price would otherwise look current forever. `source_ids` is every id just
+    written for the set; rows of that set with any other id (or none) have
+    their price, source and priced_at cleared. The rows themselves stay.
+
+    Does nothing when `source_ids` is empty, so a failed or empty fetch can
+    never blank a whole set. Returns how many rows were cleared.
+    """
+    ids = sorted({str(s).strip()[:40] for s in source_ids or [] if str(s or "").strip()})
+    if not ids:
+        return 0
+    async with pool.acquire() as conn:
+        status = await conn.execute(
+            "UPDATE catalog_cards SET raw_price = NULL, price_source = NULL, priced_at = NULL "
+            "WHERE game = $1 AND language = $2 AND set_id = $3 AND raw_price IS NOT NULL "
+            "AND (source_id IS NULL OR source_id <> ALL($4::text[]))",
+            game, language, set_id, ids)
+    try:
+        cleared = int(str(status).rsplit(" ", 1)[-1])
+    except ValueError:
+        cleared = 0
+    if cleared:
+        logger.info("Catalog: cleared %d price(s) no longer listed for %s/%s [%s]",
+                    cleared, game, set_id, language)
+    return cleared
