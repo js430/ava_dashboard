@@ -680,6 +680,132 @@ def _norm_languages(language) -> list:
     return out or [DEFAULT_LANGUAGE]
 
 
+# --------------------------------------------------------------------------
+# Search: "name + number" in one box
+# --------------------------------------------------------------------------
+# A search term is split into words, and EVERY word has to match the card:
+# either its name contains the word, or its number matches it. So
+# "Pikachu 25" is "name has pikachu AND (number is 25 OR name has 25)", and
+# "monkey d luffy" finds "Monkey.D.Luffy". A word that looks like a card
+# number is matched as one (below) rather than as loose text, which is what
+# stops "Pikachu 25" also returning numbers 125 and 250. Any other word is
+# matched against the number as loose text, exactly as the box always did.
+
+# The most words of one term that are used; the rest are ignored. The route
+# already caps the whole search at 80 characters.
+_SEARCH_MAX_WORDS = 8
+
+# Games whose numbers are plain collector numbers: "25", "025", "25/102",
+# "TG03", "SWSH039". Matched on the part before the slash, ignoring case and
+# leading zeros.
+_PLAIN_NUMBER_GAMES = ("pokemon", "lorcana")
+# The stored number's first part, lowercased, with the zeros in front of its
+# digits removed: "025/198" -> "25", "TG03/TG30" -> "tg3", "SWSH039" ->
+# "swsh39". No "$" anywhere in it: _renumber rewrites every $n it finds.
+_PLAIN_NUMBER_SQL = ("regexp_replace(lower(btrim(split_part(card_number, '/', 1))), "
+                     "'^([a-z]*)0+(?=[0-9])', '\\1')")
+_PLAIN_TOTAL_SQL = ("regexp_replace(lower(btrim(split_part(card_number, '/', 2))), "
+                    "'^([a-z]*)0+(?=[0-9])', '\\1')")
+_PLAIN_NUMBER = re.compile(r"[a-z]{0,5}\d{1,3}[a-z]?")
+_PLAIN_TOTAL = re.compile(r"[a-z]{0,5}\d{1,3}|[a-z]{1,3}-p")
+
+# Games whose numbers lead with a set code: One Piece "OP11-040", Gundam
+# "GD01-001". {game: (codes followed by two set digits, codes with none)}.
+_SET_CODE_GAMES = {
+    "one_piece": (("OP", "ST", "EB", "PRB"), ("P",)),
+    "gundam": (("GD", "ST", "EB"), ("R", "T", "EXB", "EXR", "RP", "EXRP", "EXBP")),
+}
+# A print suffix someone may paste with the number: OP11-040_p1, _r1, _jp1.
+_PRINT_SUFFIX = re.compile(r"_(?:P|R|JP)\d+$")
+
+
+def _plain_number_key(text: str) -> str:
+    """'025' -> '25', 'TG03' -> 'tg3': what _PLAIN_NUMBER_SQL gives for a stored number."""
+    return re.sub(r"^([a-z]*)0+(?=[0-9])", r"\1", text.strip().lower())
+
+
+def _like_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _number_word(word: str, game: str):
+    """How a number-shaped word is matched against card_number, or None for a
+    word that isn't one.
+
+    Returns (kind, values): ('plain', [number]) or ('plain', [number, total])
+    for a collector number; ('like', [pattern]) for a set-code prefix or a
+    bare number in a set-code game; ('exact', [NUMBER]) for a full set-code
+    number. Values are only ever used as bind parameters.
+    """
+    text = word.strip().lstrip("#")
+    if not text:
+        return None
+    if game in _PLAIN_NUMBER_GAMES:
+        number, slash, total = text.lower().partition("/")
+        if not _PLAIN_NUMBER.fullmatch(number):
+            return None
+        if not slash:
+            return "plain", [_plain_number_key(number)]
+        if not _PLAIN_TOTAL.fullmatch(total):
+            return None
+        return "plain", [_plain_number_key(number), _plain_number_key(total)]
+    if game in _SET_CODE_GAMES:
+        with_set, without_set = _SET_CODE_GAMES[game]
+        upper = _PRINT_SUFFIX.sub("", text.upper())
+        # "OP11", "OP-11", "op1" -> every card numbered OP11-xxx / OP01-xxx.
+        match = re.fullmatch(r"(%s)-?(\d{1,2})" % "|".join(with_set), upper)
+        if match:
+            return "like", [f"{match.group(1)}{int(match.group(2)):02d}-%"]
+        # "OP11-040", "op11040" -> that number; "OP11-04" -> numbers starting so.
+        match = re.fullmatch(r"(%s)-?(\d{2})-?(\d{1,3})" % "|".join(with_set), upper)
+        if match:
+            code = f"{match.group(1)}{match.group(2)}-{match.group(3)}"
+            return ("exact", [code]) if len(match.group(3)) == 3 else ("like", [code + "%"])
+        # "P-083", "p83" -> that promo number.
+        match = re.fullmatch(r"(%s)-?(\d{1,3})" % "|".join(without_set), upper)
+        if match:
+            return "exact", [f"{match.group(1)}-{int(match.group(2)):03d}"]
+        # "040" -> any number ending -040.
+        if re.fullmatch(r"\d{1,3}", upper):
+            return "like", [f"%-{int(upper):03d}"]
+    return None
+
+
+def _search_term_clause(term: str, game: str, params: list) -> str:
+    """The SQL for one search term: every word matches the name or the number.
+
+    Appends its values to `params` and refers to them by position, so nothing
+    the visitor typed is ever part of the SQL text.
+    """
+    def bind(value) -> str:
+        params.append(value)
+        return f"${len(params)}"
+
+    words = term.split()[:_SEARCH_MAX_WORDS] or [term]
+    parts = []
+    for word in words:
+        # ILIKE with a bound pattern: the % wrappers are part of the VALUE.
+        # _ and % the visitor typed are escaped so they can't act as wildcards.
+        loose = bind(f"%{_like_escape(word)}%")
+        name_match = f"card_name ILIKE {loose} ESCAPE '\\'"
+        rule = _number_word(word, game)
+        if rule is None:
+            number_match = f"card_number ILIKE {loose} ESCAPE '\\'"
+        elif rule[0] == "plain":
+            number_match = f"{_PLAIN_NUMBER_SQL} = {bind(rule[1][0])}"
+            if len(rule[1]) == 2:
+                # "25/102": the total has to agree too, unless the stored
+                # number carries no total at all.
+                number_match = (f"({number_match} AND (position('/' in card_number) = 0 "
+                                f"OR {_PLAIN_TOTAL_SQL} = {bind(rule[1][1])}))")
+        elif rule[0] == "exact":
+            number_match = f"upper(card_number) = {bind(rule[1][0])}"
+        else:
+            number_match = f"card_number ILIKE {bind(rule[1][0])}"
+        parts.append(f"({name_match} OR {number_match})")
+    return "(" + " AND ".join(parts) + ")"
+
+
 def _build_filters(game: str, language, set_ids=None, rarities=None,
                    min_price=None, max_price=None, search: str = "",
                    priced_only: bool = False, restrict_set_ids=None,
@@ -757,18 +883,11 @@ def _build_filters(game: str, language, set_ids=None, rarities=None,
         # Comma-separated terms are OR'd together in both directions:
         # matching-mode "pikachu, raichu" means "either name"; excluding-mode
         # "master ball, poke ball, pattern" means "not any of these three". A
-        # single term with no comma behaves exactly as before either way.
+        # one-word term with no comma behaves as before either way, except
+        # that a word shaped like a card number is matched as a number.
+        # Within a term, every word has to match — see _search_term_clause.
         terms = [t.strip() for t in search.split(",") if t.strip()] or [search]
-        clauses = []
-        for term in terms:
-            # ILIKE with a bound pattern: the % wrappers are part of the
-            # VALUE, so the user's text is never concatenated into SQL. _ and
-            # % they type are escaped so they can't turn into wildcards.
-            escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            params.append(f"%{escaped}%")
-            n = len(params)
-            clauses.append(f"(card_name ILIKE ${n} ESCAPE '\\' "
-                           f"OR card_number ILIKE ${n} ESCAPE '\\')")
+        clauses = [_search_term_clause(term, game, params) for term in terms]
         # Always parenthesized, even for a single term: `where` is joined
         # with AND below, so an unparenthesized multi-term OR here would
         # bind looser than intended and match term 2 regardless of every

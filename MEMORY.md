@@ -3,6 +3,59 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-11-15 — Catalog search: a name and a number together
+
+Jeffrey asked for "Pikachu 25" and "Monkey.D.Luffy OP11" to work in the
+Catalog's search box, and chose **approach B**: split the search into words,
+and match number-shaped words as card numbers.
+
+- **Before:** the whole phrase was one piece of text that had to appear in
+  the name or in the number, so any name-plus-number search found nothing.
+- **Now (`catalog._search_term_clause`):** each word of a search has to match
+  the card — its name contains the word, OR its number matches it. Commas
+  still mean "either of these searches", and Exclude still negates the lot.
+  The one function feeds the card list, the totals, the filter counts, the
+  CSV export and the portfolio card picker, and the guest set limit is
+  applied on top as before.
+- **A number-shaped word is matched as a number, not as loose text**
+  (`catalog._number_word`), which is what keeps "Pikachu 25" from also
+  returning 125 and 250:
+  - Pokemon and Lorcana: the part before the slash, ignoring case and
+    leading zeros ("25" = "025" = "25/102"; "TG03" = "tg3"). "25/102" also
+    needs the total to agree unless the stored number has none.
+  - One Piece and Gundam: "OP11" / "OP-11" / "OP1" means every card numbered
+    OP11-xxx (OP01-xxx); "OP11-040" / "op11040" is that number; "P-084" a
+    promo; a bare "040" any number ending -040. A pasted print suffix
+    (_p1) is ignored. The match is on the card's NUMBER, not its set, so a
+    reprint filed under a later set is found.
+  - Riftbound and any other word: loose text against the number, as before.
+- **No fallback step.** The plan was "if the number reading finds nothing,
+  fall back to plain text". Because a word passes when EITHER the name
+  contains it or the number matches, that case is already covered in one
+  query ("Porygon 2" finds Porygon2; "Blaine's Quiz #1" finds itself), with
+  no second query and no extra parameter threaded through the callers.
+- **Side effects, accepted:** words can match in any order and need not be
+  adjacent; "monkey d luffy" now finds "Monkey.D.Luffy"; a lone "25" in
+  Pokemon now means number 25 rather than any number containing 25.
+- **"OP11" alone** keeps meaning "every card numbered OP11-xxx", not "the
+  OP-11 set" — the set picker covers that.
+- **Rejected:** A (words only, loose numbers: "Pikachu 25" returns 125, 250
+  too) and C (a stored, indexed search-number column: a schema change on the
+  table ava_bot also reads, plus a backfill, for speed nobody has asked for).
+  Also rejected: retrying "SWSH039" as plain "39" when nothing matches — it
+  would make "Charizard TG03" return card number 3.
+- **Speed:** the number comparison is an expression, so it can't use the
+  trigram index; it rides on the name word's index when there is one. A
+  lone number scans the game's rows, which short searches already did.
+- **Not verified:** the SQL has not been run in Postgres (no database on the
+  build machine); `tests/test_catalog_search.py` checks the SQL's shape and
+  runs 40 queries through the same rules in Python. How Pokemon numbers are
+  actually stored ("25", "025", "25/102", promo prefixes) was never seen —
+  the rule handles all three plain forms, but a promo stored as "039" will
+  not be found by "SWSH039".
+
+---
+
 ## 2026-11-15 — Lorcana in the Catalog, from Lorcast (lorcast.com)
 
 Jeffrey asked for a Lorcana tab starting from lorcana-api.com, then chose
