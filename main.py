@@ -231,6 +231,12 @@ async def lifespan(app: FastAPI):
         await optcg.ensure_optcg_schema(app.state.db)
     except Exception:
         logger.exception("One Piece schema ensure failed — the One Piece sync may be unavailable")
+    # Move stored One Piece pictures onto the image proxy on every start, not
+    # only when a sync is due: a sync can be weeks away, and until it runs the
+    # old links fail in the browser. One UPDATE, no API requests, never raises.
+    moved = await optcg.repoint_images(app.state.db)
+    if moved > 0:
+        logger.info("Startup: moved %d One Piece card image(s) to the image proxy", moved)
     # Its own step, after the table exists: can be refused (logged inside)
     # without costing anything but search speed. Never raises.
     if await catalog.ensure_catalog_search_indexes(app.state.db):

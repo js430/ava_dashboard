@@ -56,7 +56,12 @@ browser calls from other sites anyway.
   our budget), sends `Access-Control-Allow-Origin: *`, caches for a day, and the
   README allows embedding it. 35 of 35 sampled English cards had an image.
   `optcg.repoint_images` rewrites any stored non-proxy URL at the start of
-  every sync, with no requests. The CSP `img-src` lists only the proxy host, not
+  every sync and on every app start, with no requests. The start-up run was
+  added later on 2026-11-15: the sync-only version left pictures broken after
+  the deploy because no sync was due, so the rewrite never ran. **Rejected for
+  that fix:** pressing the admin sync button (re-fetches every set, spending
+  the daily request allowance) and running it in the scheduler ahead of the
+  "due" check (3 minutes late after a restart, same result otherwise). The CSP `img-src` lists only the proxy host, not
   Bandai's. **Rejected:** proxying images through our own server (our bandwidth,
   no gain over a public proxy that allows any site), and keeping Bandai's URLs
   with a fallback (they fail for nearly every card). Not used yet: set box art
