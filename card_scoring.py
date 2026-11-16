@@ -76,6 +76,12 @@ SOURCE_FAMILIES = {
     "riftbound-tcgplayer": "riftbound-tcgplayer",
     "riftbound-tcgplayer-history": "riftbound-tcgplayer",
     "riftbound-cardmarket": "riftbound-cardmarket",
+    # Catalog-priced games (card_tracker.run_catalog_snapshots): one family
+    # each, so a One Piece card's catalog series is never scored against
+    # JustTCG numbers.
+    "lorcana-lorcast": "lorcana-lorcast",
+    "gundam-tcgplayer": "gundam-tcgplayer",
+    "optcg": "optcg",
 }
 # Below this, a family isn't enough of a series to prefer over an established
 # one — momentum needs at least two points to mean anything.

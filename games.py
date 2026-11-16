@@ -7,12 +7,20 @@ its own hard-coded list, and adding Riftbound meant finding every one.
 
 ADDING A GAME'S PRICES
 ----------------------
-One Piece now has a Catalog (optcg.py, a weekly sync) with `catalog=True` but
-NOT `priced_from_catalog` or `catalog_picker`: its Card Tracker, set import
-and Grading Calculator still work as before, and it has no sealed prices and
-isn't offered in Portfolios yet. Lorcana (lorcana.py) and Gundam (gundam.py),
-both daily syncs, are the same kind: `catalog=True` and nothing else. A game that goes all the way follows these
-steps (Riftbound is the worked example):
+Riftbound, Lorcana (lorcana.py, a daily sync), Gundam (gundam.py, a daily
+sync) and One Piece (optcg.py, a weekly sync) all go all the way: catalog,
+picker, and prices copied from the catalog (`priced_from_catalog`). Lorcana and
+Gundam have no sealed prices, grading or set import — cards only.
+
+One Piece is split per card. Cards added from the catalog carry a source_id
+and are priced from the catalog (card_tracker.run_catalog_snapshots). Cards
+tracked before that have no source_id and stay on JustTCG (run_ingest). A
+card has exactly one price source: run_ingest skips rows with a source_id,
+the catalog snapshot job only prices rows with one, and nothing links an
+old One Piece row to a catalog row, since that would switch its source
+mid-series. A game that goes all the way follows these steps (Riftbound is
+the worked example; Lorcana, Gundam and One Piece use
+card_tracker.run_catalog_snapshots instead of a game-specific job):
 
   1. Write its API module, modelled on riftbound.py: fetch sets, cards and
      sealed product, and parse them into the dicts catalog.upsert_set_cards
@@ -52,7 +60,7 @@ class Game:
     # Cards can be picked from the catalog to add to a portfolio or to the
     # shared tracker (Portfolios' picker, Tracker Management's add-a-card).
     # Separate from `catalog` because a game can have a browsable catalog whose
-    # cards can't yet be added and priced that way (One Piece).
+    # cards can't yet be added and priced that way.
     catalog_picker: bool = False
     grading: bool = False            # Grading Calculator
     set_import: bool = False         # Tracker Management's "Import a whole set"
@@ -61,8 +69,8 @@ class Game:
     # name-and-number matching against PokemonPriceTracker.
     priced_from_catalog: bool = False
     # Can be added to the Card Tracker and priced there. False for a game that
-    # only has a catalog so far (Lorcana): it stays out of the tracker's game
-    # pickers and its add-a-card routes refuse it.
+    # only has a catalog: it stays out of the tracker's game pickers and its
+    # add-a-card routes refuse it.
     tracker: bool = True
     scan_name: str = ""              # what the photo scanner's prompt calls it
     card_example: str = ""           # search-box placeholders
@@ -73,18 +81,22 @@ GAMES = (
     Game("pokemon", "Pokémon", languages=("english", "japanese"), catalog=True,
          catalog_picker=True, grading=True, set_import=True, scan_name="pokemon",
          card_example="Charizard", sealed_example="Prismatic Evolutions"),
-    Game("one_piece", "One Piece", catalog=True, grading=True, set_import=True,
+    # New cards come from the catalog (priced from it); cards tracked before
+    # that, with no source_id, stay on JustTCG.
+    Game("one_piece", "One Piece", catalog=True, catalog_picker=True, grading=True,
+         set_import=True, priced_from_catalog=True,
          scan_name="one piece", card_example="Monkey.D.Luffy"),
     Game("riftbound", "Riftbound", catalog=True, catalog_picker=True,
          grading=True, set_import=True,
          priced_from_catalog=True, scan_name="riftbound",
          card_example="Ahri", sealed_example="Origins Booster Box"),
-    # Catalog only, like One Piece: browsable and priced (lorcana.py, a daily
-    # sync from Lorcast), but not in the pickers, Card Tracker, grading or scanner.
-    Game("lorcana", "Lorcana", catalog=True, tracker=False,
+    # Priced from the catalog (lorcana.py, a daily sync from Lorcast); cards
+    # only, no grading, set import or scanner.
+    Game("lorcana", "Lorcana", catalog=True, catalog_picker=True, priced_from_catalog=True,
          card_example="Elsa - Spirit of Winter"),
-    # Catalog only as well (gundam.py, a daily sync from TCGCSV).
-    Game("gundam", "Gundam", catalog=True, tracker=False, card_example="Gundam Aerial"),
+    # Same (gundam.py, a daily sync from TCGCSV).
+    Game("gundam", "Gundam", catalog=True, catalog_picker=True, priced_from_catalog=True,
+         card_example="Gundam Aerial"),
 )
 
 KEYS = tuple(g.key for g in GAMES)

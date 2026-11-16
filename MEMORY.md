@@ -3,6 +3,61 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-11-16 — Lorcana, Gundam and One Piece in Portfolios and the Card Tracker
+
+Jeffrey chose **A: per-card switch.** All three games are now
+`catalog_picker=True` and `priced_from_catalog=True`; Lorcana and Gundam also
+became `tracker=True`. They're added by catalog row (`catalog_id` → `source_id`)
+and priced by copying the catalog's price into `price_snapshots`, once per card
+per UTC day: `card_tracker.run_catalog_snapshots(pool, game)`. It runs at the
+end of each game's sync, on the 3-hourly sweep, in the nightly refresh, and on
+add/import. No API calls. Riftbound keeps its own `run_riftbound_snapshots`
+(history backfill, Cardmarket split).
+
+**THE ONE-SOURCE RULE for One Piece.** One Piece cards tracked before this
+(no `source_id`) stay on JustTCG. Both JustTCG One Piece queries in `run_ingest`
+now require `source_id IS NULL`. The catalog job prices only rows with a
+`source_id`. **Nothing links an existing One Piece row to the catalog:** both
+"linked a row tracked before it had one" paths (`/api/card-tracker/portfolio/add`,
+`/api/portfolios/resolve-card`) skip One Piece entirely, which is stricter than
+"only rows with a JustTCG id". So a card never changes source mid-series (the
+2026-07-27 trap). Consequence: an old JustTCG row and a new catalog row for the
+same physical card can coexist, because the two sources name cards differently.
+**Rejected:** C, a full One Piece cutover (alt arts share a number, so old rows
+can't be matched reliably, and momentum would restart), and B, leaving One
+Piece out.
+
+**Sources and staleness:** `lorcana-lorcast` and `gundam-tcgplayer` are copied
+only if priced within 36 h. `optcg` is copied only if priced within 216 h,
+because One Piece prices change weekly, so its daily snapshots repeat a price
+for up to 7 days. Each is its own `card_scoring.SOURCE_FAMILIES` family. One
+Piece's `optcg` blends the API's per-card sources (tcgplayer, dotgg, ebay,
+positional) into one family. The scoring series is the API's own number,
+wherever it came from.
+
+**Side effects of `priced_from_catalog` for One Piece:**
+- The Grading Calculator and Tracker Management's set import now read One
+  Piece from `catalog_cards`, not optcgapi.com.
+- Grading guests get the Catalog's One Piece window (the newest 3 booster
+  sets); the baked `_guest_visible_one_piece_sets` list is unused.
+- The raw quote is labelled "TCGplayer market price" only when the row's
+  `price_source` is tcgplayer. Otherwise it's `catalog_optcg`, set directly so
+  eBay asking prices can't outrank it.
+- Collectr matching now searches all catalog-picker games.
+
+Lorcana and Gundam stay off grading, set import and the scanner. No sealed
+prices for any of the three: cards only.
+
+**Verified:** an integration test on a throwaway Postgres 18 covered the real
+schema functions, each game priced from its own row (a Lorcana foil
+separately), unpriced and stale rows skipped, the 100 h One Piece price
+copied, legacy One Piece and Riftbound untouched, idempotent per day, and both
+real JustTCG One Piece SELECTs seeing only the legacy card. **Not verified:**
+the full app under Python 3.11, the pages in a browser, and the
+Grading-Calculator One Piece scan flow.
+
+---
+
 ## 2026-11-15 — Catalog search: a name and a number together
 
 Jeffrey asked for "Pikachu 25" and "Monkey.D.Luffy OP11" to work in the

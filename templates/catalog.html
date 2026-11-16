@@ -1873,10 +1873,10 @@ async function loadPortfolioKeys(){
   } catch(e){ /* non-fatal — Track buttons just start off unmarked */ }
 }
 function trackButtonHtml(c){
-  // One Piece cards are still added from the Card Tracker's own search, which
-  // prices them separately; a catalog row would merge alt arts into one card.
-  // Lorcana and Gundam are catalog-only: the Card Tracker doesn't price them yet.
-  if (currentGame === 'one_piece' || currentGame === 'lorcana' || currentGame === 'gundam') return '';
+  // Every game's catalog rows carry their own version, so each can be tracked
+  // from here. Only a game with no tracker at all (games.py `tracker` flag)
+  // gets no button.
+  if (GAME_INFO[currentGame] && GAME_INFO[currentGame].tracker === false) return '';
   if (portfolioKeys.has(cardKey(c))){
     return `<button type="button" class="btn btn-plain btn-sm track-btn added" disabled>In tracker</button>`;
   }
