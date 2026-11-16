@@ -10,8 +10,8 @@ ADDING A GAME'S PRICES
 One Piece now has a Catalog (optcg.py, a weekly sync) with `catalog=True` but
 NOT `priced_from_catalog` or `catalog_picker`: its Card Tracker, set import
 and Grading Calculator still work as before, and it has no sealed prices and
-isn't offered in Portfolios yet. Lorcana (lorcana.py, a daily sync) is the
-same kind: `catalog=True` and nothing else. A game that goes all the way follows these
+isn't offered in Portfolios yet. Lorcana (lorcana.py) and Gundam (gundam.py),
+both daily syncs, are the same kind: `catalog=True` and nothing else. A game that goes all the way follows these
 steps (Riftbound is the worked example):
 
   1. Write its API module, modelled on riftbound.py: fetch sets, cards and
@@ -83,6 +83,8 @@ GAMES = (
     # sync from Lorcast), but not in the pickers, Card Tracker, grading or scanner.
     Game("lorcana", "Lorcana", catalog=True, tracker=False,
          card_example="Elsa - Spirit of Winter"),
+    # Catalog only as well (gundam.py, a daily sync from TCGCSV).
+    Game("gundam", "Gundam", catalog=True, tracker=False, card_example="Gundam Aerial"),
 )
 
 KEYS = tuple(g.key for g in GAMES)

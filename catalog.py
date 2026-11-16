@@ -444,12 +444,13 @@ def number_sort_key(card_number: str, game: str = "") -> int:
     Python, so a set reads the same way from the cache as it does from the
     live picker.
 
-    Riftbound ("OGN-303a/298") and One Piece ("OP01-120") numbers lead with
-    the set's code, so for those games the number is read after it. Only for
-    those: a Pokemon number with a hyphen in it keeps sorting exactly as before.
+    Riftbound ("OGN-303a/298"), One Piece ("OP01-120") and Gundam ("GD01-001")
+    numbers lead with the set's code, so for those games the number is read
+    after it. Only for those: a Pokemon number with a hyphen in it keeps
+    sorting exactly as before.
     """
     text = str(card_number or "")
-    if game in ("riftbound", "one_piece"):
+    if game in ("riftbound", "one_piece", "gundam"):
         text = re.sub(r"^\s*[A-Za-z0-9]+-", "", text)
     match = re.match(r"^\s*(\d+)", text)
     if not match:
