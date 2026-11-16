@@ -16,13 +16,16 @@ WHAT THE LIVE API DOES. Checked against real responses on 2026-11-15:
     which languages it exists in, but NOT which set it belongs to and no
     pictures. The API asks clients to keep it for a week or more, so it is
     cached in Postgres for at least 7 days. /sets/{id}/cards carries set
-    membership, pictures and TCGplayer ids, one request per set; the list
+    membership and TCGplayer ids, one request per set; the list
     prices come from the index.
   * Cards come in prints: `OP01-120` is the base card, `OP01-120_p1`, `_p2`
     are alternate-art parallels, `_r1` a reprint, `_jp1` a Japanese-only print.
     The same name + number + rarity therefore exists several times in one set,
     which is why catalog_cards carries `version` in its identity (see
     version_labels).
+  * Pictures are not taken from the API's rows (those point at Bandai's host,
+    which browsers can't load on our site). Every card's picture is the API's
+    public image proxy, IMAGE_BASE + card id (see image_url).
   * No release dates anywhere. Newest-first ordering is an approximation (see
     set_release_order).
   * `price` is USD; `price_source` says where it came from (mostly tcgplayer,
@@ -40,7 +43,7 @@ import asyncio
 import logging
 from collections import deque
 from datetime import datetime, timezone
-from urllib.parse import quote, urlparse
+from urllib.parse import quote
 
 import httpx
 
@@ -52,10 +55,23 @@ LANGUAGE = "english"
 
 BASE = "https://optcg-api.arjunbansal-ai.workers.dev"
 
-# Card images. Written to the DB and rendered as <img src> for every visitor,
-# so only https on these hosts is accepted. Must stay in step with the CSP's
-# img-src in main.py.
-IMAGE_HOSTS = ("en.onepiece-cardgame.com", "optcg-api.arjunbansal-ai.workers.dev")
+# Card images come from the API's own public image proxy, never from Bandai's
+# host (en.onepiece-cardgame.com sends Cross-Origin-Resource-Policy: same-site,
+# so browsers refuse to show those pictures on our site). The proxy needs no
+# key and allows embedding anywhere. Written to the DB and rendered as
+# <img src> for every visitor. Must stay in step with the CSP's img-src in
+# main.py.
+IMAGE_HOSTS = ("optcg-api.arjunbansal-ai.workers.dev",)
+IMAGE_BASE = BASE + "/images/"
+# Letters, digits, - and _ only, 1-40 chars: a card id never needs quoting.
+_CARD_ID = re.compile(r"[A-Za-z0-9_-]{1,40}")
+
+
+def image_url(card_id):
+    """The proxy picture URL for a card id, or None for an empty or odd-looking id."""
+    if not isinstance(card_id, str) or not _CARD_ID.fullmatch(card_id):
+        return None
+    return IMAGE_BASE + quote(card_id, safe="")
 
 
 def _env_float(name: str, default: float) -> float:
@@ -581,14 +597,27 @@ def set_release_order(sets) -> list:
 # Cards
 # --------------------------------------------------------------------------
 
-def _image_url(row: dict):
-    value = (row or {}).get("image_url")
-    if not isinstance(value, str) or not value:
-        return None
-    parts = urlparse(value)
-    if parts.scheme == "https" and (parts.hostname or "").lower() in IMAGE_HOSTS:
-        return value[:500]
-    return None
+async def repoint_images(pool) -> int:
+    """Move catalog rows stored before the switch onto the image proxy.
+
+    One UPDATE, no API calls: every One Piece row with a well-formed source_id
+    whose picture isn't already on the proxy gets IMAGE_BASE + source_id. The
+    pattern excludes characters that would need quoting, so plain joining
+    equals image_url(source_id). Harmless to run every sync. Returns the rows
+    changed; never raises (logs and returns 0).
+    """
+    try:
+        async with pool.acquire() as conn:
+            status = await conn.execute(
+                "UPDATE catalog_cards SET image_url = $2::text || source_id "
+                "WHERE game = $1 AND source_id IS NOT NULL "
+                "AND source_id ~ '^[A-Za-z0-9_-]{1,40}$' "
+                "AND (image_url IS NULL OR left(image_url, length($2::text)) <> $2::text)",
+                GAME, IMAGE_BASE)
+        return int(str(status).rsplit(" ", 1)[-1])
+    except Exception:
+        logger.exception("OPTCG image repoint failed")
+        return 0
 
 
 def parse_card(row: dict, set_name: str, versions: dict, english):
@@ -619,7 +648,7 @@ def parse_card(row: dict, set_name: str, versions: dict, english):
         "set_name": str(set_name or "").strip()[:200],
         "raw_price": price,
         "price_source": (row.get("price_source") or None) if price is not None else None,
-        "image_url": _image_url(row),
+        "image_url": image_url(source_id),
         "printing_prices": None,
         "card_type": (str(row.get("category")).strip()[:40] or None) if row.get("category") else None,
     }

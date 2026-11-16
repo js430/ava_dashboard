@@ -391,12 +391,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             # images.tcggo.com: Riftbound card images, same arrangement with
             # riftbound.IMAGE_HOSTS (https on that host only, checked before
             # the URL is stored). Images only — no script or connect access.
-            # en.onepiece-cardgame.com and optcg-api.arjunbansal-ai.workers.dev:
-            # One Piece card images, same arrangement with optcg.IMAGE_HOSTS
-            # (https on those two hosts only, checked before the URL is stored).
+            # optcg-api.arjunbansal-ai.workers.dev: One Piece card images come
+            # from the OPTCG API's public image proxy, same arrangement with
+            # optcg.IMAGE_HOSTS (https on that host only, checked before the URL
+            # is stored). Bandai's own host blocks other sites via CORP, so it
+            # isn't used.
             "img-src 'self' data: blob: https://cdn.discordapp.com https://images.pokemontcg.io "
             "https://tcgplayer-cdn.tcgplayer.com https://images.tcggo.com "
-            "https://en.onepiece-cardgame.com https://optcg-api.arjunbansal-ai.workers.dev "
+            "https://optcg-api.arjunbansal-ai.workers.dev "
             "https://api.scryfall.com https://db.ygoprodeck.com https://www.optcgapi.com "
             "https://maps.googleapis.com https://maps.gstatic.com https://assets.pokemon.com; "
             "connect-src 'self' https://maps.googleapis.com; "
@@ -6899,6 +6901,8 @@ async def _riftbound_sync_scheduler(app: FastAPI) -> None:
 #     optcg.SET_REFRESH_DAYS. The admin's button fetches every set, still
 #     under optcg's rate limiter and daily cap.
 #   * A member browsing never causes a call.
+#   * Images are the API's public proxy URLs, rewritten each run at no request
+#     cost (optcg.repoint_images).
 # "Due" is read from the database (the api_cache table plus catalog_cards), so
 # a redeploy never re-spends requests and a cut-short run resumes at the next
 # check. Cards are NOT priced into portfolios or the Card Tracker from here
@@ -7011,6 +7015,11 @@ async def _run_one_piece_sync(app, force: bool = False) -> None:
               planned=0, done=0, cards=0, priced=0, current=None, error=None)
     pool = app.state.db
     try:
+        # Fix stored image URLs first: no API requests, and it must happen
+        # even on a run that returns early below (e.g. rate-limited).
+        moved = await optcg.repoint_images(pool)
+        if moved > 0:
+            logger.info("One Piece sync: moved %d card image(s) to the image proxy", moved)
         async with httpx.AsyncClient(timeout=60.0) as client:
             index_rows, index_at = await optcg.cached(pool, "cards/index")
             sets = await _one_piece_cached_sets(pool)

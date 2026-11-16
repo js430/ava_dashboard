@@ -47,8 +47,20 @@ browser calls from other sites anyway.
   (`GUEST_ONE_PIECE_VISIBLE_SETS`).
 - `price_source` is stored as the API gives it (tcgplayer, dotgg, ebay,
   `positional`). `positional` is undocumented; we show it like any other price.
-- Images only from `en.onepiece-cardgame.com` and the API's public `/images`
-  proxy (https only). Both were added to the CSP `img-src`, nothing else changed.
+- **Images: always the API's public proxy, `BASE/images/{card id}`
+  (`optcg.image_url`), never the `image_url` the API's rows carry.** Those rows
+  point at Bandai's `en.onepiece-cardgame.com`, which sends
+  `Cross-Origin-Resource-Policy: same-site`. Browsers refuse to show those
+  images on our site: confirmed in a browser on 2026-11-15, Bandai's image
+  failed and the proxy's loaded. The proxy needs no key (so it spends none of
+  our budget), sends `Access-Control-Allow-Origin: *`, caches for a day, and the
+  README allows embedding it. 35 of 35 sampled English cards had an image.
+  `optcg.repoint_images` rewrites any stored non-proxy URL at the start of
+  every sync, with no requests. The CSP `img-src` lists only the proxy host, not
+  Bandai's. **Rejected:** proxying images through our own server (our bandwidth,
+  no gain over a public proxy that allows any site), and keeping Bandai's URLs
+  with a fallback (they fail for nearly every card). Not used yet: set box art
+  (`/images/set/{id}?kind=box`); the catalog shows no set images.
 
 **New `Game.catalog_picker` flag:** "cards a portfolio / Tracker Management
 can add from the catalog". Pokemon and Riftbound are True, One Piece False, so
