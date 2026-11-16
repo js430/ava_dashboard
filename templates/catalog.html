@@ -650,10 +650,14 @@
           Lorcana prices are TCGplayer market prices and update once a day. A card that comes in
           both normal and foil is listed twice, once for each, marked Foil in the Variant column.
         </div>
+        <div class="hint gundam-only" style="padding:0 16px 10px">
+          Gundam prices are TCGplayer market prices and update once a day. Each print of a card
+          (alternate art, promo, tournament prize) is listed separately under its own name.
+        </div>
         {% if is_guest and not user_id %}
         <div class="hint guest-note" style="padding:0 16px 10px">
           <strong>Guest account restriction:</strong> showing the newest
-          <span class="pokemon-only">{{ guest_catalog_visible_sets }} stocked set(s)</span><span class="riftbound-only">{{ guest_riftbound_visible_sets }} main set(s)</span><span class="one_piece-only">{{ guest_one_piece_visible_sets }} newest booster set(s)</span><span class="lorcana-only">{{ guest_lorcana_visible_sets }} main set(s)</span>
+          <span class="pokemon-only">{{ guest_catalog_visible_sets }} stocked set(s)</span><span class="riftbound-only">{{ guest_riftbound_visible_sets }} main set(s)</span><span class="one_piece-only">{{ guest_one_piece_visible_sets }} newest booster set(s)</span><span class="lorcana-only">{{ guest_lorcana_visible_sets }} main set(s)</span><span class="gundam-only">{{ guest_gundam_visible_sets }} newest booster set(s)</span>
           only, and manual price refresh is Discord-members-only.
           <a href="/login">Sign in with Discord</a> for the full catalog, or sign up for the paid
           tier (coming soon via Stripe) for full access without a Discord account.
@@ -661,7 +665,7 @@
         {% elif is_guest %}
         <div class="hint guest-note" style="padding:0 16px 10px">
           <strong>Limited access:</strong> showing the newest
-          <span class="pokemon-only">{{ guest_catalog_visible_sets }} stocked set(s)</span><span class="riftbound-only">{{ guest_riftbound_visible_sets }} main set(s)</span><span class="one_piece-only">{{ guest_one_piece_visible_sets }} newest booster set(s)</span><span class="lorcana-only">{{ guest_lorcana_visible_sets }} main set(s)</span>
+          <span class="pokemon-only">{{ guest_catalog_visible_sets }} stocked set(s)</span><span class="riftbound-only">{{ guest_riftbound_visible_sets }} main set(s)</span><span class="one_piece-only">{{ guest_one_piece_visible_sets }} newest booster set(s)</span><span class="lorcana-only">{{ guest_lorcana_visible_sets }} main set(s)</span><span class="gundam-only">{{ guest_gundam_visible_sets }} newest booster set(s)</span>
           only, and manual price refresh requires a premium role. Get the
           <strong>Intel</strong> or <strong>Monitor</strong> role
           <a href="{{ upgrade_url }}" target="_blank" rel="noopener">here</a> for the
@@ -806,6 +810,10 @@
             Every Lorcana set is added automatically, and prices are updated once a day.
             There's nothing to stock by hand.
           </div>
+          <div class="hint gundam-only" style="margin-bottom:10px">
+            Every Gundam set is added automatically, and prices are updated once a day.
+            There's nothing to stock by hand.
+          </div>
           <div class="setlist" id="stockedSets"></div>
           {% if is_admin %}
           <div class="one_piece-only" style="border-top:1px solid #f0f0f0; padding-top:12px; margin-top:12px">
@@ -819,6 +827,17 @@
             </span>
             <div class="hint" id="opFetchedNote" style="margin-top:8px"></div>
             <div class="warn" id="opSyncMsg" style="display:none"></div>
+          </div>
+          <div class="gundam-only" style="border-top:1px solid #f0f0f0; padding-top:12px; margin-top:12px">
+            <button class="btn btn-plain btn-sm" id="gdSyncBtn" onclick="runGundamSync()">
+              Update Gundam now
+            </button>
+            <span class="hint" style="margin-left:6px">
+              Checks for new sets and prices right away instead of waiting for the next
+              scheduled check. The price service publishes once a day, so this does nothing
+              if it has no new data or the sets were already updated in the last 24 hours.
+            </span>
+            <div class="warn" id="gdSyncMsg" style="display:none"></div>
           </div>
           <div class="lorcana-only" style="border-top:1px solid #f0f0f0; padding-top:12px; margin-top:12px">
             <button class="btn btn-plain btn-sm" id="lcSyncBtn" onclick="runLorcanaSync()">
@@ -897,6 +916,9 @@
             <span class="lorcana-only">Prices are TCGplayer market prices, updated once a day
             &mdash; not live. Normal and foil are priced separately. A blank price means the
             price service had no price for that card, not that it's worthless.</span>
+            <span class="gundam-only">Prices are TCGplayer market prices, updated once a day
+            &mdash; not live. A blank price means TCGplayer had no market price for that
+            card, not that it's worthless.</span>
             {% if ebay_affiliate %}
             <br><br>
             <strong>Heads up:</strong> card names that link to eBay are affiliate links.
@@ -1026,6 +1048,10 @@
   <!-- Credit for the Lorcana card data, shown the same way. -->
   <div class="hint lorcana-only" id="lorcastCredit" style="text-align:center; padding:18px 0 4px">
     Card data and prices from <a href="https://lorcast.com" target="_blank" rel="noopener noreferrer">Lorcast</a>
+  </div>
+  <!-- A thank-you link for the Gundam card data, shown the same way. -->
+  <div class="hint gundam-only" id="tcgcsvCredit" style="text-align:center; padding:18px 0 4px">
+    Card data and prices from TCGplayer, via <a href="https://tcgcsv.com" target="_blank" rel="noopener noreferrer">TCGCSV</a>
   </div>
 
 </div>
@@ -1849,8 +1875,8 @@ async function loadPortfolioKeys(){
 function trackButtonHtml(c){
   // One Piece cards are still added from the Card Tracker's own search, which
   // prices them separately; a catalog row would merge alt arts into one card.
-  // Lorcana is catalog-only: the Card Tracker doesn't price it yet.
-  if (currentGame === 'one_piece' || currentGame === 'lorcana') return '';
+  // Lorcana and Gundam are catalog-only: the Card Tracker doesn't price them yet.
+  if (currentGame === 'one_piece' || currentGame === 'lorcana' || currentGame === 'gundam') return '';
   if (portfolioKeys.has(cardKey(c))){
     return `<button type="button" class="btn btn-plain btn-sm track-btn added" disabled>In tracker</button>`;
   }
@@ -2500,6 +2526,8 @@ async function loadCards(){
             ? 'One Piece cards haven’t been loaded yet — they’re added automatically, so check back shortly.'
             : currentGame === 'lorcana'
             ? 'Lorcana cards haven’t been loaded yet — they’re added automatically, so check back shortly.'
+            : currentGame === 'gundam'
+            ? 'Gundam cards haven’t been loaded yet — they’re added automatically, so check back shortly.'
             : 'Nothing stocked yet. Open a set in the Grading Calculator and it’ll show up here.')
       : 'No cards match those filters.';
     // A guest searching for a card from an older set gets a real zero-result
@@ -2583,6 +2611,8 @@ async function loadFacets(){
   const factorNote = document.getElementById('rbFactorNote');
   const opBtn = document.getElementById('opSyncBtn');
   if (opBtn) opBtn.disabled = currentGame === 'one_piece' && d.can_sync === false;
+  const gdBtn = document.getElementById('gdSyncBtn');
+  if (gdBtn) gdBtn.disabled = currentGame === 'gundam' && d.can_sync === false;
   const lcBtn = document.getElementById('lcSyncBtn');
   if (lcBtn) lcBtn.disabled = currentGame === 'lorcana' && d.can_sync === false;
   const opNote = document.getElementById('opFetchedNote');
@@ -2640,6 +2670,23 @@ async function runOnePieceSync(){
     const d = await resp.json().catch(() => ({}));
     if (!resp.ok) show(d.detail || 'Couldn’t start the update.');
     else { show('Updating One Piece sets — progress shows above.'); loadFacets(); }
+  } catch(e){
+    show('Network error — please try again.');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function runGundamSync(){
+  const btn = document.getElementById('gdSyncBtn');
+  const msg = document.getElementById('gdSyncMsg');
+  const show = text => { msg.textContent = text; msg.style.display = 'block'; };
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/api/catalog/gundam/sync', { method: 'POST' });
+    const d = await resp.json().catch(() => ({}));
+    if (!resp.ok) show(d.detail || 'Couldn’t start the update.');
+    else { show('Checking Gundam sets — progress shows above.'); loadFacets(); }
   } catch(e){
     show('Network error — please try again.');
   } finally {
@@ -2740,7 +2787,8 @@ function renderBackfill(bf){
     const verb = bf.mode === 'refresh' ? 'Refreshing already-stocked sets'
                : bf.mode === 'riftbound' ? 'Updating Riftbound sets'
                : bf.mode === 'one_piece' ? 'Updating One Piece sets'
-               : bf.mode === 'lorcana' ? 'Updating Lorcana sets' : 'Stocking the newest sets';
+               : bf.mode === 'lorcana' ? 'Updating Lorcana sets'
+               : bf.mode === 'gundam' ? 'Updating Gundam sets' : 'Stocking the newest sets';
     el.className = 'backfill';
     el.textContent = `${verb} — ${bf.done}${of} done${skipped}${already}`
       + (bf.current ? ` (currently ${bf.current})` : '')
@@ -3108,6 +3156,8 @@ function renderSealed() {
           ? 'Sealed product prices aren’t available for One Piece yet. Card prices are on the Singles tab.'
           : currentGame === 'lorcana'
           ? 'Sealed product prices aren’t available for Lorcana yet. Card prices are on the Singles tab.'
+          : currentGame === 'gundam'
+          ? 'Sealed product prices aren’t available for Gundam yet. Card prices are on the Singles tab.'
           : 'No sealed product has been added yet. An admin or server mod stocks it '
           + 'per set from Tracker Management.');
     return;

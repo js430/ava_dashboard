@@ -3,6 +3,63 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-11-15 — Gundam in the Catalog, from TCGCSV (tcgcsv.com)
+
+Jeffrey asked for a Gundam Card Game tab starting from gcgapi.com, then chose
+to check TCGCSV once gcgapi.com's gaps were known. TCGCSV checked out live and
+is the **single source**.
+
+- **Rejected: gcgapi.com.** Free, keyless, one file with all 2,205 prints, but
+  no prices and no TCGplayer ids at all, and its pictures are links to
+  Bandai's site (`www.gundam-gcg.com`), which sends
+  `Cross-Origin-Resource-Policy: same-site` — the header that broke the One
+  Piece pictures. **Rejected:** gcgapi.com cards joined to TCGCSV prices
+  (matching its `_p1`/`_p2` prints to TCGplayer's product names is
+  unreliable, and the pictures would still be blocked unless relayed through
+  our own server, which was already rejected for One Piece).
+- **TCGCSV, checked live 2026-11-15:** a free, keyless daily copy of
+  TCGplayer's catalogue. Gundam is category 86: 28 sets with release dates.
+  In the three sets sampled (GD06, GD01, promos) every card had a picture
+  and a TCGplayer id, and all but 12 promos had a market price.
+- **TCGCSV's rules, all followed:** sync at most once a day, read
+  `/last-updated.txt` first and pull only when it changed, custom User-Agent,
+  100 ms between requests, never call it from a visitor-facing page. A run is
+  one small request when nothing changed, about 58 otherwise (set list + two
+  per set), 0.25 s apart. **The admin button runs the same check and does not
+  override any of this.**
+- **User-Agent:** defaults to the neutral `CardCatalogSync/1.0`. TCGCSV asks
+  for one that names the application and may block generic ones, so
+  `GUNDAM_USER_AGENT` should be set on Railway. Not set by this change.
+- **Scope: Catalog only**, like One Piece and Lorcana: `catalog=True,
+  tracker=False`. No "+ Track", no sealed tab data (TCGCSV does list sealed
+  product in each set; it is skipped for now).
+- **One catalog row per TCGplayer product.** Every print (alternate art,
+  promo, prize card) is its own product with its own name ("Gundam
+  (GD01-001) (LR++)"), stored as given. `card_number` is TCGplayer's Number
+  (a reprint keeps its original number, so GD02-129 can sit in set GD06),
+  `rarity` its Rarity, `source_id` and `tcgplayer_id` the product id,
+  `version` the finish when it isn't Normal ("Holofoil"). Each product had
+  exactly one finish in the sample; a second finish would get its own row.
+- **Price = TCGplayer's `marketPrice` only.** No fallback to low/mid/high
+  asking prices: on rare promos they are far from the market price.
+  `price_source` is `tcgplayer`.
+- `set_id` is the set code (TCGplayer's abbreviation: GD01, ST01, GCG-PR),
+  falling back to the numeric group id. Picker groups: booster packs (GDnn),
+  extra boosters (EBnn), starter decks (STnn), promos & other.
+- **Guest window:** newest 3 released, stocked booster packs
+  (`GUEST_GUNDAM_VISIBLE_SETS`). Fails closed.
+- **Images:** `tcgplayer-cdn.tcgplayer.com`, already in the CSP for Pokemon —
+  **no CSP change.** Stored as TCGCSV gives them (200 px wide). A sharper
+  400 px version exists at the same host and loaded for the one card tried;
+  not used because it wasn't checked across sets.
+- `catalog.number_sort_key` now treats Gundam numbers like One Piece's
+  (reads the number after the set code).
+- **Not verified:** nothing here has run against a database or in the app.
+  Only the parsing was run, against the three saved sets (602 cards, no
+  duplicate ids or identities).
+
+---
+
 ## 2026-11-15 — Lorcana in the Catalog, from Lorcast (lorcast.com)
 
 Jeffrey asked for a Lorcana tab starting from lorcana-api.com, then chose

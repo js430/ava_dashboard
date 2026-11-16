@@ -59,6 +59,7 @@ import auto_delete_rules
 import riftbound
 import optcg
 import lorcana
+import gundam
 import games
 
 load_dotenv()
@@ -237,6 +238,11 @@ async def lifespan(app: FastAPI):
         await lorcana.ensure_lorcana_schema(app.state.db)
     except Exception:
         logger.exception("Lorcana schema ensure failed — the Lorcana sync may be unavailable")
+    try:
+        # Its own step: Gundam's cached set list lives in the same cache table.
+        await gundam.ensure_gundam_schema(app.state.db)
+    except Exception:
+        logger.exception("Gundam schema ensure failed — the Gundam sync may be unavailable")
     # Move stored One Piece pictures onto the image proxy on every start, not
     # only when a sync is due: a sync can be weeks away, and until it runs the
     # old links fail in the browser. One UPDATE, no API requests, never raises.
@@ -286,6 +292,8 @@ async def lifespan(app: FastAPI):
     one_piece_sync_task = asyncio.create_task(_one_piece_sync_scheduler(app))
     # Daily: Lorcast asks for its data to be kept at least 24 hours.
     lorcana_sync_task = asyncio.create_task(_lorcana_sync_scheduler(app))
+    # Daily: TCGCSV is rebuilt once a day and asks for one sync a day.
+    gundam_sync_task = asyncio.create_task(_gundam_sync_scheduler(app))
     try:
         yield
     finally:
@@ -297,6 +305,7 @@ async def lifespan(app: FastAPI):
         riftbound_sync_task.cancel()
         one_piece_sync_task.cancel()
         lorcana_sync_task.cancel()
+        gundam_sync_task.cancel()
         await app.state.db.close()
 
 
@@ -414,6 +423,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             # cards.lorcast.io: Lorcana card images, same arrangement with
             # lorcana.IMAGE_HOSTS (https on that host only, checked before the
             # URL is stored).
+            # Gundam card images are on tcgplayer-cdn.tcgplayer.com too
+            # (gundam.IMAGE_HOSTS), so they need no entry of their own.
             "img-src 'self' data: blob: https://cdn.discordapp.com https://images.pokemontcg.io "
             "https://tcgplayer-cdn.tcgplayer.com https://images.tcggo.com "
             "https://optcg-api.arjunbansal-ai.workers.dev https://cards.lorcast.io "
@@ -5768,6 +5779,14 @@ async def _catalog_set_releases(game: str) -> list:
                     for s in lorcana.set_release_order(await _lorcana_cached_sets(app.state.db))]
         except Exception:
             logger.exception("Lorcana set list failed — sets shown alphabetically")
+    elif game == gundam.GAME:
+        # From the cached set list — never a live call. TCGplayer gives real
+        # release dates.
+        try:
+            return [{"id": s["id"], "released": s.get("released") or ""}
+                    for s in gundam.set_release_order(await _gundam_cached_sets(app.state.db))]
+        except Exception:
+            logger.exception("Gundam set list failed — sets shown alphabetically")
     return []
 
 
@@ -6013,6 +6032,9 @@ GUEST_ONE_PIECE_VISIBLE_SETS = int(os.getenv("GUEST_ONE_PIECE_VISIBLE_SETS", "3"
 # Lorcana's: the newest 3 released, stocked main sets (promo and special sets
 # don't count — lorcana.is_main_set).
 GUEST_LORCANA_VISIBLE_SETS = int(os.getenv("GUEST_LORCANA_VISIBLE_SETS", "3"))
+# Gundam's: the newest 3 released, stocked booster packs (starter decks, extra
+# boosters and promos don't count — gundam.is_main_set).
+GUEST_GUNDAM_VISIBLE_SETS = int(os.getenv("GUEST_GUNDAM_VISIBLE_SETS", "3"))
 # The grading calculator has its own, tighter guest window — decoupled from
 # the Catalog's so tightening/widening one never silently changes the other.
 GUEST_GRADING_VISIBLE_SETS = int(os.getenv("GUEST_GRADING_VISIBLE_SETS", "5"))
@@ -6159,6 +6181,30 @@ async def _lorcana_guest_set_ids(pool, limit: int = None) -> list:
     return out
 
 
+async def _gundam_guest_set_ids(pool, limit: int = None) -> list:
+    """Gundam's guest ceiling, by the same rule as Lorcana's: the newest N
+    released, stocked booster packs, from the cached set list (no live call).
+    Starter decks, extra boosters and promos are skipped. Fails closed — no
+    cached set list means nothing shown."""
+    limit = GUEST_GUNDAM_VISIBLE_SETS if limit is None else limit
+    try:
+        sets = await _gundam_cached_sets(pool)
+    except Exception:
+        logger.exception("Guest catalog restriction: couldn't read the Gundam set list")
+        return []
+    have = await catalog.cached_set_ids(pool, gundam.GAME, gundam.LANGUAGE)
+    today = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d")
+    out = []
+    for s in gundam.set_release_order(sets):
+        if not s.get("released") or s["released"] > today or not gundam.is_main_set(s["id"]):
+            continue
+        if s["id"] in have:
+            out.append(s["id"])
+        if len(out) >= limit:
+            break
+    return out
+
+
 async def _catalog_guest_ceiling(pool, game: str, languages) -> list:
     if game == riftbound.GAME:
         return await _riftbound_guest_set_ids(pool)
@@ -6166,6 +6212,8 @@ async def _catalog_guest_ceiling(pool, game: str, languages) -> list:
         return await _one_piece_guest_set_ids(pool)
     if game == lorcana.GAME:
         return await _lorcana_guest_set_ids(pool)
+    if game == gundam.GAME:
+        return await _gundam_guest_set_ids(pool)
     return await _guest_visible_set_ids_multi(pool, languages)
 
 
@@ -6179,6 +6227,8 @@ def _annotate_catalog_sets(game: str, sets: list, name_key: str = "set_name") ->
         return optcg.annotate_sets(sets, name_key=name_key)
     if game == lorcana.GAME:
         return lorcana.annotate_sets(sets, name_key=name_key)
+    if game == gundam.GAME:
+        return gundam.annotate_sets(sets, name_key=name_key)
     return card_eras.annotate(sets, name_key=name_key)
 
 
@@ -7354,6 +7404,207 @@ async def _lorcana_sync_scheduler(app: FastAPI) -> None:
         await asyncio.sleep(LORCANA_SYNC_CHECK_S)
 
 
+# ---- Gundam catalog sync ----
+# Gundam's cards and prices come from TCGCSV (gundam.py), a daily copy of
+# TCGplayer's catalogue: no key, rebuilt once a day. It asks clients to sync
+# at most once a day, to look at its "last updated" file first, and never to
+# call it from a visitor-facing page. So:
+#   * A run starts with that one small file. If TCGCSV hasn't been rebuilt
+#     since our last complete run, nothing else is fetched.
+#   * Otherwise: one request for the set list and two per set (cards, prices),
+#     about 58 in all. Each set is fetched at most once per
+#     gundam.SYNC_EVERY_H (24h or more) — the admin's button doesn't override
+#     that, it only starts the check right away.
+#   * A member browsing never causes a call: the set list is read from the
+#     api_cache table.
+# "Due" is read from the database, so a redeploy never repeats requests and a
+# cut-short run resumes at the next check with only the sets it didn't reach.
+# Cards are NOT priced into portfolios or the Card Tracker from here
+# (games.py: catalog only).
+GUNDAM_SYNC_CHECK_S = float(os.getenv("GUNDAM_SYNC_CHECK_S", str(3 * 3600)))
+GUNDAM_SYNC_START_DELAY_S = float(os.getenv("GUNDAM_SYNC_START_DELAY_S", "300"))
+# Consecutive failed sets that stop a run, so an outage isn't hammered.
+GUNDAM_SYNC_MAX_ERRORS = 3
+# api_cache resources: {set_id: when that set's cards were last fetched}, and
+# TCGCSV's build stamp as of our last complete run.
+GUNDAM_SET_FETCHED = "set_fetched_at"
+GUNDAM_BUILD = "build"
+
+
+def _gundam_sync_state(app) -> dict:
+    st = getattr(app.state, "gundam_sync", None)
+    if st is None:
+        st = {"running": False, "started_at": None, "finished_at": None, "planned": 0,
+              "done": 0, "cards": 0, "priced": 0, "current": None, "error": None,
+              "last_result": None}
+        app.state.gundam_sync = st
+    return st
+
+
+def _gundam_set_rows(body) -> list:
+    return [s for s in (body or [])
+            if isinstance(s, dict) and s.get("id") and s.get("group_id") is not None]
+
+
+async def _gundam_cached_sets(pool) -> list:
+    """TCGCSV's set list as last stored (gundam.fetch_sets) — never a live call."""
+    body, _fetched_at = await gundam.cached(pool, "sets")
+    return _gundam_set_rows(body)
+
+
+def _gundam_due_sets(sets, fetched, now) -> list:
+    """The sets whose cards need fetching, newest first: never fetched, or
+    last fetched gundam.SYNC_EVERY_H ago or more."""
+    return [s for s in gundam.set_release_order(sets)
+            if gundam.older_than_a_sync(_one_piece_parse_time(fetched.get(s["id"])), now)]
+
+
+async def _gundam_sync_due(app) -> bool:
+    pool = app.state.db
+    body, sets_at = await gundam.cached(pool, "sets")
+    sets = _gundam_set_rows(body)
+    if not sets or gundam.older_than_a_sync(sets_at):
+        return True
+    fetched, _ = await gundam.cached(pool, GUNDAM_SET_FETCHED)
+    return bool(_gundam_due_sets(sets, fetched or {}, datetime.now(ZoneInfo("UTC"))))
+
+
+async def _run_gundam_sync(app) -> None:
+    """Refresh Gundam sets, cards and prices. Never raises.
+
+    The scheduler and the admin button run the same thing: neither re-fetches
+    a set fetched within gundam.SYNC_EVERY_H, and neither fetches anything
+    beyond TCGCSV's "last updated" file when it hasn't been rebuilt since our
+    last complete run.
+    """
+    st = _gundam_sync_state(app)
+    if st["running"]:
+        return
+    if not gundam.available():
+        st["error"] = "Gundam updates are switched off (GUNDAM_SYNC_DISABLED)."
+        return
+    st.update(running=True, started_at=datetime.utcnow().isoformat() + "Z", finished_at=None,
+              planned=0, done=0, cards=0, priced=0, current=None, error=None)
+    pool = app.state.db
+    slow_down = ("The Gundam price service is asking us to slow down. "
+                 "The update will try again on its next check.")
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            body, sets_at = await gundam.cached(pool, "sets")
+            sets = _gundam_set_rows(body)
+            fetched, _ = await gundam.cached(pool, GUNDAM_SET_FETCHED)
+            fetched = dict(fetched or {})
+            now = datetime.now(ZoneInfo("UTC"))
+            if sets and not gundam.older_than_a_sync(sets_at) \
+                    and not _gundam_due_sets(sets, fetched, now):
+                st["last_result"] = "Gundam is already up to date."
+                return
+
+            st["current"] = "checking for changes"
+            stamp, status = await gundam.fetch_build_stamp(client)
+            if status == "rate_limited":
+                st["error"] = slow_down
+                return
+            build, _ = await gundam.cached(pool, GUNDAM_BUILD)
+            done_stamp = (build or {}).get("stamp") if isinstance(build, dict) else None
+            if stamp and sets and stamp == done_stamp:
+                # Nothing has changed upstream since our last complete run:
+                # note that we looked, so the next look is a day away.
+                await gundam.store_cache(pool, "sets", sets)
+                await gundam.store_cache(pool, GUNDAM_SET_FETCHED,
+                                         {s["id"]: now.isoformat() for s in sets})
+                st["last_result"] = ("Gundam is already up to date — the price service "
+                                     "hasn't published anything new.")
+                logger.info("Gundam sync: %s", st["last_result"])
+                return
+
+            st["current"] = "set list"
+            new_sets, status = await gundam.fetch_sets(client)
+            if new_sets:
+                sets = new_sets
+                await gundam.store_cache(pool, "sets", new_sets)
+            elif not sets:
+                st["error"] = (slow_down if status == "rate_limited"
+                               else "The Gundam price service returned no sets.")
+                return
+            else:
+                # An older copy is still good for browsing; try again at the
+                # next check.
+                logger.warning("Gundam sync: set list refresh failed (%s) — "
+                               "using the copy from %s", status, sets_at)
+
+            todo = _gundam_due_sets(sets, fetched, now)
+            st["planned"] = len(todo)
+            complete = True
+            error_streak = 0
+            for entry in todo:
+                sid, name = entry["id"], entry.get("name") or entry["id"]
+                st["current"] = name
+                products, price_rows, status = await gundam.fetch_set_cards(
+                    client, entry["group_id"])
+                if status == "rate_limited":
+                    st["error"] = ("The Gundam price service is asking us to slow down, so "
+                                   f"the update stopped at {name}. It resumes on its next "
+                                   "check with the sets it didn't reach.")
+                    complete = False
+                    break
+                st["done"] += 1
+                # not_found is recorded like empty below, so a set TCGCSV
+                # lists but can't serve isn't re-requested every check.
+                if status not in ("ok", "empty", "not_found"):
+                    complete = False
+                    error_streak += 1
+                    if error_streak >= GUNDAM_SYNC_MAX_ERRORS:
+                        st["error"] = (f"Stopped after {error_streak} failed sets in a row — "
+                                       "the Gundam price service looks unreachable.")
+                        break
+                    continue
+                error_streak = 0
+                prices = gundam.prices_by_product(price_rows)
+                cards = [c for r in products for c in gundam.parse_card(r, name, prices)]
+                if cards:
+                    stats = await catalog.upsert_set_cards(
+                        pool, gundam.GAME, gundam.LANGUAGE, sid, cards,
+                        price_source=gundam.PRICE_SOURCE)
+                    st["cards"] += stats["cards"]
+                    st["priced"] += stats["priced"]
+                    # A card TCGplayer no longer lists isn't in `cards` any
+                    # more; clear its old price rather than leave it looking
+                    # current.
+                    await catalog.clear_prices_not_in(
+                        pool, gundam.GAME, gundam.LANGUAGE, sid,
+                        [c["source_id"] for c in cards])
+                # Remembered right away, so a run cut short resumes with only
+                # the sets it didn't reach.
+                fetched[sid] = now.isoformat()
+                await gundam.store_cache(pool, GUNDAM_SET_FETCHED, fetched)
+            if complete and stamp:
+                await gundam.store_cache(pool, GUNDAM_BUILD, {"stamp": stamp})
+        st["last_result"] = (f"Gundam updated — {st['cards']:,} cards across "
+                             f"{st['done']} set(s), {st['priced']:,} with a price."
+                             if st["done"] else "Gundam is already up to date.")
+        logger.info("Gundam sync: %s", st["last_result"])
+    except Exception:
+        logger.exception("Gundam sync failed")
+        st["error"] = "The Gundam update failed — see the server logs."
+    finally:
+        st.update(running=False, current=None,
+                  finished_at=datetime.utcnow().isoformat() + "Z")
+
+
+async def _gundam_sync_scheduler(app: FastAPI) -> None:
+    await asyncio.sleep(GUNDAM_SYNC_START_DELAY_S)
+    while True:
+        try:
+            if gundam.available() and await _gundam_sync_due(app):
+                await _run_gundam_sync(app)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Gundam sync check failed — retrying next interval")
+        await asyncio.sleep(GUNDAM_SYNC_CHECK_S)
+
+
 @app.get("/catalog", response_class=HTMLResponse)
 async def catalog_page(request: Request):
     # Demo/role-less Discord accounts reach this page too (guest-tier access,
@@ -7381,6 +7632,7 @@ async def catalog_page(request: Request):
         "guest_riftbound_visible_sets": GUEST_RIFTBOUND_VISIBLE_SETS,
         "guest_one_piece_visible_sets": GUEST_ONE_PIECE_VISIBLE_SETS,
         "guest_lorcana_visible_sets": GUEST_LORCANA_VISIBLE_SETS,
+        "guest_gundam_visible_sets": GUEST_GUNDAM_VISIBLE_SETS,
         # Drives the admin Stock/Refresh button labels — read from the same
         # constants the backend defaults to, so a batch-size change can never
         # leave the button text stale again.
@@ -7645,6 +7897,32 @@ async def api_catalog_facets(request: Request, language: str = "english",
                                                  "last_result")} | {"mode": "lorcana"})
         return JSONResponse(data, headers={"Cache-Control": "no-store"})
 
+    if game == gundam.GAME:
+        # Gundam fills itself (the daily sync), so there's no stock picker.
+        # The set list is the cached one — never a live call from here — and
+        # "backfill" is the sync's progress in the shape the page renders.
+        pool = request.app.state.db
+        available = []
+        try:
+            available = [{"id": s["id"], "name": s.get("name") or s["id"],
+                          "released": s.get("released") or "",
+                          "language": gundam.LANGUAGE}
+                         for s in gundam.set_release_order(await _gundam_cached_sets(pool))]
+        except Exception:
+            logger.exception("Catalog: Gundam set list failed — showing stocked sets only")
+        gundam.annotate_sets(data["sets"], name_key="set_name")
+        gundam.annotate_sets(available, name_key="name")
+        st = _gundam_sync_state(request.app)
+        data.update(available_sets=available,
+                    era_order=[key for key, _ in gundam.ERA_ORDER],
+                    era_labels=dict(gundam.ERA_ORDER),
+                    language=gundam.LANGUAGE, can_stock=False,
+                    can_sync=gundam.available(),
+                    backfill={k: st[k] for k in ("running", "planned", "done", "cards",
+                                                 "current", "error", "finished_at",
+                                                 "last_result")} | {"mode": "gundam"})
+        return JSONResponse(data, headers={"Cache-Control": "no-store"})
+
     # PPT's set list is per-language, so fetch each and tag the rows — the
     # admin stock picker needs to know which language a set would be stocked
     # in, not just its name.
@@ -7896,6 +8174,22 @@ async def api_catalog_lorcana_sync(request: Request, user=Depends(require_admin)
     if _lorcana_sync_state(request.app)["running"]:
         raise HTTPException(status_code=409, detail="A Lorcana update is already running.")
     asyncio.create_task(_run_lorcana_sync(request.app, force=True))
+    return JSONResponse({"started": True}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/catalog/gundam/sync")
+@limiter.limit("10/hour")
+async def api_catalog_gundam_sync(request: Request, user=Depends(require_admin)):
+    """Admin: check for new Gundam sets and prices now, rather than waiting
+    for the next scheduled check. It follows the same rules as the scheduled
+    run — sets fetched in the last day are left alone, and nothing is fetched
+    if the price service hasn't published anything new. Runs in the
+    background; poll /api/catalog/facets?game=gundam."""
+    if not gundam.available():
+        raise HTTPException(status_code=503, detail="Gundam updates are switched off.")
+    if _gundam_sync_state(request.app)["running"]:
+        raise HTTPException(status_code=409, detail="A Gundam update is already running.")
+    asyncio.create_task(_run_gundam_sync(request.app))
     return JSONResponse({"started": True}, headers={"Cache-Control": "no-store"})
 
 
