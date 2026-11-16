@@ -3,6 +3,75 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-11-15 — One Piece in the Catalog, from the OPTCG API (opbindr.com)
+
+Jeffrey chose **approach A: Catalog only.** One Piece gets `catalog=True` and
+a weekly sync (`optcg.py`, `main._run_one_piece_sync`). It does NOT get
+`priced_from_catalog`: the Card Tracker, set import and Grading Calculator keep
+JustTCG / optcgapi.com exactly as before. **Rejected for now:** B (tracker on
+catalog prices too) because scoring must never mix two price sources (the
+2026-07-27 trap) and existing tracked OP cards would need a cutover; C (live
+per-card lookups) because browsing must never trigger a vendor call.
+
+**The API (checked live, not just the README):** `/cards/index` is one ~2.2 MB
+request with every card's price and languages, but no set, image or TCGplayer
+id. Those come from `/sets/{id}/cards`, one request per set (61 sets). Key in
+env `OPTCG_API_KEY`, sent only server-side as `X-API-Key`. The API refuses
+browser calls from other sites anyway.
+
+**Request budget, Jeffrey's rules:**
+- `/cards/index` (and `/sets`) cached in Postgres (`api_cache`) for **7+ days**.
+  `INDEX_TTL_DAYS` can be raised by env but never below 7, and **the admin
+  "Update now" button does not bypass it**: it only re-fetches sets.
+- Caps **50/min, 1,800/day** (API: 60 / 2,000), env `OPTCG_MAX_PER_MIN` /
+  `OPTCG_MAX_PER_DAY`. The daily count is in `api_request_counts`, bumped
+  atomically BEFORE each request. If the count can't be written, the request
+  isn't sent. Also stops for the UTC day when `X-RateLimit-Remaining-Day` < 200,
+  and on any 429 until `Retry-After`.
+- A set's cards are re-fetched only when it's new, its `card_count` changes,
+  or every 28 days (`OPTCG_SET_REFRESH_DAYS`), tracked in `api_cache`
+  `set_card_counts` / `set_fetched_at` (not `refreshed_at`, which the weekly
+  price update bumps). Bootstrap is ~63 requests; a normal week is 2.
+- **Attribution:** "Powered by OPTCG API" linked to https://opbindr.com at the
+  bottom of the Catalog whenever One Piece is selected.
+
+**Data decisions that will look odd:**
+- English only: cards whose `langs` lack "en" are skipped (392 today).
+- Prints become `version` labels ("Alternate Art", "Alternate Art 2", "Manga
+  Art", "Reprint"), numbered over the WHOLE index, English prints only, so a
+  label never depends on which sets were fetched. `card_number` is the base id
+  (`OP01-120`); `source_id` is the full id (`OP01-120_p1`).
+- No release dates exist in the API. Set order is approximated:
+  boosters → extra/premium → starters → promos, then `pack_id` descending.
+  The guest window is the newest 3 stocked booster sets
+  (`GUEST_ONE_PIECE_VISIBLE_SETS`).
+- `price_source` is stored as the API gives it (tcgplayer, dotgg, ebay,
+  `positional`). `positional` is undocumented; we show it like any other price.
+- Images only from `en.onepiece-cardgame.com` and the API's public `/images`
+  proxy (https only). Both were added to the CSP `img-src`, nothing else changed.
+
+**New `Game.catalog_picker` flag:** "cards a portfolio / Tracker Management
+can add from the catalog". Pokemon and Riftbound are True, One Piece False, so
+turning on One Piece's catalog didn't silently add it to the Portfolios picker,
+Tracker Management's add-a-card dropdown or Collectr matching (an OP card added
+that way would never price). `/api/portfolios/resolve-card` refuses One Piece
+in plain English. The Catalog's "+ Track" button is hidden for One Piece:
+a catalog row would merge alt arts into one tracked card.
+
+**New dashboard-owned tables:** `api_request_counts`, `api_cache`. ava_bot
+never reads them.
+
+**Verified:** pure-function tests against saved live responses, and an
+integration test that ran main.py's real sync code on a throwaway Postgres 18
+with a fake API. It covered bootstrap = 63 requests, a second run = 0, force
+= sets only, 6.9 vs 7.0 days, a changed set re-fetched alone, the index
+price overwriting a stale price, the guest window and the daily cap.
+**Not verified:** the full app under Python 3.11 (not installed locally), the
+page in a browser, and a live sync against the real API (6 live requests spent
+probing on 2026-11-15).
+
+---
+
 ## 2026-10-31 — Catalog search indexes (pg_trgm) now created at startup
 
 Follows the entry below. `catalog.ensure_catalog_search_indexes()` runs at

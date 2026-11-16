@@ -154,7 +154,7 @@
       <div class="field" style="flex:0 0 150px;">
         <label for="cardGame">Game</label>
         <select id="cardGame" onchange="onCardGameChange()">
-          {% for g in GAMES if g.catalog %}<option value="{{ g.key }}">{{ g.label }}</option>
+          {% for g in GAMES if g.catalog_picker %}<option value="{{ g.key }}">{{ g.label }}</option>
           {% endfor %}
         </select>
       </div>
