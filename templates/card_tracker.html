@@ -404,7 +404,7 @@
       <dt>Rarity</dt>
       <dd>The card's printed rarity or variant (e.g. Special Illustration Rare).</dd>
       <dt>Game</dt>
-      <dd>Pokémon or One Piece.</dd>
+      <dd>Pokémon, One Piece, Riftbound, Lorcana or Gundam.</dd>
       <dt>Price</dt>
       <dd>The most recent known market price.</dd>
       <dt>7 day</dt>
@@ -1058,13 +1058,13 @@ async function backdateSelected(days){
   const pokeCount = rows.filter(r => r.game === 'pokemon').length;
   const opCount = rows.length - pokeCount;
   if (!pokeCount){
-    alert('No Pokémon cards in the selection — PokemonPriceTracker has no One Piece coverage, so there is nothing to backdate.');
+    alert('No Pokémon cards in the selection — only Pokémon cards can be backdated, so there is nothing to do.');
     return;
   }
   let msg = `Backdate ${pokeCount} Pokémon card(s) with up to ${days} days of price history?\n\n`
           + `Estimated cost: ~${pokeCount * PPT_BACKDATE_CREDIT_COST} PokemonPriceTracker credit(s) `
           + `(${PPT_BACKDATE_CREDIT_COST} per card).`;
-  if (opCount) msg += `\n\n${opCount} One Piece card(s) in the selection will be skipped.`;
+  if (opCount) msg += `\n\n${opCount} card(s) from other games in the selection will be skipped.`;
   if (!confirm(msg)) return;
 
   const note = document.getElementById('selectionNote');

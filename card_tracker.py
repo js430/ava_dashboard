@@ -803,7 +803,7 @@ async def run_ppt_backdate(pool, card_ids: list, days: int) -> dict:
                 summary["inserted"] += result["inserted"]
                 continue
             if c["game"] != "pokemon":
-                summary["skipped"].append(f"{c['name']}: One Piece isn't covered by PokemonPriceTracker")
+                summary["skipped"].append(f"{c['name']}: this game has no price history to backfill")
                 continue
             tcg_id = (c["tcgplayer_id"] or "").strip()
             if not tcg_id:
@@ -834,7 +834,12 @@ async def run_ppt_backdate(pool, card_ids: list, days: int) -> dict:
 
 
 async def run_ingest(pool) -> dict:
-    """JustTCG pricing for tracked ONE PIECE cards.
+    """JustTCG pricing for tracked ONE PIECE cards that have no catalog link.
+
+    A One Piece card added from the catalog has a source_id and is priced from
+    the catalog (run_catalog_snapshots); a card with a source_id is skipped
+    here so it never has two price sources. Cards tracked before that (no
+    source_id) stay on JustTCG.
 
     Pokemon moved to run_ppt_ingest — PokemonPriceTracker resolves for free
     out of catalog_cards and prices by a pinned TCGplayer id, which is both
@@ -851,7 +856,8 @@ async def run_ingest(pool) -> dict:
     async with pool.acquire() as conn:
         cards = await conn.fetch(
             "SELECT id, name, game, set_name, card_number, variant, release_date, "
-            "justtcg_card_id FROM tracked_cards WHERE game = 'one_piece' ORDER BY id"
+            "justtcg_card_id FROM tracked_cards "
+            "WHERE game = 'one_piece' AND source_id IS NULL ORDER BY id"
         )
     summary["cards"] = len(cards)
     if not cards:
@@ -930,7 +936,8 @@ async def run_ingest(pool) -> dict:
         async with pool.acquire() as conn:
             cards = await conn.fetch(
                 "SELECT id, name, variant, justtcg_card_id FROM tracked_cards "
-                "WHERE game = 'one_piece' AND justtcg_card_id IS NOT NULL ORDER BY id")
+                "WHERE game = 'one_piece' AND source_id IS NULL "
+                "AND justtcg_card_id IS NOT NULL ORDER BY id")
             # Which calendar days (UTC) each card already has a price for, so
             # the backfill below can add only what's missing.
             have_rows = await conn.fetch(
@@ -1057,7 +1064,7 @@ def _catalog_identity(row, has_sibling: bool) -> dict:
 
 async def catalog_card_identity(conn, game: str, catalog_id: int):
     """The tracked_cards fields for one catalog row of a game priced from its
-    catalog (games.priced_from_catalog — Riftbound today), or None.
+    catalog (games.priced_from_catalog — Riftbound, Lorcana, Gundam, One Piece), or None.
 
     tracked_cards is unique on (game, name, set_name, card_number, language)
     — no rarity or version — so two versions of one card sharing a name and
@@ -1218,6 +1225,76 @@ async def run_riftbound_snapshots(pool, client: httpx.AsyncClient = None,
     return summary
 
 
+# Lorcana, Gundam and One Piece prices (see run_catalog_snapshots):
+# game -> (price_snapshots.source label, max catalog price age in hours).
+# One Piece's catalog price only changes weekly, so it gets 9 days.
+CATALOG_SNAPSHOT_SOURCES = {
+    "lorcana": ("lorcana-lorcast", 36),
+    "gundam": ("gundam-tcgplayer", 36),
+    "one_piece": ("optcg", 216),
+}
+
+
+def catalog_snapshot_games() -> tuple:
+    """Games whose tracked cards are priced by run_catalog_snapshots —
+    Riftbound has its own run_riftbound_snapshots."""
+    return tuple(g for g in games.keys_with("priced_from_catalog")
+                 if g != "riftbound" and g in CATALOG_SNAPSHOT_SOURCES)
+
+
+async def run_catalog_snapshots(pool, game: str, only_card_id: int = None) -> dict:
+    """Give every tracked card of `game` that has a catalog link (source_id)
+    today's price, copied from the catalog row with the same source_id.
+
+    Idempotent: a card with a snapshot today (any source) is skipped. A
+    catalog price older than the game's max age is not copied. Cards with no
+    source_id are never touched here and never linked to a catalog row — a
+    One Piece card tracked before the catalog stays a JustTCG card, because
+    switching a card's source mid-series would read as a price move.
+    """
+    source, max_age_h = CATALOG_SNAPSHOT_SOURCES[game]
+    async with pool.acquire() as conn:
+        added = await conn.execute(
+            """
+            INSERT INTO price_snapshots (card_id, price_mid, source)
+            SELECT DISTINCT ON (t.id) t.id, c.raw_price, $1::text
+            FROM tracked_cards t
+            JOIN catalog_cards c ON c.game = $2 AND c.source_id = t.source_id
+            WHERE t.game = $2
+              AND t.source_id IS NOT NULL
+              AND ($4::INT IS NULL OR t.id = $4)
+              AND c.raw_price IS NOT NULL
+              AND c.priced_at >= NOW() - make_interval(hours => $3)
+              AND NOT EXISTS (
+                  SELECT 1 FROM price_snapshots p
+                  WHERE p.card_id = t.id
+                    AND (p.captured_at AT TIME ZONE 'UTC')::date
+                        = (NOW() AT TIME ZONE 'UTC')::date)
+            ORDER BY t.id, c.priced_at DESC
+            """,
+            source, game, max_age_h, only_card_id)
+    count = int(added.split()[-1]) if added else 0
+    if count:
+        logger.info("Tracker (%s): %d snapshot(s) from the catalog", game, count)
+    return {"snapshots": count}
+
+
+async def run_all_catalog_snapshots(pool) -> dict:
+    """run_catalog_snapshots for every catalog-priced game; one game failing
+    is logged and doesn't stop the others."""
+    total = 0
+    by_game: dict = {}
+    for game in catalog_snapshot_games():
+        try:
+            n = (await run_catalog_snapshots(pool, game))["snapshots"]
+        except Exception:
+            logger.exception("Tracker (%s): catalog snapshots failed", game)
+            continue
+        by_game[game] = n
+        total += n
+    return {"snapshots": total, "by_game": by_game}
+
+
 async def _score_one_card(conn, card_id: int, release_date) -> bool:
     """Compute + insert a card_scores row for ONE card from its last 190 days
     of snapshots (180d momentum needs a baseline at or before that cutoff —
@@ -1318,6 +1395,10 @@ async def refresh_one_card(client: httpx.AsyncClient, pool, card_id: int) -> dic
         # a request or two, the same as every other Riftbound backdate.
         rb = await run_riftbound_snapshots(pool, client, only_card_id=card_id)
         result["snapshot_added"] = rb["snapshots"] > 0
+    elif card["game"] in catalog_snapshot_games() and not card["priced_today"]:
+        # Free: copied from the catalog (cards with a source_id only).
+        cs = await run_catalog_snapshots(pool, card["game"], only_card_id=card_id)
+        result["snapshot_added"] = cs["snapshots"] > 0
 
     async with pool.acquire() as conn:
         result["scored"] = await _score_one_card(conn, card_id, card["release_date"])

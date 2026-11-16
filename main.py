@@ -39,7 +39,9 @@ from card_tracker import (ensure_card_tracker_schema, sync_watchlist, run_ingest
                           VALID_GAMES, MAX_USER_PORTFOLIO_CARDS, auto_backdate_new_card,
                           refresh_one_card, TRACKER_COLUMN_KEYS, DEFAULT_VISIBLE_COLUMNS,
                           run_riftbound_snapshots, catalog_card_identity,
-                          catalog_set_identities, forget_riftbound_history)
+                          catalog_set_identities, forget_riftbound_history,
+                          run_catalog_snapshots, run_all_catalog_snapshots,
+                          catalog_snapshot_games)
 import card_scoring
 import set_import
 import price_sources
@@ -168,6 +170,21 @@ CARD_SWEEP_INTERVAL_S = float(os.getenv("TRACKER_SWEEP_INTERVAL_S", str(3 * 3600
 CARD_SWEEP_START_DELAY_S = float(os.getenv("TRACKER_SWEEP_START_DELAY_S", "90"))
 
 
+async def _snapshot_catalog_game(pool, game: str) -> int:
+    """Today's price for one game's catalog-priced tracked cards (Lorcana,
+    Gundam, One Piece), copied from the catalog, then re-score if any were
+    added. Never raises: the callers are syncs and sweeps that have other work
+    to finish. Returns how many snapshots were added."""
+    try:
+        added = (await run_catalog_snapshots(pool, game))["snapshots"]
+        if added:
+            await run_scoring(pool)
+        return added
+    except Exception:
+        logger.exception("Catalog snapshots failed for %s", game)
+        return 0
+
+
 async def _card_price_sweep(app: FastAPI) -> None:
     """Fill today's price gaps, then re-score if anything was added."""
     pool = app.state.db
@@ -180,7 +197,15 @@ async def _card_price_sweep(app: FastAPI) -> None:
     except Exception:
         logger.exception("Price sweep: Riftbound snapshots failed")
         rb = {"snapshots": 0, "backdated": 0}
-    if result["snapshots"] or rb["snapshots"] or rb["backdated"]:
+    # Lorcana, Gundam and One Piece (cards added from the catalog) are copied
+    # from the catalog the same way, free. Own try/except: one game's failure
+    # must not stop the others or the re-score below.
+    try:
+        cat = await run_all_catalog_snapshots(pool)
+    except Exception:
+        logger.exception("Price sweep: catalog snapshots failed")
+        cat = {"snapshots": 0, "by_game": {}}
+    if result["snapshots"] or rb["snapshots"] or rb["backdated"] or cat["snapshots"]:
         # Scores are pure DB math — no quota — so keep them in step with the
         # prices the sweep just added rather than waiting for the nightly.
         await run_scoring(pool)
@@ -2764,7 +2789,8 @@ async def api_trial_list(request: Request, user=Depends(require_trial_viewer)):
 
 async def _catalog_add_fields(pool, game: str, body) -> dict:
     """The tracked-card fields for adding a card of a game priced from its
-    catalog (games.priced_from_catalog — Riftbound today), read from the
+    catalog (games.priced_from_catalog — Riftbound, One Piece, Lorcana and
+    Gundam), read from the
     catalog row the browser picked (body["catalog_id"]).
 
     Nothing else in the request is trusted for these games: the name, number
@@ -2897,8 +2923,11 @@ async def api_portfolio_add(request: Request, user=Depends(get_member_or_subscri
                     "AND set_name=$3 AND card_number=$4 AND language=$5",
                     game, name, set_name, card_number, language)
                 card_id = existing["id"]
-                if source_id:
+                if source_id and game != optcg.GAME:
                     # Links a row tracked before it had one; never re-points one.
+                    # Never for One Piece: a card tracked before the catalog
+                    # existed is priced by JustTCG and must stay on that one
+                    # source (mixing two would corrupt its score history).
                     await conn.execute(
                         "UPDATE tracked_cards SET source_id = $1 "
                         "WHERE id = $2 AND source_id IS NULL", source_id, card_id)
@@ -3070,12 +3099,20 @@ async def _run_tracker_refresh(app) -> None:
         # One Piece via JustTCG. Split deliberately: see card_tracker.run_ingest.
         ppt = await run_ppt_ingest(pool)
         ingest = await run_ingest(pool)
+        # Lorcana, Gundam and catalog-added One Piece cards are copied from
+        # the catalog (free). Own try/except so it can't fail the refresh.
+        try:
+            catalog_snaps = await run_all_catalog_snapshots(pool)
+        except Exception:
+            logger.exception("Card tracker refresh: catalog snapshots failed")
+            catalog_snaps = {"snapshots": 0, "by_game": {}}
         scoring = await run_scoring(pool)
         st["result"] = {
             "watchlist_added": added,
             # Both sources contribute snapshots; the totals are summed for the
             # headline and broken out below so a failure in one is still visible.
-            "snapshots": ppt["snapshots"] + ingest["snapshots"],
+            "snapshots": ppt["snapshots"] + ingest["snapshots"] + catalog_snaps["snapshots"],
+            "catalog_snapshots": catalog_snaps["snapshots"],
             "resolved": ppt["resolved"] + ingest["resolved"],
             "backfilled": ingest.get("backfilled", 0),
             "failures": (ppt["failed"] + ingest["failed"])[:20],
@@ -3624,7 +3661,8 @@ async def api_portfolio_lot_add(request: Request, portfolio_id: int,
     if error:
         raise HTTPException(status_code=400, detail=error)
     if kind == "card":
-        # A Riftbound card's price is a free copy from the catalog, so it's
+        # A catalog-priced card's (Riftbound, Lorcana, Gundam, One Piece added
+        # from the catalog) price is a free copy from the catalog, so it's
         # filled in now rather than at the next sweep (Pokemon's costs a
         # credit, so it waits). The lot now references the card, which is
         # what makes it eligible.
@@ -3633,8 +3671,10 @@ async def api_portfolio_lot_add(request: Request, portfolio_id: int,
                 game = await conn.fetchval("SELECT game FROM tracked_cards WHERE id = $1", item_id)
             if game == riftbound.GAME:
                 await run_riftbound_snapshots(pool, only_card_id=item_id)
+            elif game in catalog_snapshot_games():
+                await run_catalog_snapshots(pool, game, only_card_id=item_id)
         except Exception:
-            logger.exception("Portfolio: couldn't price Riftbound card %s on add", item_id)
+            logger.exception("Portfolio: couldn't price catalog card %s on add", item_id)
     return JSONResponse({"id": lot["id"]}, headers={"Cache-Control": "no-store"})
 
 
@@ -4090,8 +4130,8 @@ async def api_portfolio_resolve_card(request: Request,
     source_id = None
     pool = request.app.state.db
     if game in VALID_GAMES and game not in CATALOG_PICKER_GAMES:
-        # A game with a catalog but no way to price a held card from it yet
-        # (One Piece): refuse plainly rather than add a card that never prices.
+        # A game with a catalog but no way to price a held card from it:
+        # refuse plainly rather than add a card that never prices.
         raise HTTPException(status_code=400,
                             detail=f"{games.get(game).label} cards can't be added to a "
                                    "portfolio yet.")
@@ -4127,7 +4167,9 @@ async def api_portfolio_resolve_card(request: Request,
                     "AND set_name=$3 AND card_number=$4 AND language=$5",
                     game, name, set_name, card_number, language)
                 card_id = existing["id"]
-                if source_id:
+                if source_id and game != optcg.GAME:
+                    # Not for One Piece: an existing tracked row stays on
+                    # whichever price source it already has (see api_portfolio_add).
                     await conn.execute(
                         "UPDATE tracked_cards SET source_id = $1 "
                         "WHERE id = $2 AND source_id IS NULL", source_id, card_id)
@@ -4738,6 +4780,9 @@ async def _price_imported_cards(app, game: str) -> None:
         if game == riftbound.GAME:
             result = await run_riftbound_snapshots(app.state.db)
             if result["snapshots"] or result["backdated"]:
+                await run_scoring(app.state.db)
+        elif game in catalog_snapshot_games():
+            if (await run_catalog_snapshots(app.state.db, game))["snapshots"]:
                 await run_scoring(app.state.db)
     except Exception:
         logger.exception("Set import: pricing the imported %s cards failed", game)
@@ -5402,6 +5447,9 @@ async def api_tips_photo_image(request: Request, photo_id: int,
 # manual card-name entry or the photo scanner can't reach a card outside the
 # window just because the Set dropdown wasn't used to get there.
 #
+# NOTE: One Piece no longer uses this window — it is a catalog game now and
+# follows the Catalog's guest window (_catalog_guest_ceiling). The helper below
+# is left in place but unused. It describes the old hand-kept list:
 # One Piece's set list (grading_sets.GRADING_SETS["one_piece"]) is a small
 # hand-maintained, already-newest-first list — unlike Pokemon there's no live
 # PPT set feed to walk, so the guest window is just its first N entries, no
@@ -5434,13 +5482,11 @@ async def _catalog_guest_sets(pool, game: str) -> list:
 
 
 async def _guest_grading_allowed(pool, game: str, language: str, set_name: str) -> bool:
-    if game == "one_piece":
-        needle = _norm_set_name(set_name)
-        return any(needle in (_norm_set_name(s.get("id")), _norm_set_name(s.get("name")))
-                   for s in _guest_visible_one_piece_sets())
     if games.priced_from_catalog(game):
         # Matched on the set's id (what /set-cards sends) or its name (what
-        # /quotes may carry), like One Piece above.
+        # /quotes may carry). One Piece is a catalog game too now, so it uses
+        # the Catalog's own guest window (the baked
+        # _guest_visible_one_piece_sets list no longer applies to it).
         needle = _norm_set_name(set_name)
         return bool(needle) and any(
             needle in (_norm_set_name(s["id"]), _norm_set_name(s["name"]))
@@ -5485,8 +5531,10 @@ async def grading_calculator_page(request: Request):
         # needs the live number, not a hardcoded one that drifts the moment
         # the constant changes.
         "guest_grading_visible_sets": GUEST_GRADING_VISIBLE_SETS,
-        # Riftbound shares the Catalog's window instead (_catalog_guest_sets).
+        # Riftbound and One Piece share the Catalog's window instead
+        # (_catalog_guest_sets).
         "guest_riftbound_visible_sets": GUEST_RIFTBOUND_VISIBLE_SETS,
+        "guest_one_piece_visible_sets": GUEST_ONE_PIECE_VISIBLE_SETS,
     })
 
 
@@ -5555,10 +5603,21 @@ async def _grading_catalog_row(pool, game: str, catalog_id: str, name: str,
     return rows[0] if len(rows) == 1 else None
 
 
-def _catalog_raw_quote(row):
+def _catalog_raw_quote(row, game: str = ""):
     """The catalog's daily price as the lookup's ungraded ("raw") quote."""
     if row is None or row["raw_price"] is None:
         return None
+    if game == optcg.GAME:
+        # One Piece's price comes from the OPTCG API, which says per card where
+        # it got it (tcgplayer, dotgg, ebay, ...). Only call it TCGplayer when
+        # it is; otherwise use a neutral label rather than misname the source.
+        tcg = row["price_source"] == "tcgplayer"
+        return price_sources.GradedQuote(
+            grade="raw", price=float(row["raw_price"]), basis="market",
+            source="catalog_tcgplayer" if tcg else "catalog_optcg",
+            as_of=(row["priced_at"] or datetime.now(ZoneInfo("UTC"))).isoformat(),
+            note=("TCGplayer market price" if tcg
+                  else "Market price from the One Piece card database"))
     cardmarket = row["price_source"] == riftbound.SOURCE_CARDMARKET
     return price_sources.GradedQuote(
         grade="raw", price=float(row["raw_price"]), basis="market",
@@ -5654,10 +5713,15 @@ async def api_grading_quotes(request: Request, name: str, game: str = "pokemon",
     except Exception:
         logger.exception("Graded quote lookup failed for %r", card.query())
         raise HTTPException(status_code=502, detail="Price lookup failed")
-    raw_quote = _catalog_raw_quote(catalog_row)
+    raw_quote = _catalog_raw_quote(catalog_row, game)
     if raw_quote:
         # Outranks eBay's ungraded asking price (price_sources.SOURCE_PRIORITY).
         result["quotes"] = price_sources.merge_quotes([raw_quote], list(result["quotes"].values()))
+        if raw_quote.source not in price_sources.SOURCE_PRIORITY:
+            # A catalog label with no priority entry (One Piece's non-TCGplayer
+            # prices) would lose to eBay's asking price in the merge above;
+            # a catalog market price should win, so set it directly.
+            result["quotes"]["raw"] = raw_quote
         result["all"].insert(0, raw_quote)
         result["sources"].insert(0, raw_quote.source)
 
@@ -5878,11 +5942,9 @@ async def api_grading_sets(request: Request, game: str = "pokemon",
 
     baked = grading_sets.GRADING_SETS.get(game, [])
     if user.get("guest"):
-        # This is also One Piece's ONLY path (no live PPT-equivalent feed for
-        # it), so unlike Pokemon's PPT branch above, skipping this filter
-        # would leave One Piece guests with no set restriction at all.
-        baked = (_guest_visible_one_piece_sets() if game == "one_piece"
-                 else baked[:GUEST_GRADING_VISIBLE_SETS])
+        # Pokemon's fallback when PPT is off: keep the guest cap here too.
+        # (One Piece now takes the catalog branch above, not this list.)
+        baked = baked[:GUEST_GRADING_VISIBLE_SETS]
     return JSONResponse(
         {"source": "catalog", "language": "english", "sets": baked},
         headers={"Cache-Control": "no-store"})
@@ -7013,8 +7075,10 @@ async def _riftbound_sync_scheduler(app: FastAPI) -> None:
 #     cost (optcg.repoint_images).
 # "Due" is read from the database (the api_cache table plus catalog_cards), so
 # a redeploy never re-spends requests and a cut-short run resumes at the next
-# check. Cards are NOT priced into portfolios or the Card Tracker from here
-# (games.py: no priced_from_catalog) — those keep their JustTCG pricing.
+# check. Cards added from the catalog (they carry a source_id) are priced from
+# it into portfolios and the Card Tracker at the end of each run
+# (_snapshot_catalog_game); older tracked One Piece cards have no source_id and
+# keep their JustTCG pricing — a card never changes price source.
 ONE_PIECE_SYNC_CHECK_S = float(os.getenv("OPTCG_SYNC_CHECK_S", str(6 * 3600)))
 ONE_PIECE_SYNC_START_DELAY_S = float(os.getenv("OPTCG_SYNC_START_DELAY_S", "180"))
 # Consecutive failed sets that stop a run, so an outage can't burn the budget.
@@ -7218,6 +7282,9 @@ async def _run_one_piece_sync(app, force: bool = False) -> None:
                 st["current"] = "prices"
                 st["priced"] = await catalog.update_prices_by_source_id(
                     pool, optcg.GAME, optcg.LANGUAGE, optcg.index_prices(index_rows, english))
+        # Cards tracked from the catalog get today's price copied from it
+        # (legacy JustTCG-priced cards have no source_id and are skipped).
+        await _snapshot_catalog_game(pool, optcg.GAME)
         st["last_result"] = (f"One Piece updated — {st['cards']:,} cards across {st['done']} "
                              f"set(s)" + (f", {st['priced']:,} prices refreshed."
                                           if fresh_index else "."))
@@ -7379,6 +7446,7 @@ async def _run_lorcana_sync(app, force: bool = False) -> None:
                 # the sets it didn't reach.
                 fetched[sid] = now.isoformat()
                 await lorcana.store_cache(pool, LORCANA_SET_FETCHED, fetched)
+        await _snapshot_catalog_game(pool, lorcana.GAME)
         st["last_result"] = (f"Lorcana updated — {st['cards']:,} card listings across "
                              f"{st['done']} set(s), {st['priced']:,} with a price."
                              if st["done"] else "Lorcana is already up to date.")
@@ -7580,6 +7648,7 @@ async def _run_gundam_sync(app) -> None:
                 await gundam.store_cache(pool, GUNDAM_SET_FETCHED, fetched)
             if complete and stamp:
                 await gundam.store_cache(pool, GUNDAM_BUILD, {"stamp": stamp})
+        await _snapshot_catalog_game(pool, gundam.GAME)
         st["last_result"] = (f"Gundam updated — {st['cards']:,} cards across "
                              f"{st['done']} set(s), {st['priced']:,} with a price."
                              if st["done"] else "Gundam is already up to date.")
