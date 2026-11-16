@@ -113,7 +113,7 @@ MAX_TRACKED_CARDS = 3000
 # against the PPT plan) rather than lowering this one back.
 MAX_USER_PORTFOLIO_CARDS = 250
 
-VALID_GAMES = games.KEYS
+VALID_GAMES = games.keys_with("tracker")
 
 # Riftbound pricing (see run_riftbound_snapshots). Labels written to
 # price_snapshots.source — distinct per source so card_scoring never runs

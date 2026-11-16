@@ -234,7 +234,7 @@
             <th class="left">
               <select class="col-filter" id="fGame" onchange="onFilterChange()">
                 <option value="all">All</option>
-                {% for g in GAMES %}<option value="{{ g.key }}">{{ g.label }}</option>
+                {% for g in GAMES if g.tracker %}<option value="{{ g.key }}">{{ g.label }}</option>
                 {% endfor %}
               </select>
             </th>

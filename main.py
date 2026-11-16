@@ -58,6 +58,7 @@ import monitor_alerts
 import auto_delete_rules
 import riftbound
 import optcg
+import lorcana
 import games
 
 load_dotenv()
@@ -231,6 +232,11 @@ async def lifespan(app: FastAPI):
         await optcg.ensure_optcg_schema(app.state.db)
     except Exception:
         logger.exception("One Piece schema ensure failed — the One Piece sync may be unavailable")
+    try:
+        # Its own step: Lorcana's cached set list lives in the same cache table.
+        await lorcana.ensure_lorcana_schema(app.state.db)
+    except Exception:
+        logger.exception("Lorcana schema ensure failed — the Lorcana sync may be unavailable")
     # Move stored One Piece pictures onto the image proxy on every start, not
     # only when a sync is due: a sync can be weeks away, and until it runs the
     # old links fail in the browser. One UPDATE, no API requests, never raises.
@@ -278,6 +284,8 @@ async def lifespan(app: FastAPI):
     riftbound_sync_task = asyncio.create_task(_riftbound_sync_scheduler(app))
     # Weekly: the One Piece card list is cached for 7+ days by design.
     one_piece_sync_task = asyncio.create_task(_one_piece_sync_scheduler(app))
+    # Daily: Lorcast asks for its data to be kept at least 24 hours.
+    lorcana_sync_task = asyncio.create_task(_lorcana_sync_scheduler(app))
     try:
         yield
     finally:
@@ -288,6 +296,7 @@ async def lifespan(app: FastAPI):
         catalog_price_sweep_task.cancel()
         riftbound_sync_task.cancel()
         one_piece_sync_task.cancel()
+        lorcana_sync_task.cancel()
         await app.state.db.close()
 
 
@@ -402,9 +411,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             # optcg.IMAGE_HOSTS (https on that host only, checked before the URL
             # is stored). Bandai's own host blocks other sites via CORP, so it
             # isn't used.
+            # cards.lorcast.io: Lorcana card images, same arrangement with
+            # lorcana.IMAGE_HOSTS (https on that host only, checked before the
+            # URL is stored).
             "img-src 'self' data: blob: https://cdn.discordapp.com https://images.pokemontcg.io "
             "https://tcgplayer-cdn.tcgplayer.com https://images.tcggo.com "
-            "https://optcg-api.arjunbansal-ai.workers.dev "
+            "https://optcg-api.arjunbansal-ai.workers.dev https://cards.lorcast.io "
             "https://api.scryfall.com https://db.ygoprodeck.com https://www.optcgapi.com "
             "https://maps.googleapis.com https://maps.gstatic.com https://assets.pokemon.com; "
             "connect-src 'self' https://maps.googleapis.com; "
@@ -5748,6 +5760,14 @@ async def _catalog_set_releases(game: str) -> list:
             return [{"id": set_id, "released": ""} for set_id in optcg.set_release_order(sets)]
         except Exception:
             logger.exception("One Piece set list failed — sets shown alphabetically")
+    elif game == lorcana.GAME:
+        # From the cached set list — never a live call. Lorcast gives real
+        # release dates.
+        try:
+            return [{"id": s["id"], "released": s.get("released") or ""}
+                    for s in lorcana.set_release_order(await _lorcana_cached_sets(app.state.db))]
+        except Exception:
+            logger.exception("Lorcana set list failed — sets shown alphabetically")
     return []
 
 
@@ -5990,6 +6010,9 @@ GUEST_RIFTBOUND_VISIBLE_SETS = int(os.getenv("GUEST_RIFTBOUND_VISIBLE_SETS", "3"
 # One Piece's too: the newest 3 stocked booster sets (starter decks, extra
 # boosters and promos don't count — optcg.set_era).
 GUEST_ONE_PIECE_VISIBLE_SETS = int(os.getenv("GUEST_ONE_PIECE_VISIBLE_SETS", "3"))
+# Lorcana's: the newest 3 released, stocked main sets (promo and special sets
+# don't count — lorcana.is_main_set).
+GUEST_LORCANA_VISIBLE_SETS = int(os.getenv("GUEST_LORCANA_VISIBLE_SETS", "3"))
 # The grading calculator has its own, tighter guest window — decoupled from
 # the Catalog's so tightening/widening one never silently changes the other.
 GUEST_GRADING_VISIBLE_SETS = int(os.getenv("GUEST_GRADING_VISIBLE_SETS", "5"))
@@ -6112,21 +6135,50 @@ async def _one_piece_guest_set_ids(pool, limit: int = None) -> list:
     return out
 
 
+async def _lorcana_guest_set_ids(pool, limit: int = None) -> list:
+    """Lorcana's guest ceiling, by the same rule as Riftbound's: the newest N
+    released, stocked, main sets, from the cached set list (no live call).
+    Promo and special sets are skipped. Fails closed — no cached set list
+    means nothing shown."""
+    limit = GUEST_LORCANA_VISIBLE_SETS if limit is None else limit
+    try:
+        sets = await _lorcana_cached_sets(pool)
+    except Exception:
+        logger.exception("Guest catalog restriction: couldn't read the Lorcana set list")
+        return []
+    have = await catalog.cached_set_ids(pool, lorcana.GAME, lorcana.LANGUAGE)
+    today = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d")
+    out = []
+    for s in lorcana.set_release_order(sets):
+        if not s.get("released") or s["released"] > today or not lorcana.is_main_set(s["id"]):
+            continue
+        if s["id"] in have:
+            out.append(s["id"])
+        if len(out) >= limit:
+            break
+    return out
+
+
 async def _catalog_guest_ceiling(pool, game: str, languages) -> list:
     if game == riftbound.GAME:
         return await _riftbound_guest_set_ids(pool)
     if game == optcg.GAME:
         return await _one_piece_guest_set_ids(pool)
+    if game == lorcana.GAME:
+        return await _lorcana_guest_set_ids(pool)
     return await _guest_visible_set_ids_multi(pool, languages)
 
 
 def _annotate_catalog_sets(game: str, sets: list, name_key: str = "set_name") -> list:
     """Group sets for the set picker: Pokemon by era, Riftbound into sets and
-    promos, One Piece into boosters, extras, starter decks and promos."""
+    promos, One Piece into boosters, extras, starter decks and promos, Lorcana
+    into main sets and promos."""
     if game == riftbound.GAME:
         return riftbound.annotate_sets(sets, name_key=name_key)
     if game == optcg.GAME:
         return optcg.annotate_sets(sets, name_key=name_key)
+    if game == lorcana.GAME:
+        return lorcana.annotate_sets(sets, name_key=name_key)
     return card_eras.annotate(sets, name_key=name_key)
 
 
@@ -7141,6 +7193,167 @@ async def _one_piece_sync_scheduler(app: FastAPI) -> None:
         await asyncio.sleep(ONE_PIECE_SYNC_CHECK_S)
 
 
+# ---- Lorcana catalog sync ----
+# Lorcana's cards and prices come from Lorcast (lorcana.py): no key, one
+# request for the set list and one per set (about 28). Lorcast asks for its
+# data to be kept at least 24 hours and changes prices once a day, so:
+#   * Each set is fetched at most once per lorcana.SYNC_EVERY_H (24h or more).
+#     The admin's button re-reads the set list right away, so a new set shows
+#     up without waiting, but it does NOT re-fetch a set fetched in the last
+#     day — its prices can't have changed.
+#   * A member browsing never causes a call: the set list is read from the
+#     api_cache table.
+# "Due" is read from the database, so a redeploy never repeats requests and a
+# cut-short run resumes at the next check with only the sets it didn't reach.
+# Cards are NOT priced into portfolios or the Card Tracker from here
+# (games.py: catalog only).
+LORCANA_SYNC_CHECK_S = float(os.getenv("LORCANA_SYNC_CHECK_S", str(3 * 3600)))
+LORCANA_SYNC_START_DELAY_S = float(os.getenv("LORCANA_SYNC_START_DELAY_S", "240"))
+# Consecutive failed sets that stop a run, so an outage isn't hammered.
+LORCANA_SYNC_MAX_ERRORS = 3
+# The api_cache resource holding {set_id: when that set's cards were last fetched}.
+LORCANA_SET_FETCHED = "set_fetched_at"
+
+
+def _lorcana_sync_state(app) -> dict:
+    st = getattr(app.state, "lorcana_sync", None)
+    if st is None:
+        st = {"running": False, "started_at": None, "finished_at": None, "planned": 0,
+              "done": 0, "cards": 0, "priced": 0, "current": None, "error": None,
+              "last_result": None}
+        app.state.lorcana_sync = st
+    return st
+
+
+async def _lorcana_cached_sets(pool) -> list:
+    """Lorcast's set list as last stored (lorcana.fetch_sets) — never a live call."""
+    body, _fetched_at = await lorcana.cached(pool, "sets")
+    return [s for s in (body or []) if isinstance(s, dict) and s.get("id")]
+
+
+def _lorcana_due_sets(sets, fetched, now) -> list:
+    """The sets whose cards need fetching, newest first: never fetched, or
+    last fetched lorcana.SYNC_EVERY_H ago or more."""
+    return [s for s in lorcana.set_release_order(sets)
+            if lorcana.older_than_a_sync(_one_piece_parse_time(fetched.get(s["id"])), now)]
+
+
+async def _lorcana_sync_due(app) -> bool:
+    pool = app.state.db
+    body, sets_at = await lorcana.cached(pool, "sets")
+    sets = [s for s in (body or []) if isinstance(s, dict) and s.get("id")]
+    if not sets or lorcana.older_than_a_sync(sets_at):
+        return True
+    fetched, _ = await lorcana.cached(pool, LORCANA_SET_FETCHED)
+    return bool(_lorcana_due_sets(sets, fetched or {}, datetime.now(ZoneInfo("UTC"))))
+
+
+async def _run_lorcana_sync(app, force: bool = False) -> None:
+    """Refresh Lorcana sets, cards and prices. Never raises.
+
+    force=True (the admin button) re-reads the set list even if it is fresh.
+    It does NOT re-fetch a set fetched within lorcana.SYNC_EVERY_H: Lorcast
+    asks for a day between fetches and its prices change once a day.
+    """
+    st = _lorcana_sync_state(app)
+    if st["running"]:
+        return
+    if not lorcana.available():
+        st["error"] = "Lorcana updates are switched off (LORCANA_SYNC_DISABLED)."
+        return
+    st.update(running=True, started_at=datetime.utcnow().isoformat() + "Z", finished_at=None,
+              planned=0, done=0, cards=0, priced=0, current=None, error=None)
+    pool = app.state.db
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            body, sets_at = await lorcana.cached(pool, "sets")
+            sets = [s for s in (body or []) if isinstance(s, dict) and s.get("id")]
+            if force or not sets or lorcana.older_than_a_sync(sets_at):
+                st["current"] = "set list"
+                new_sets, status = await lorcana.fetch_sets(client)
+                if new_sets:
+                    sets = new_sets
+                    await lorcana.store_cache(pool, "sets", new_sets)
+                elif not sets:
+                    st["error"] = ("The Lorcana price service is asking us to slow down. "
+                                   "The update will try again on its next check."
+                                   if status == "rate_limited"
+                                   else "The Lorcana price service returned no sets.")
+                    return
+                else:
+                    # An older copy is still good for browsing; try again at
+                    # the next check.
+                    logger.warning("Lorcana sync: set list refresh failed (%s) — "
+                                   "using the copy from %s", status, sets_at)
+
+            fetched, _ = await lorcana.cached(pool, LORCANA_SET_FETCHED)
+            fetched = dict(fetched or {})
+            now = datetime.now(ZoneInfo("UTC"))
+            todo = _lorcana_due_sets(sets, fetched, now)
+            st["planned"] = len(todo)
+
+            error_streak = 0
+            for entry in todo:
+                sid, name = entry["id"], entry.get("name") or entry["id"]
+                st["current"] = name
+                rows, status = await lorcana.fetch_set_cards(client, sid)
+                if status == "rate_limited":
+                    st["error"] = ("The Lorcana price service is asking us to slow down, so "
+                                   f"the update stopped at {name}. It resumes on its next "
+                                   "check with the sets it didn't reach.")
+                    break
+                st["done"] += 1
+                # not_found is recorded like empty below, so a set Lorcast
+                # lists but can't serve isn't re-requested every check.
+                if status not in ("ok", "empty", "not_found"):
+                    error_streak += 1
+                    if error_streak >= LORCANA_SYNC_MAX_ERRORS:
+                        st["error"] = (f"Stopped after {error_streak} failed sets in a row — "
+                                       "the Lorcana price service looks unreachable.")
+                        break
+                    continue
+                error_streak = 0
+                cards = [c for r in (rows or []) for c in lorcana.parse_card(r, name)]
+                if cards:
+                    stats = await catalog.upsert_set_cards(
+                        pool, lorcana.GAME, lorcana.LANGUAGE, sid, cards,
+                        price_source=lorcana.PRICE_SOURCE)
+                    st["cards"] += stats["cards"]
+                    st["priced"] += stats["priced"]
+                    # A finish that lost its price isn't in `cards` any more;
+                    # clear its old price rather than leave it looking current.
+                    await catalog.clear_prices_not_in(
+                        pool, lorcana.GAME, lorcana.LANGUAGE, sid,
+                        [c["source_id"] for c in cards])
+                # Remembered right away, so a run cut short resumes with only
+                # the sets it didn't reach.
+                fetched[sid] = now.isoformat()
+                await lorcana.store_cache(pool, LORCANA_SET_FETCHED, fetched)
+        st["last_result"] = (f"Lorcana updated — {st['cards']:,} card listings across "
+                             f"{st['done']} set(s), {st['priced']:,} with a price."
+                             if st["done"] else "Lorcana is already up to date.")
+        logger.info("Lorcana sync: %s", st["last_result"])
+    except Exception:
+        logger.exception("Lorcana sync failed")
+        st["error"] = "The Lorcana update failed — see the server logs."
+    finally:
+        st.update(running=False, current=None,
+                  finished_at=datetime.utcnow().isoformat() + "Z")
+
+
+async def _lorcana_sync_scheduler(app: FastAPI) -> None:
+    await asyncio.sleep(LORCANA_SYNC_START_DELAY_S)
+    while True:
+        try:
+            if lorcana.available() and await _lorcana_sync_due(app):
+                await _run_lorcana_sync(app)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Lorcana sync check failed — retrying next interval")
+        await asyncio.sleep(LORCANA_SYNC_CHECK_S)
+
+
 @app.get("/catalog", response_class=HTMLResponse)
 async def catalog_page(request: Request):
     # Demo/role-less Discord accounts reach this page too (guest-tier access,
@@ -7167,6 +7380,7 @@ async def catalog_page(request: Request):
         "guest_catalog_visible_sets": GUEST_CATALOG_VISIBLE_SETS,
         "guest_riftbound_visible_sets": GUEST_RIFTBOUND_VISIBLE_SETS,
         "guest_one_piece_visible_sets": GUEST_ONE_PIECE_VISIBLE_SETS,
+        "guest_lorcana_visible_sets": GUEST_LORCANA_VISIBLE_SETS,
         # Drives the admin Stock/Refresh button labels — read from the same
         # constants the backend defaults to, so a batch-size change can never
         # leave the button text stale again.
@@ -7405,6 +7619,32 @@ async def api_catalog_facets(request: Request, language: str = "english",
                 logger.exception("Catalog: couldn't read today's One Piece request count")
         return JSONResponse(data, headers={"Cache-Control": "no-store"})
 
+    if game == lorcana.GAME:
+        # Lorcana fills itself (the daily sync), so there's no stock picker.
+        # The set list is the cached one — never a live call from here — and
+        # "backfill" is the sync's progress in the shape the page renders.
+        pool = request.app.state.db
+        available = []
+        try:
+            available = [{"id": s["id"], "name": s.get("name") or s["id"],
+                          "released": s.get("released") or "",
+                          "language": lorcana.LANGUAGE}
+                         for s in lorcana.set_release_order(await _lorcana_cached_sets(pool))]
+        except Exception:
+            logger.exception("Catalog: Lorcana set list failed — showing stocked sets only")
+        lorcana.annotate_sets(data["sets"], name_key="set_name")
+        lorcana.annotate_sets(available, name_key="name")
+        st = _lorcana_sync_state(request.app)
+        data.update(available_sets=available,
+                    era_order=[key for key, _ in lorcana.ERA_ORDER],
+                    era_labels=dict(lorcana.ERA_ORDER),
+                    language=lorcana.LANGUAGE, can_stock=False,
+                    can_sync=lorcana.available(),
+                    backfill={k: st[k] for k in ("running", "planned", "done", "cards",
+                                                 "current", "error", "finished_at",
+                                                 "last_result")} | {"mode": "lorcana"})
+        return JSONResponse(data, headers={"Cache-Control": "no-store"})
+
     # PPT's set list is per-language, so fetch each and tag the rows — the
     # admin stock picker needs to know which language a set would be stocked
     # in, not just its name.
@@ -7640,6 +7880,22 @@ async def api_catalog_one_piece_sync(request: Request, user=Depends(require_admi
     if _one_piece_sync_state(request.app)["running"]:
         raise HTTPException(status_code=409, detail="A One Piece update is already running.")
     asyncio.create_task(_run_one_piece_sync(request.app, force=True))
+    return JSONResponse({"started": True}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/catalog/lorcana/sync")
+@limiter.limit("10/hour")
+async def api_catalog_lorcana_sync(request: Request, user=Depends(require_admin)):
+    """Admin: check for new Lorcana sets now, rather than waiting for the
+    daily pass. Re-reads the set list and fetches any set not fetched in the
+    last day (one request each); sets fetched more recently are left alone,
+    because Lorcast asks for a day between fetches. Runs in the background;
+    poll /api/catalog/facets?game=lorcana."""
+    if not lorcana.available():
+        raise HTTPException(status_code=503, detail="Lorcana updates are switched off.")
+    if _lorcana_sync_state(request.app)["running"]:
+        raise HTTPException(status_code=409, detail="A Lorcana update is already running.")
+    asyncio.create_task(_run_lorcana_sync(request.app, force=True))
     return JSONResponse({"started": True}, headers={"Cache-Control": "no-store"})
 
 
