@@ -3,6 +3,70 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-11-16 — Traffic monitoring: request log + admin-only `/admin/traffic` (branch traffic-monitoring)
+
+**Hosting, confirmed:** the app runs on **Render** (live headers `rndr-id`,
+`x-render-origin-server`; `www` is a CNAME to `ava-dashboard.onrender.com`),
+behind Render's own Cloudflare edge (DNS is at Google Domains, so there is no
+Cloudflare account of ours). The maintainer says **the database is on Render
+too** now. CLAUDE.md, README and code comments that say Railway are stale.
+data-system.md updated.
+
+**Jeffrey chose A: a full request log** (over B, Render log streams to an
+outside service or moving DNS onto our own Cloudflare, and C, logging only
+429s/403s/bot-looking requests). Dashboard-only, no ava_bot change.
+- **Tables** (dashboard-owned, `traffic.ensure_traffic_schema` at startup, one
+  statement at a time): `traffic_requests` (one row per request, kept
+  `TRAFFIC_RAW_DAYS`=14 days) and `traffic_hourly` (totals, 400 days).
+- **Overhead:** a pure ASGI middleware added LAST (outermost, so it also sees
+  CSRF 403s and size-limit responses). It only appends a tuple to an
+  in-memory deque. `run_flusher` COPYs the buffer every 5 s. `run_maintenance`
+  rebuilds hourly totals every 10 min (the last 48 h on its first run after a
+  restart) and deletes old rows in 20k batches once a day. The request path
+  never waits on the DB. Skips `/static/`, `/health`, `/favicon`.
+- **Disk is bounded:** at most 5000 buffered rows and `TRAFFIC_LOG_DAILY_CAP`
+  (200000) saved per UTC day. Anything over is dropped and counted in
+  `traffic_hourly.dropped`. Drop counts live in memory until the next
+  10-minute run, so a crash can lose up to ~10 minutes of them.
+- **Privacy:** no full IPs and no query strings are stored. The IP is kept as
+  an HMAC hash (16 hex chars) keyed by `TRAFFIC_IP_KEY`, or derived from
+  SESSION_SECRET when that isn't set, plus its /24 (IPv4) or /48 (IPv6)
+  network. Rotating SESSION_SECRET changes every hash, so old and new rows
+  no longer match. The page notes the retention periods.
+- **Page:** `/admin/traffic`, `/admin/traffic/api?window=1h|24h|7d` and
+  `/admin/traffic/ip/{hash}`, all checking `ADMIN_USER_IDS`. It shows:
+  - totals, requests over time, unusually busy hours (more than 3× the
+    7-day median hour and over 200 requests), and 90 days of daily totals
+  - busiest visitors and busiest signed-out visitors, apps/browsers, pages,
+    and recent 403/429s
+  - a visitor drill-down
+  - an **IP check** panel with the admin's own `X-Real-IP` /
+    `X-Forwarded-For` / `CF-Connecting-IP` / `True-Client-IP` / socket peer.
+  
+  "Traffic" was added to the Admin Tools menu in all 16 templates.
+- **IP trust, open question:** `get_real_ip` trusts `X-Real-IP`, then the
+  left-most `X-Forwarded-For` entry. That was written for Railway's edge. On
+  Render it is unverified whether a client-sent `X-Real-IP` is overwritten. If
+  it isn't, guests can dodge the per-IP rate limits and fake their address in
+  this log. Use the IP check panel, and a request sent with a made-up
+  `X-Real-IP`, to find out. `get_real_ip` and the rate limiter were NOT
+  changed here.
+- **Rejected:** BaseHTTPMiddleware (an extra task per request), a DB write
+  per request (latency and pool pressure), and storing full IPs.
+- **Verified:**
+  - tests/test_traffic.py: 117/117 on a throwaway Postgres 18, Python 3.12.
+  - The page in a browser against the real app with 7 days of synthetic
+    traffic including a spike: charts, tables, drill-down, IP check panel, no
+    console errors.
+  - Real lifespan: the tables are created and the buffer is saved at shutdown.
+- **Not verified:** on Render, Render's Postgres version (the percentile and
+  LATERAL SQL ran on 18 only), real traffic volume and its disk use, and dark
+  mode/phone layout.
+- **Existing, not touched:** a request body over `MAX_REQUEST_BODY_BYTES`
+  comes back as 500, not the intended 413. It is also logged as 500.
+
+---
+
 ## 2026-11-16 — Lorcana, Gundam and One Piece in Portfolios and the Card Tracker
 
 Jeffrey chose **A: per-card switch.** All three games are now
