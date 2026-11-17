@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/brand/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/brand/icon-180.png">
+<script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Traffic — Restock Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .header-left { display: flex; align-items: center; gap: 12px; }
+  .header-title { font-size: 16px; font-weight: 600; color: #111; }
+  .header-sub { font-size: 12px; color: #999; margin-top: 1px; }
+  .nav { display: flex; gap: 8px; align-items: center; }
+  .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; }
+  .nav a:hover { background: #f4f4f5; }
+  .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-group { position: relative; display: inline-flex; }
+  .nav-group-btn { font-family: inherit; font-size: 12px; color: #555; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+  .nav-group-btn:hover { background: #f4f4f5; }
+  .nav-group-btn.active, .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-caret { font-size: 9px; line-height: 1; }
+  .nav-menu { display: none; position: absolute; top: calc(100% + 4px); right: 0; min-width: 150px; padding: 4px; background: #fff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.10); z-index: 400; }
+  .nav-group.open .nav-menu { display: block; }
+  .nav-menu a { display: block; padding: 6px 10px; border: none; border-radius: 5px; background: none; font-size: 12px; color: #555; text-decoration: none; white-space: nowrap; }
+  .nav-menu a:hover { background: #f4f4f5; }
+  .nav-menu a.active { background: #5865F2; color: #fff; }
+  .main { padding: 24px; max-width: 1200px; margin: 0 auto; }
+
+  /* Stat cards */
+  .stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; margin-bottom: 24px; }
+  .stat-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 14px 16px; }
+  .stat-label { font-size: 12px; color: #888; margin-bottom: 6px; }
+  .stat-value { font-size: 24px; font-weight: 600; color: #111; }
+  .stat-sub { font-size: 12px; color: #aaa; margin-top: 3px; }
+
+  /* Table card */
+  .table-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; overflow: hidden; }
+  .table-header { padding: 14px 20px; border-bottom: 1px solid #e4e4e7; display: flex; align-items: center; justify-content: space-between; }
+  .table-header-title { font-size: 14px; font-weight: 600; color: #111; }
+  .table-scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  thead th { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; padding: 10px 16px; text-align: left; border-bottom: 1px solid #e4e4e7; background: #fafafa; white-space: nowrap; }
+  tbody tr { border-bottom: 1px solid #f0f0f0; transition: background 0.1s; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: #fafafa; }
+  tbody td { padding: 10px 16px; color: #333; vertical-align: middle; }
+  .user-cell { display: flex; align-items: center; gap: 10px; }
+  .avatar { width: 28px; height: 28px; border-radius: 50%; background: #5865F2; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: #fff; flex-shrink: 0; overflow: hidden; }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .username { font-weight: 500; color: #111; }
+  .user-id { font-size: 12px; color: #aaa; }
+  .badge { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 7px; border-radius: 4px; }
+  .badge-new { background: #e8f5e9; color: #2e7d32; }
+  .badge-repeat { background: #e3f2fd; color: #1565c0; }
+  .ip { font-family: monospace; font-size: 12px; color: #666; }
+  .time { font-size: 12px; color: #555; white-space: nowrap; }
+  .time-ago { font-size: 12px; color: #aaa; }
+
+  /* Filter bar */
+  .filter-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .filter-bar input { font-size: 12px; height: 30px; padding: 0 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #111; width: 200px; }
+  .filter-bar select { font-size: 12px; height: 30px; padding: 0 8px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #111; }
+  .count-label { font-size: 12px; color: #999; }
+
+  .empty { text-align: center; padding: 40px; color: #aaa; font-size: 14px; }
+
+  @media (max-width: 640px) {
+    .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px; }
+    .nav { flex-wrap: wrap; gap: 5px; }
+    .nav a, .nav-group-btn { font-size: 12px; padding: 3px 7px; }
+    .nav-menu { left: 0; right: auto; }
+    .main { padding: 12px; }
+    .stat-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 16px; }
+    .stat-card { padding: 10px 12px; }
+    .stat-value { font-size: 20px; }
+    .table-header { flex-direction: column; gap: 10px; padding: 12px 14px; align-items: flex-start; }
+    .filter-bar { width: 100%; }
+    .filter-bar input { width: 100%; }
+    thead th { padding: 8px 10px; font-size: 12px; }
+    tbody td { padding: 8px 10px; font-size: 12px; }
+    .user-cell { gap: 8px; }
+    .avatar { width: 24px; height: 24px; font-size: 12px; }
+    .ip { font-size: 12px; }
+  }
+  /* ── Theme toggle ── */
+  .theme-toggle { display: none; font-size: 16px; background: #f4f4f5; border: 1px solid #ddd; border-radius: 6px; padding: 4px 8px; cursor: pointer; line-height: 1; transition: background 0.15s; flex-shrink: 0; }
+  .theme-toggle:hover { background: #e8e8ea; }
+  /* ── Dark mode ── */
+  html[data-theme="dark"] { color-scheme: dark; }
+  html[data-theme="dark"] body { background: #111113; color: #f0f0f0; }
+  html[data-theme="dark"] .header { background: #1c1c1f; border-bottom-color: #303033; }
+  html[data-theme="dark"] .header-title { color: #f0f0f0; }
+  html[data-theme="dark"] .header-sub { color: #888; }
+  html[data-theme="dark"] .nav a { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .nav a:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .nav-group-btn { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .nav-group-btn:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav-group-btn.active, html[data-theme="dark"] .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .nav-menu { background: #1c1c1f; border-color: #383838; box-shadow: 0 6px 20px rgba(0,0,0,0.45); }
+  html[data-theme="dark"] .nav-menu a { color: #bbbbc5; }
+  html[data-theme="dark"] .nav-menu a:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav-menu a.active { background: #5865F2; color: #fff; }
+  html[data-theme="dark"] .stat-card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .stat-value { color: #f0f0f0; }
+  html[data-theme="dark"] .table-card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .table-header { border-bottom-color: #303033; }
+  html[data-theme="dark"] .table-header-title { color: #f0f0f0; }
+  html[data-theme="dark"] thead th { background: #161618; border-bottom-color: #303033; color: #888; }
+  html[data-theme="dark"] tbody tr { border-bottom-color: #2a2a2d; }
+  html[data-theme="dark"] tbody tr:hover { background: #222226; }
+  html[data-theme="dark"] tbody td { color: #ccc; }
+  html[data-theme="dark"] .username { color: #f0f0f0; }
+  html[data-theme="dark"] .filter-bar input, html[data-theme="dark"] .filter-bar select { background: #252528; border-color: #383838; color: #f0f0f0; }
+  html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
+  html[data-theme="dark"] .theme-toggle:hover { background: #2e2e32; }
+
+  /* ── Traffic page ── */
+  .main { max-width: 1280px; }
+  .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+  .toolbar select { font-size: 12px; height: 30px; padding: 0 8px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #111; }
+  .toolbar .updated { font-size: 12px; color: #999; }
+  .panel { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; margin-bottom: 20px; overflow: hidden; }
+  .panel-head { padding: 12px 20px; border-bottom: 1px solid #e4e4e7; font-size: 14px; font-weight: 600; color: #111; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .panel-body { padding: 14px 20px; }
+  .panel-note { font-size: 12px; color: #888; padding: 10px 20px 0; }
+  .chart-box { position: relative; height: 260px; }
+  .grid-2 { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 20px; }
+  .spike { font-size: 13px; padding: 6px 0; border-bottom: 1px solid #f0f0f0; }
+  .spike:last-child { border-bottom: none; }
+  .spike strong { color: #c62828; }
+  .muted { color: #888; font-size: 12px; }
+  .good { color: #2e7d32; }
+  tr.clickable { cursor: pointer; }
+  td.wrap { white-space: normal; word-break: break-all; min-width: 240px; max-width: 360px; }
+  .kv { display: grid; grid-template-columns: 220px minmax(0,1fr); gap: 4px 12px; font-size: 13px; }
+  .kv div:nth-child(odd) { color: #888; }
+  .kv div:nth-child(even) { font-family: monospace; word-break: break-all; }
+  .close-btn { font-family: inherit; font-size: 12px; padding: 3px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #555; cursor: pointer; }
+  .privacy-note { font-size: 12px; color: #888; margin: 4px 0 24px; line-height: 1.5; }
+  @media (max-width: 900px) { .grid-2 { grid-template-columns: minmax(0,1fr); } .kv { grid-template-columns: minmax(0,1fr); } }
+  html[data-theme="dark"] .toolbar select { background: #252528; border-color: #383838; color: #f0f0f0; }
+  html[data-theme="dark"] .panel { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .panel-head { border-bottom-color: #303033; color: #f0f0f0; }
+  html[data-theme="dark"] .spike { border-bottom-color: #2a2a2d; color: #ccc; }
+  html[data-theme="dark"] .spike strong { color: #ef9a9a; }
+  html[data-theme="dark"] .close-btn { background: #252528; border-color: #383838; color: #bbbbc5; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <div>
+      <div class="header-title">Traffic</div>
+      <div class="header-sub">Restock Dashboard</div>
+    </div>
+  </div>
+  <div class="nav">
+    <a href="/">Dashboard</a>
+    <a href="/map">Map</a>
+    <a href="/status">Status</a>
+    <a href="/monitor-alerts-setup">Monitor Alerts Setup</a>
+    <a href="/tips">Tips, Tricks, and Guide</a>
+    <div class="nav-group">
+      <button class="nav-group-btn active" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        <a href="/admin">Visitor Log</a>
+        <a href="/admin/traffic" class="active">Traffic</a>
+        <a href="/contributors">Contributors</a>
+        <a href="/invite-network">Network</a>
+        <a href="/tracker-admin">Tracker Management</a>
+        {% if request.session.get('mod', False) %}<a href="/auto-delete-rules">Auto-Delete Rules</a>{% endif %}
+      </div>
+    </div>
+    <a href="/raffle-wheel">Raffle</a>
+    <div class="nav-group">
+      <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Nexus Playground<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        <a href="/portfolios">Portfolios</a>
+        <a href="/card-tracker">Tracker</a>
+        <a href="/grading-calculator">Grading Calculator</a>
+        <a href="/catalog">Catalog</a>
+        {% if request.session.get('inventory_access', False) %}<a href="/inventory">Inventory</a>{% endif %}
+      </div>
+    </div>
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
+    <a href="/logout">Log out</a>
+  </div>
+</div>
+
+<div class="main">
+
+  <div class="toolbar">
+    <label for="windowSelect" class="muted">Show</label>
+    <select id="windowSelect">
+      <option value="1h">Last hour</option>
+      <option value="24h" selected>Last day</option>
+      <option value="7d">Last week</option>
+    </select>
+    <span class="updated" id="updatedLabel"></span>
+  </div>
+
+  <div class="stat-grid traffic" id="tiles"></div>
+
+  <div class="panel">
+    <div class="panel-head">Requests over time</div>
+    <div class="panel-body"><div class="chart-box"><canvas id="seriesChart"></canvas></div></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">Unusually busy hours (last 2 days)</div>
+    <div class="panel-body" id="spikes"></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">Last 90 days, day by day</div>
+    <div class="panel-body"><div class="chart-box"><canvas id="longChart"></canvas></div></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">Busiest visitors</div>
+    <div class="panel-note">Click a row to see that visitor's recent requests.</div>
+    <div class="table-scroll"><table><thead id="ipsHead"></thead><tbody id="ipsBody"></tbody></table></div>
+  </div>
+
+  <div class="panel" id="detailPanel" style="display:none;">
+    <div class="panel-head"><span id="detailTitle">Visitor</span><button class="close-btn" id="detailClose">Close</button></div>
+    <div class="table-scroll"><table><thead id="detailHead"></thead><tbody id="detailBody"></tbody></table></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">Busiest visitors who are not signed in</div>
+    <div class="table-scroll"><table><thead id="outHead"></thead><tbody id="outBody"></tbody></table></div>
+  </div>
+
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-head">Apps and browsers</div>
+      <div class="table-scroll"><table><thead id="agentsHead"></thead><tbody id="agentsBody"></tbody></table></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">Busiest pages</div>
+      <div class="table-scroll"><table><thead id="pathsHead"></thead><tbody id="pathsBody"></tbody></table></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">Turned away or slowed down (most recent 50)</div>
+    <div class="table-scroll"><table><thead id="blockedHead"></thead><tbody id="blockedBody"></tbody></table></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">How this server sees your connection</div>
+    <div class="panel-note">Your own request just now, shown only to you and never saved. Use it to check whether the address headers can be trusted: add a made-up X-Real-IP header to a test request and see whether it comes through here.</div>
+    <div class="panel-body"><div class="kv" id="ipCheck"></div></div>
+  </div>
+
+  <p class="privacy-note">Visitors are shown by network (first part of the IP address) and a scrambled ID; full IP addresses are never stored. Detailed requests are kept 14 days; hourly totals for 400 days.</p>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+(function(){
+  'use strict';
+  var charts = {};
+  var loadSeq = 0;
+
+  // Every value from the server goes in through textContent, never innerHTML.
+  function el(tag, text, cls){
+    var e = document.createElement(tag);
+    if (text !== undefined && text !== null) e.textContent = String(text);
+    if (cls) e.className = cls;
+    return e;
+  }
+  function clear(node){ while (node.firstChild) node.removeChild(node.firstChild); }
+  function num(n){ return (n === null || n === undefined) ? '—' : Number(n).toLocaleString(); }
+  function fmtTime(s){
+    if (!s) return '—';
+    return new Date(s).toLocaleString('en-US', {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'});
+  }
+  function isDark(){ return document.documentElement.getAttribute('data-theme') === 'dark'; }
+
+  function fillTable(head, body, cols, rows, opts){
+    opts = opts || {};
+    clear(head); clear(body);
+    var tr = el('tr');
+    cols.forEach(function(c){ tr.appendChild(el('th', c.label)); });
+    head.appendChild(tr);
+    if (!rows.length){
+      var er = el('tr'), td = el('td', 'Nothing to show for this period.', 'empty');
+      td.colSpan = cols.length; er.appendChild(td); body.appendChild(er);
+      return;
+    }
+    rows.forEach(function(r){
+      var row = el('tr');
+      cols.forEach(function(c){
+        row.appendChild(el('td', c.value(r), c.cls));
+      });
+      if (opts.onClick){
+        row.className = 'clickable';
+        row.addEventListener('click', function(){ opts.onClick(r); });
+      }
+      body.appendChild(row);
+    });
+  }
+
+  function visitorCols(){
+    return [
+      {label:'Network', value:function(r){ return r.ip_prefix; }, cls:'ip'},
+      {label:'Scrambled ID', value:function(r){ return r.ip_hash; }, cls:'ip'},
+      {label:'Requests', value:function(r){ return num(r.requests); }},
+      {label:'Different pages', value:function(r){ return num(r.paths); }},
+      {label:'Page not found', value:function(r){ return num(r.s404); }},
+      {label:'Slowed down', value:function(r){ return num(r.s429); }},
+      {label:'Signed in as', value:function(r){ return r.user_ids.length ? r.user_ids.join(', ') : '—'; }},
+      {label:'Automated', value:function(r){ return Math.round(r.automated_share) + '%'; }},
+      {label:'Usual app or browser', value:function(r){ return r.top_agent || '(none given)'; }, cls:'wrap'},
+      {label:'First seen', value:function(r){ return fmtTime(r.first_seen); }},
+      {label:'Last seen', value:function(r){ return fmtTime(r.last_seen); }}
+    ];
+  }
+
+  function renderTiles(t){
+    var grid = document.getElementById('tiles');
+    clear(grid);
+    var tiles = [
+      ['Requests', num(t.requests), ''],
+      ['Different visitors', num(t.visitors), 'by scrambled ID'],
+      ['Signed in', t.signed_in_share + '%', 'of requests'],
+      ['Automated clients', t.automated_share + '%', 'of requests'],
+      ['Not allowed (403)', num(t.s403), ''],
+      ['Page not found (404)', num(t.s404), ''],
+      ['Slowed down for too many requests', num(t.s429), ''],
+      ['Server errors', num(t.s5xx), t.p95_ms === null ? '' : 'Slowest 5% took ' + num(t.p95_ms) + ' ms']
+    ];
+    tiles.forEach(function(x){
+      var card = el('div', null, 'stat-card');
+      card.appendChild(el('div', x[0], 'stat-label'));
+      card.appendChild(el('div', x[1], 'stat-value'));
+      if (x[2]) card.appendChild(el('div', x[2], 'stat-sub'));
+      grid.appendChild(card);
+    });
+  }
+
+  function drawChart(id, cfg, stacked){
+    if (typeof Chart === 'undefined'){
+      var box = document.getElementById(id).parentNode;
+      clear(box); box.appendChild(el('div', 'The chart could not be loaded.', 'empty'));
+      return;
+    }
+    if (charts[id]) charts[id].destroy();
+    var grid = isDark() ? '#2e2e32' : '#ececee';
+    var text = isDark() ? '#bbbbc5' : '#555';
+    cfg.options = cfg.options || {};
+    cfg.options.responsive = true;
+    cfg.options.maintainAspectRatio = false;
+    cfg.options.animation = false;
+    cfg.options.plugins = {legend:{labels:{color:text, boxWidth:12}}};
+    cfg.options.scales = cfg.options.scales || {};
+    ['x','y'].forEach(function(a){
+      var s = cfg.options.scales[a] = cfg.options.scales[a] || {};
+      s.stacked = stacked;
+      s.ticks = Object.assign({color:text}, s.ticks || {});
+      s.grid = {color:grid};
+    });
+    charts[id] = new Chart(document.getElementById(id), cfg);
+  }
+
+  function renderSeries(d){
+    var labels = d.series.map(function(p){
+      var dt = new Date(p.t);
+      return d.window === '7d'
+        ? dt.toLocaleString('en-US', {month:'short', day:'numeric', hour:'numeric'})
+        : dt.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
+    });
+    function col(key){ return d.series.map(function(p){ return p[key]; }); }
+    drawChart('seriesChart', {type:'bar', data:{labels:labels, datasets:[
+      {label:'Normal', data:col('ok'), backgroundColor:'#5865F2'},
+      {label:'Not allowed or not found', data:col('client_errors'), backgroundColor:'#f59e0b'},
+      {label:'Slowed down for too many requests', data:col('throttled'), backgroundColor:'#ef4444'},
+      {label:'Server errors', data:col('server_errors'), backgroundColor:'#7f1d1d'}
+    ]}, options:{scales:{x:{ticks:{maxTicksLimit:12}}}}}, true);
+  }
+
+  function renderLong(d){
+    var days = d.long_term;
+    function line(label, key, color, dash){
+      return {label:label, data:days.map(function(x){ return x[key]; }), borderColor:color,
+              backgroundColor:color, tension:0.2, pointRadius:1, borderDash:dash || []};
+    }
+    drawChart('longChart', {type:'line', data:{labels:days.map(function(x){ return x.day; }), datasets:[
+      line('Requests', 'requests', '#5865F2'),
+      line('Automated clients', 'automated', '#f59e0b'),
+      line('Slowed down', 's429', '#ef4444'),
+      line('Server errors', 's5xx', '#7f1d1d'),
+      line('Not saved (too busy)', 'dropped', '#9ca3af', [4, 3])
+    ]}, options:{scales:{x:{ticks:{maxTicksLimit:10}}, y:{beginAtZero:true}}}}, false);
+  }
+
+  function renderSpikes(d){
+    var box = document.getElementById('spikes');
+    clear(box);
+    if (!d.spikes.length){
+      box.appendChild(el('div', 'No unusually busy hours in the last 2 days.', 'muted good'));
+      return;
+    }
+    d.spikes.forEach(function(s){
+      var line = el('div', null, 'spike');
+      line.appendChild(el('strong', fmtTime(s.hour)));
+      var text = ' — ' + num(s.requests) + ' requests';
+      if (s.ratio !== null) text += ', about ' + s.ratio + ' times the usual ' + num(s.typical) + ' an hour';
+      line.appendChild(document.createTextNode(text));
+      box.appendChild(line);
+    });
+  }
+
+  function renderIpCheck(c){
+    var box = document.getElementById('ipCheck');
+    clear(box);
+    [['X-Real-IP', c.x_real_ip], ['X-Forwarded-For', c.x_forwarded_for],
+     ['CF-Connecting-IP', c.cf_connecting_ip], ['True-Client-IP', c.true_client_ip],
+     ['Connection address (socket)', c.socket_peer],
+     ['Address the site decided to use', c.chosen]].forEach(function(p){
+      box.appendChild(el('div', p[0]));
+      box.appendChild(el('div', (p[1] === null || p[1] === undefined) ? '(not sent)' : p[1]));
+    });
+  }
+
+  function showDetail(r){
+    var panel = document.getElementById('detailPanel');
+    var head = document.getElementById('detailHead'), body = document.getElementById('detailBody');
+    panel.style.display = '';
+    document.getElementById('detailTitle').textContent = 'Recent requests from ' + r.ip_prefix + ' (' + r.ip_hash + ')';
+    fillTable(head, body, [{label:'Loading…', value:function(){ return ''; }}], []);
+    fetch('/admin/traffic/ip/' + encodeURIComponent(r.ip_hash), {credentials:'same-origin'})
+      .then(function(resp){ if (!resp.ok) throw new Error('bad'); return resp.json(); })
+      .then(function(d){
+        fillTable(head, body, [
+          {label:'Time', value:function(x){ return fmtTime(x.ts); }},
+          {label:'Request', value:function(x){ return x.method + ' ' + x.path; }, cls:'wrap'},
+          {label:'Result', value:function(x){ return x.status; }},
+          {label:'Took (ms)', value:function(x){ return num(x.duration_ms); }},
+          {label:'Visitor', value:function(x){ return x.visitor + (x.user_id ? ' ' + x.user_id : ''); }},
+          {label:'App or browser', value:function(x){ return x.user_agent || '(none given)'; }, cls:'wrap'}
+        ], d.requests);
+      })
+      .catch(function(){
+        fillTable(head, body, [{label:'Could not load this visitor.', value:function(){ return ''; }}], []);
+      });
+    panel.scrollIntoView({behavior:'smooth', block:'nearest'});
+  }
+
+  function render(d){
+    renderTiles(d.totals);
+    renderSeries(d);
+    renderSpikes(d);
+    renderLong(d);
+    fillTable(document.getElementById('ipsHead'), document.getElementById('ipsBody'), visitorCols(), d.top_ips, {onClick:showDetail});
+    fillTable(document.getElementById('outHead'), document.getElementById('outBody'), visitorCols(), d.top_signed_out, {onClick:showDetail});
+    fillTable(document.getElementById('agentsHead'), document.getElementById('agentsBody'), [
+      {label:'App or browser', value:function(r){ return r.user_agent || '(none given)'; }, cls:'wrap'},
+      {label:'Requests', value:function(r){ return num(r.requests); }},
+      {label:'Visitors', value:function(r){ return num(r.ips); }},
+      {label:'Automated', value:function(r){ return r.automated ? 'Yes' : 'No'; }}
+    ], d.top_agents);
+    fillTable(document.getElementById('pathsHead'), document.getElementById('pathsBody'), [
+      {label:'Page', value:function(r){ return r.page; }, cls:'wrap'},
+      {label:'Requests', value:function(r){ return num(r.requests); }},
+      {label:'Not allowed or not found', value:function(r){ return num(r.s4xx); }},
+      {label:'Average time (ms)', value:function(r){ return num(r.avg_ms); }}
+    ], d.top_paths);
+    fillTable(document.getElementById('blockedHead'), document.getElementById('blockedBody'), [
+      {label:'Time', value:function(r){ return fmtTime(r.ts); }},
+      {label:'What happened', value:function(r){ return r.status === 429 ? 'Slowed down for too many requests' : 'Not allowed (403)'; }},
+      {label:'Network', value:function(r){ return r.ip_prefix; }, cls:'ip'},
+      {label:'Scrambled ID', value:function(r){ return r.ip_hash; }, cls:'ip'},
+      {label:'Page', value:function(r){ return r.path; }, cls:'wrap'},
+      {label:'Visitor', value:function(r){ return r.visitor; }},
+      {label:'App or browser', value:function(r){ return r.user_agent || '(none given)'; }, cls:'wrap'}
+    ], d.blocked, {onClick:showDetail});
+    renderIpCheck(d.ip_check);
+    document.getElementById('updatedLabel').textContent = 'Updated ' + new Date(d.generated_at).toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit', second:'2-digit'});
+  }
+
+  function load(){
+    var seq = ++loadSeq;
+    var w = document.getElementById('windowSelect').value;
+    fetch('/admin/traffic/api?window=' + encodeURIComponent(w), {credentials:'same-origin'})
+      .then(function(resp){ if (!resp.ok) throw new Error('bad'); return resp.json(); })
+      .then(function(d){ if (seq === loadSeq) render(d); })
+      .catch(function(){ document.getElementById('updatedLabel').textContent = 'Could not load traffic data.'; });
+  }
+
+  document.getElementById('windowSelect').addEventListener('change', load);
+  document.getElementById('detailClose').addEventListener('click', function(){ document.getElementById('detailPanel').style.display = 'none'; });
+  load();
+  setInterval(load, 60000);
+})();
+(function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();};upd();})();
+</script>
+<script>
+// Admin Tools dropdown — click the button to open, click anywhere else or press Esc to close.
+function closeNavGroups(){
+  document.querySelectorAll('.nav-group.open').forEach(function(g){
+    g.classList.remove('open');
+    var b = g.querySelector('.nav-group-btn');
+    if (b) b.setAttribute('aria-expanded', 'false');
+  });
+}
+function toggleNavGroup(ev){
+  ev.preventDefault();
+  ev.stopPropagation();
+  var btn = ev.currentTarget, grp = btn.parentElement, wasOpen = grp.classList.contains('open');
+  closeNavGroups();
+  if (!wasOpen){ grp.classList.add('open'); btn.setAttribute('aria-expanded', 'true'); }
+}
+document.addEventListener('click', closeNavGroups);
+document.addEventListener('keydown', function(ev){ if (ev.key === 'Escape') closeNavGroups(); });
+</script>
+</body>
+</html>
