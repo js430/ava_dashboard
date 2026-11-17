@@ -3,6 +3,43 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-11-16 — Oversized uploads get a 413, not a 500
+
+Jeffrey chose **B: subclass the size-limit library.** A body over
+`MAX_REQUEST_BODY_BYTES` (default 10 MB) now gets **413** with
+`{"detail": "That upload is too large. Please try a smaller photo or file."}`.
+
+- **Root cause (reproduced on FastAPI 0.162 / Starlette 1.10):**
+  `content-size-limit-asgi` raises its error from inside the body read.
+  Our three `BaseHTTPMiddleware` classes (security headers, CSRF, role
+  re-check) run every body read inside an anyio task group, so the error
+  surfaced as an `ExceptionGroup`. Starlette picks handlers by the
+  exception's own class, matched nothing, and returned 500. On routes with a
+  typed body (`payload: dict`, Pydantic models) FastAPI caught the wrapped
+  error first and returned **400 "There was an error parsing the body"**. The
+  old comment claiming `RequestTooLarge` already gave a 413 was wrong.
+- **Fix (`main.BodySizeLimitMiddleware`):** subclasses
+  `ContentSizeLimitMiddleware`, keeps its byte counting (`receive_wrapper`),
+  flags the request when the limit trips, holds back whatever the app then
+  tries to send (the 400 or the error), and sends the 413 itself. Any other
+  error still goes up as before (500). If a response had already started
+  before the limit tripped, the error is re-raised and the connection drops.
+- **Unchanged:** the limit, and that it counts real bytes as they arrive.
+  Content-Length is never trusted (a test sends a false one). Reading stops
+  at the first chunk over the limit.
+- **The 413 skips the inner middleware**, so it carries only
+  `X-Content-Type-Options: nosniff`, not the full security-header set. The
+  old 500 carried none.
+- **Rejected:** A, our own middleware replacing the dependency (same result,
+  more new code, and a dependency removal). C, rewriting the three
+  `BaseHTTPMiddleware` classes as pure ASGI (touches security code for an
+  error code; FastAPI's 400 would remain; any future `BaseHTTPMiddleware`
+  brings the bug back). Not done: an early reject on a declared oversized
+  Content-Length (offered, not chosen).
+- **Verified:** `tests/test_body_limit.py`, 12 checks, run on Python 3.12
+  (3.11 wouldn't start on the build machine) against the real app; the same
+  test fails 6 checks on the old code. **Not verified:** under uvicorn on
+  Railway/Render, or the scanner page's handling of a 413 in a browser.
 ## 2026-11-16 — Traffic monitoring: request log + admin-only `/admin/traffic` (branch traffic-monitoring)
 
 **Hosting, confirmed:** the app runs on **Render** (live headers `rndr-id`,

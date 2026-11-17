@@ -632,13 +632,71 @@ app.add_middleware(
 )
 
 
+REQUEST_TOO_LARGE_MESSAGE = "That upload is too large. Please try a smaller photo or file."
+
+
 class RequestTooLarge(StarletteHTTPException):
     """ContentSizeLimitMiddleware instantiates its exception_cls with a single
-    positional message string — this adapts that to a real HTTPException so
-    FastAPI's default handling turns it into a proper 413 response, instead
-    of an unhandled 500."""
+    positional message string (bytes read vs. limit). That text goes to the
+    log; the visitor gets REQUEST_TOO_LARGE_MESSAGE. Still an HTTPException
+    so that, if it ever reaches FastAPI's handlers unwrapped, it is a 413."""
     def __init__(self, message: str):
-        super().__init__(status_code=413, detail=message)
+        super().__init__(status_code=413, detail=REQUEST_TOO_LARGE_MESSAGE)
+        self.log_message = message
+
+
+class BodySizeLimitMiddleware(ContentSizeLimitMiddleware):
+    """ContentSizeLimitMiddleware that answers its own limit error with a 413.
+
+    The library raises RequestTooLarge from inside the body read (receive),
+    and nothing on the way back up turns that into a 413:
+      - our BaseHTTPMiddleware classes run every receive() inside an anyio
+        task group, so the error comes out wrapped in an ExceptionGroup, which
+        matches no Starlette handler -> 500;
+      - on a route with a typed body, FastAPI catches the wrapped error while
+        parsing and answers 400 "There was an error parsing the body".
+    So this layer notes when its own limit trips (byte counting is still the
+    library's), holds back whatever the app then tries to send, swallows the
+    resulting error, and sends the 413 itself.
+    """
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        counted_receive = self.receive_wrapper(receive)   # library's byte count
+        too_large = False
+        response_started = False
+
+        async def receive_flagging():
+            nonlocal too_large
+            try:
+                return await counted_receive()
+            except RequestTooLarge:
+                too_large = True
+                raise
+
+        async def send_unless_too_large(message):
+            nonlocal response_started
+            if too_large and not response_started:
+                return          # the app's 400/500 for the aborted read; 413 below
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive_flagging, send_unless_too_large)
+        except Exception:
+            if not too_large or response_started:
+                raise           # unrelated error, or too late to send a 413
+        if not too_large or response_started:
+            return
+        logger.warning("Request body over the %d-byte limit on %s %s",
+                       self.max_content_size, scope.get("method"), scope.get("path"))
+        response = JSONResponse({"detail": REQUEST_TOO_LARGE_MESSAGE},
+                                status_code=413,
+                                headers={"X-Content-Type-Options": "nosniff"})
+        await response(scope, receive, send)
 
 
 MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_BYTES", str(10 * 1024 * 1024)))
@@ -647,7 +705,7 @@ MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_BYTES", str(10 * 1024 *
 # entirely with chunked transfer-encoding); this counts actual bytes off the
 # ASGI receive stream as they arrive and aborts before the body is fully
 # buffered, regardless of what the request claims about its own size.
-app.add_middleware(ContentSizeLimitMiddleware,
+app.add_middleware(BodySizeLimitMiddleware,
                    max_content_size=MAX_REQUEST_BODY_BYTES,
                    exception_cls=RequestTooLarge)
 # Added LAST on purpose: add_middleware puts the newest one outermost, so the
