@@ -63,6 +63,7 @@ import optcg
 import lorcana
 import gundam
 import games
+import traffic
 
 load_dotenv()
 
@@ -300,6 +301,12 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Monitor alerts schema ensure failed — "
                          "/monitor-alerts-setup may be unavailable")
+    try:
+        # Its own step: the request log. If this fails the site still runs;
+        # rows just can't be saved until the tables exist.
+        await traffic.ensure_traffic_schema(app.state.db)
+    except Exception:
+        logger.exception("Traffic schema ensure failed — /admin/traffic may be unavailable")
     scheduler_task = asyncio.create_task(_card_tracker_daily_scheduler(app))
     # Background, never awaited: seeding the catalog must not delay startup or
     # take the app down if PPT is unreachable.
@@ -319,6 +326,10 @@ async def lifespan(app: FastAPI):
     lorcana_sync_task = asyncio.create_task(_lorcana_sync_scheduler(app))
     # Daily: TCGCSV is rebuilt once a day and asks for one sync a day.
     gundam_sync_task = asyncio.create_task(_gundam_sync_scheduler(app))
+    # Traffic log: copies the in-memory request buffer into the database every
+    # few seconds, and keeps the hourly totals and old-row clean-up going.
+    traffic_flush_task = asyncio.create_task(traffic.run_flusher(app))
+    traffic_maintenance_task = asyncio.create_task(traffic.run_maintenance(app))
     try:
         yield
     finally:
@@ -331,6 +342,10 @@ async def lifespan(app: FastAPI):
         one_piece_sync_task.cancel()
         lorcana_sync_task.cancel()
         gundam_sync_task.cancel()
+        traffic_flush_task.cancel()
+        traffic_maintenance_task.cancel()
+        # Save whatever is still buffered before the pool goes away. Never raises.
+        await traffic.flush_now(app.state.db)
         await app.state.db.close()
 
 
@@ -693,6 +708,10 @@ MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_BYTES", str(10 * 1024 *
 app.add_middleware(BodySizeLimitMiddleware,
                    max_content_size=MAX_REQUEST_BODY_BYTES,
                    exception_cls=RequestTooLarge)
+# Added LAST on purpose: add_middleware puts the newest one outermost, so the
+# traffic log also sees requests the inner layers answer on their own (413 from
+# the size limit, CSRF 403s). It only appends to an in-memory buffer.
+app.add_middleware(traffic.TrafficLogMiddleware, ip_getter=get_real_ip)
 
 templates = Jinja2Templates(directory="templates")
 # Every page's game pickers are built from the one registry (games.py).
@@ -2172,6 +2191,46 @@ async def admin_api(
         }
         for r in rows
     ])
+
+# ---- Traffic monitoring (admin-only) ----
+@app.get("/admin/traffic", response_class=HTMLResponse)
+async def admin_traffic_page(request: Request, user=Depends(get_current_user)):
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return templates.TemplateResponse(request, "traffic.html", {
+        "request": request,
+        "username": user["username"],
+        "avatar": user.get("avatar"),
+        "user_id": user["id"],
+        "is_admin": True,
+        "is_mod": request.session.get("mod", False),
+    })
+
+@app.get("/admin/traffic/api")
+async def admin_traffic_api(
+    request: Request,
+    window: str = "24h",
+    user=Depends(get_current_user)
+):
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    report = await traffic.traffic_report(request.app.state.db, window)
+    # The admin's own request, as the app saw it (see traffic.ip_check_info).
+    report["ip_check"] = traffic.ip_check_info(request, get_real_ip(request))
+    return JSONResponse(report, headers={"Cache-Control": "no-store"})
+
+@app.get("/admin/traffic/ip/{ip_hash}")
+async def admin_traffic_ip(
+    request: Request,
+    ip_hash: str,
+    user=Depends(get_current_user)
+):
+    if int(user["id"]) not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    detail = await traffic.ip_detail(request.app.state.db, ip_hash)
+    if detail is None:
+        raise HTTPException(status_code=400, detail="That visitor ID is not valid.")
+    return JSONResponse(detail, headers={"Cache-Control": "no-store"})
 
 # ---- Raffle Wheel (admin-only) ----
 # The raffles / raffle_entries tables are owned by the bot, so the table names
