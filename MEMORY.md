@@ -69,7 +69,8 @@ Gundam — a new 7z/PPMd dependency and ~55 MB download for one game; C: wait
   family as live PPT). 2 credits per card; budget 2,500 cards/day and it stops
   when PPT reports fewer than 6,000 credits left (`WEEKLY_BACKFILL_PPT_RESERVE`).
 - **Riftbound** — TCGGO `/history-prices` (`riftbound.fetch_history`), up to
-  6 requests per card; budget 200 cards/day of the 2,500/day plan.
+  6 requests per card; budget 200 cards/day of the 2,500/day plan (now up
+  to 10 requests and 150 cards/day for the 6-month window — see below).
 - **Not covered:** Lorcana (Lorcast has no history; TCGplayer matched
   Lorcast on only 474 of 816 printings, so mixing would invent small moves)
   and Gundam (history only in TCGCSV archives). They fill in on their own.
@@ -84,6 +85,31 @@ retry after 7 days; a 429/quota stops that game until the next pass. Runs
 every 3 h from 15 min after start; when it adds weeks and this week's report
 exists, the report is rebuilt. `WEEKLY_BACKFILL=0` turns it off; per-game
 budgets are `WEEKLY_BACKFILL_{OP,PPT,RIFTBOUND}_PER_DAY`.
+
+### 1 month / 3 months / 6 months (same day)
+
+Jeffrey chose **A: a period switch for risers and fallers only** (rejected
+B: longer versions of watch / below usual / cooling — new rules to tune and
+word, ~4× the stored rows; C: compute any range on demand — scans months of
+prices for every card on every page load).
+
+- Stored with the weekly report as extra lists `risers_1m`, `fallers_1m`,
+  `_3m`, `_6m` (`weekly_report.PERIODS`, no schema change). 1 week still shows
+  all five lists; the longer periods show only risers and fallers.
+- **Periods are in weeks** (4 / 13 / 26) before the report's week. "Then" is
+  the newest price at or before that point, at most 1 week older (1 month) or
+  2 weeks older (3 and 6 months) — a missing week doesn't drop a card, a much
+  older price never stands in. No anchor → the card isn't on that list.
+- Retention 26 → 30 weeks; tracked snapshot lookback 120 → 200 days.
+- **Backfill 16 → 28 weeks.** Cards already done with 16 weeks
+  (`catalog_history_backfill.window_weeks`, default 16 for old rows) are
+  fetched once more, after never-fetched cards. OPTCG now asks `range=1y`;
+  Riftbound reads up to 10 pages (budget 200 → 150 cards/day); PPT stays at
+  180 days (the longest the tracker's Backdate has used on this plan), so
+  Pokémon catalog cards reach ~25 weeks and their 6-month list fills in a week
+  or two later.
+- Still limited: Lorcana and Gundam (no backfill) need 3 / 6 months of live
+  data; One Piece cards tracked from JustTCG (90 days) miss the 6-month list.
 
 ## 2026-11-16 — Oversized uploads get a 413, not a 500
 

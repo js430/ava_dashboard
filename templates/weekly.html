@@ -39,7 +39,7 @@
   .table-header-title { font-size: 14px; font-weight: 600; color: #111; }
   .list-blurb { font-size: 12px; color: #999; }
   .btn-group { display: flex; }
-  #gameSwitch { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  #gameSwitch, #periodSwitch { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .btn-group button { font-size: 12px; height: 30px; padding: 0 11px; border: 1px solid #ddd; background: #fff; color: #333; cursor: pointer; white-space: nowrap; }
   .btn-group button:first-child { border-radius: 6px 0 0 6px; }
   .btn-group button:last-child { border-radius: 0 6px 6px 0; }
@@ -155,6 +155,7 @@
   <div class="table-card">
     <div class="table-header">
       <div class="btn-group" id="gameSwitch"></div>
+      <div class="btn-group" id="periodSwitch" aria-label="Period"></div>
       <select class="week-select" id="weekSelect" onchange="onWeekChange()" aria-label="Week"></select>
       <div class="btn-group">
         <button id="scopeAll" class="active" onclick="setScope('all')">All cards</button>
@@ -183,8 +184,12 @@ const BLURBS = {
 };
 const EMPTY_LIST = 'Nothing here this week.';
 const EMPTY_ALL = 'Not enough price history yet — this fills in after a week or two.';
+const EMPTY_PERIOD = 'Not enough price history for this period yet.';
+// "past month" / "past 3 months" phrasing for the longer risers/fallers lists.
+const PERIOD_PHRASE = {'1m': 'over the past month', '3m': 'over the past 3 months', '6m': 'over the past 6 months'};
 
 let DATA = null;      // last API response
+let period = '1w';
 let gameKey = null;
 let scope = 'all';
 let myIds = new Set();
@@ -199,10 +204,11 @@ function fmtPct(v){
   const p = Number(v);
   return (p > 0 ? '+' : '') + p.toFixed(Math.abs(p) < 10 ? 1 : 0) + '%';
 }
-// A report stored under Monday W covers the week that just ended (W-7 .. W-1).
-function fmtWeek(iso){
+// A report stored under Monday W covers the week that just ended (W-7 .. W-1);
+// a longer period reaches `weeks` weeks back from W.
+function fmtWeek(iso, weeks){
   const end = new Date(iso + 'T00:00:00Z');
-  const start = new Date(end.getTime() - 7 * 86400000);
+  const start = new Date(end.getTime() - 7 * (weeks || 1) * 86400000);
   const last = new Date(end.getTime() - 86400000);
   const o = {month: 'short', day: 'numeric', timeZone: 'UTC'};
   return start.toLocaleDateString(undefined, o) + ' – ' +
@@ -234,12 +240,21 @@ async function load(week){
   render();
 }
 
+// The selected period: {key, label, weeks, lists}. Falls back to the week.
+function curPeriod(){
+  const ps = DATA.periods || [];
+  return ps.find(p => p.key === period) || ps[0] || {key: '1w', label: '1 week', weeks: 1, lists: DATA.lists};
+}
+
 function renderControls(){
   document.getElementById('gameSwitch').innerHTML = DATA.games.map(g =>
     `<button class="${g.key === gameKey ? 'active' : ''}" onclick="setGame('${esc(g.key)}')">${esc(g.label)}</button>`).join('');
+  document.getElementById('periodSwitch').innerHTML = (DATA.periods || []).map(p =>
+    `<button class="${p.key === period ? 'active' : ''}" onclick="setPeriod('${esc(p.key)}')">${esc(p.label)}</button>`).join('');
+  const weeks = curPeriod().weeks;
   const sel = document.getElementById('weekSelect');
   sel.innerHTML = DATA.weeks.map(w =>
-    `<option value="${esc(w)}"${w === DATA.week ? ' selected' : ''}>${esc(fmtWeek(w))}</option>`).join('');
+    `<option value="${esc(w)}"${w === DATA.week ? ' selected' : ''}>${esc(fmtWeek(w, weeks))}</option>`).join('');
   sel.style.display = DATA.weeks.length ? '' : 'none';
   document.getElementById('scopeAll').classList.toggle('active', scope === 'all');
   document.getElementById('scopeMine').classList.toggle('active', scope === 'mine');
@@ -247,6 +262,7 @@ function renderControls(){
 
 function setGame(k){ gameKey = k; renderControls(); render(); }
 function setScope(s){ scope = s; renderControls(); render(); }
+function setPeriod(p){ period = p; renderControls(); render(); }
 function onWeekChange(){ load(document.getElementById('weekSelect').value); }
 
 function moverHtml(r, i){
@@ -284,24 +300,33 @@ function render(){
     box.innerHTML = `<div class="table-card"><div class="empty">${esc(EMPTY_ALL)}</div></div>`;
     return;
   }
-  note.textContent = fmtWeek(DATA.week);
-  let rows = DATA.rows.filter(r => r.game === gameKey);
+  const p = curPeriod();
+  note.textContent = fmtWeek(DATA.week, p.weeks);
+  const keys = new Set(p.lists.map(l => l.key));
+  let rows = DATA.rows.filter(r => r.game === gameKey && keys.has(r.list));
   if (scope === 'mine') rows = rows.filter(r => r.tracked_card_id && myIds.has(r.tracked_card_id));
   if (!rows.length) {
     const msg = scope === 'mine'
-      ? 'None of the cards you track made a list this week.'
-      : EMPTY_ALL;
+      ? (p.key === '1w' ? 'None of the cards you track made a list this week.'
+                        : 'None of the cards you track made a list for this period.')
+      : (p.key === '1w' ? EMPTY_ALL : EMPTY_PERIOD);
     box.innerHTML = `<div class="table-card"><div class="empty">${esc(msg)}</div></div>`;
     return;
   }
-  box.innerHTML = '<div class="lists-grid">' + DATA.lists.map(l => {
+  const phrase = PERIOD_PHRASE[p.key];
+  const blurb = l => phrase
+    ? (l.key.startsWith('risers') ? `Cards whose price went up the most ${phrase}.`
+                                  : `Cards whose price went down the most ${phrase}.`)
+    : (BLURBS[l.key] || '');
+  const emptyList = phrase ? 'Nothing here for this period.' : EMPTY_LIST;
+  box.innerHTML = '<div class="lists-grid">' + p.lists.map(l => {
     const items = rows.filter(r => r.list === l.key).sort((a, b) => (a.rank || 0) - (b.rank || 0));
     return `<div class="table-card">
       <div class="table-header">
         <span class="table-header-title">${esc(l.label)}</span>
-        <span class="list-blurb">${esc(BLURBS[l.key] || '')}</span>
+        <span class="list-blurb">${esc(blurb(l))}</span>
       </div>
-      ${items.length ? items.map(moverHtml).join('') : `<div class="empty">${esc(EMPTY_LIST)}</div>`}
+      ${items.length ? items.map(moverHtml).join('') : `<div class="empty">${esc(emptyList)}</div>`}
     </div>`;
   }).join('') + '</div>';
 }

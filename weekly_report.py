@@ -57,7 +57,9 @@ SPIKE_PCT = _env_float("WEEKLY_SPIKE_PCT", 0.40)
 COOLING_WEEKS = _env_int("WEEKLY_COOLING_WEEKS", 3)
 NEW_RELEASE_DAYS = _env_int("WEEKLY_NEW_RELEASE_DAYS", 45)
 WATCH_MIN_PCT = _env_float("WEEKLY_WATCH_MIN_PCT", 0.05)
-HISTORY_WEEKS = _env_int("WEEKLY_HISTORY_WEEKS", 26)
+# Weeks of catalog_price_weekly kept. Must reach past the 6-month list's
+# anchor (26 weeks before the report's week, plus its tolerance).
+HISTORY_WEEKS = _env_int("WEEKLY_HISTORY_WEEKS", 30)
 # A catalog price older than this isn't captured, so a stale price never
 # looks flat. One Piece prices refresh weekly (Mondays).
 CATALOG_FRESH_DAYS = {
@@ -73,14 +75,27 @@ CATALOG_BELOW_USUAL_MIN_POINTS = 4
 TRACKED_MAX_STALE_DAYS = 3         # newest tracked snapshot older than this: skip the card
 USUAL_WINDOW_DAYS = 90
 LONG_DECLINE_FLOOR = -0.05         # below_usual needs the 90-day change to be at least this
-SNAPSHOT_LOOKBACK_DAYS = 120
+SNAPSHOT_LOOKBACK_DAYS = 200      # covers the 6-month list's anchor + tolerance
 
 LISTS = [("risers", "Biggest risers"),
          ("fallers", "Biggest fallers"),
          ("watch", "Worth watching"),
          ("below_usual", "Below its usual price"),
          ("cooling", "Cooling off")]
-LIST_KEYS = tuple(k for k, _ in LISTS)
+
+# Longer windows, risers and fallers only (Jeffrey chose this 2026-11-17; the
+# other three lists already have their own windows). (key, label, weeks,
+# tolerance_weeks): "then" is the newest price at or before `weeks` before the
+# report's week, but no more than `tolerance_weeks` older than that — one
+# missing week doesn't drop a card, and a much older price never stands in.
+PERIODS = [("1m", "1 month", 4, 1),
+           ("3m", "3 months", 13, 2),
+           ("6m", "6 months", 26, 2)]
+_PERIOD_PHRASE = {"1m": "over the past month", "3m": "over the past 3 months",
+                  "6m": "over the past 6 months"}
+PERIOD_LISTS = [(f"{kind}_{key}", label) for key, *_ in PERIODS
+                for kind, label in (("risers", "Biggest risers"), ("fallers", "Biggest fallers"))]
+LIST_KEYS = tuple(k for k, _ in LISTS + PERIOD_LISTS)
 
 WEEKLY_SCHEMA = [
     """
@@ -213,7 +228,9 @@ def weekly_change(series, now, max_age_days=None):
 
 
 def _empty() -> dict:
-    return {"change": None, "flags": {}, "sort_keys": {}}
+    # "changes": {list_key: (now, then, pct, abs)} for lists measured over a
+    # longer period than the week (the period risers/fallers).
+    return {"change": None, "flags": {}, "sort_keys": {}, "changes": {}}
 
 
 def _flag(out: dict, key: str, reason: str, sort_key: tuple) -> None:
@@ -235,6 +252,25 @@ def _apply_move_rules(out: dict, change) -> None:
         _flag(out, "risers", f"Up {_pct_text(pct)} this week ({move})", (pct, dabs))
     elif pct < 0:
         _flag(out, "fallers", f"Down {_pct_text(pct)} this week ({move})", (-pct, -dabs))
+
+
+def _apply_period_rules(out: dict, period: str, change) -> None:
+    """risers_<period> / fallers_<period> from a (now, then, pct, abs) change."""
+    p_now, p_then, pct, dabs = change
+    move = f"{_money(p_then)} → {_money(p_now)}"
+    phrase = _PERIOD_PHRASE[period]
+    if pct > 0:
+        key, text, sort_key = f"risers_{period}", f"Up {_pct_text(pct)} {phrase} ({move})", (pct, dabs)
+    elif pct < 0:
+        key, text, sort_key = f"fallers_{period}", f"Down {_pct_text(pct)} {phrase} ({move})", (-pct, -dabs)
+    else:
+        return
+    _flag(out, key, text, sort_key)
+    out["changes"][key] = change
+
+
+def _change(p_now: float, p_then: float):
+    return (p_now, p_then, (p_now - p_then) / p_then, p_now - p_then)
 
 
 def classify_tracked(series, score_row, release_date, now) -> dict:
@@ -267,6 +303,15 @@ def classify_tracked(series, score_row, release_date, now) -> dict:
     # risers / fallers
     if change:
         _apply_move_rules(out, change)
+
+    # risers / fallers over longer periods
+    for period, _label, weeks, tol in PERIODS:
+        target = now - timedelta(weeks=weeks)
+        then = _at_or_before(pts, times, target)
+        if (then is None or then is pts[-1]
+                or then[0] < target - timedelta(weeks=tol)):
+            continue
+        _apply_period_rules(out, period, _change(p_now, then[1]))
 
     # watch: up this week and the month, the rise held, and not a spike
     if change and pct >= WATCH_MIN_PCT and pct < SPIKE_PCT:
@@ -385,6 +430,13 @@ def classify_catalog(weekly_points, now) -> dict:
 
     if change:
         _apply_move_rules(out, change)
+
+    # risers / fallers over longer periods
+    for period, _label, weeks, tol in PERIODS:
+        then = next((by_week[w] for w in (cur - timedelta(weeks=b) for b in range(weeks, weeks + tol + 1))
+                     if w in by_week), None)
+        if then:
+            _apply_period_rules(out, period, _change(p_now, then))
 
     # watch: up this week, up vs 4 weeks ago, not a spike
     if change and pct >= WATCH_MIN_PCT and pct < SPIKE_PCT:
@@ -559,7 +611,9 @@ async def _catalog_candidates(conn, now: datetime, skip_ids: set) -> list:
                                    WHERE game = $1 AND week = $3 AND price >= $4)
             ORDER BY w.catalog_id, w.week
             """,
-            g, cur - timedelta(days=USUAL_WINDOW_DAYS + 14), cur, MIN_PRICE)
+            g, cur - timedelta(days=max(USUAL_WINDOW_DAYS + 14,
+                                        7 * max(w + t for _k, _l, w, t in PERIODS))),
+            cur, MIN_PRICE)
         grouped: dict = {}
         for r in rows:
             if r["catalog_id"] in skip_ids:
@@ -607,6 +661,8 @@ def _build_rows(candidates: list, week: date) -> list:
                 pn, pt = res.get("price_now"), res.get("usual")
                 pct = (pn - pt) / pt if pn is not None and pt else None
                 dabs = pn - pt if pn is not None and pt is not None else None
+            elif key in res.get("changes", {}):
+                pn, pt, pct, dabs = res["changes"][key]
             else:
                 pn, pt, pct, dabs = ch if ch else (res.get("price_now"), None, None, None)
             rows.append((week, game, key, rank, c["card_kind"], c["tracked_card_id"],

@@ -13,7 +13,7 @@ catalog shows today (checked 2026-11-17):
   * Pokémon    — PPT `includeHistory` (price_sources.fetch_ppt_price_history,
                  the tracker's Backdate call): daily. 2 credits per card.
   * Riftbound  — TCGGO `/history-prices` (riftbound.fetch_history): daily
-                 TCGplayer series. Up to 6 requests per card.
+                 TCGplayer series. Up to 10 requests per card.
 
 Not covered: Lorcana (Lorcast has no history, and TCGplayer's numbers only
 matched Lorcast's on 474 of 816 printings) and Gundam (its history only
@@ -60,17 +60,25 @@ def _env_int(name: str, default: int) -> int:
 
 
 ENABLED = os.getenv("WEEKLY_BACKFILL", "1").strip().lower() not in ("0", "false", "no", "off")
-# Enough for the 90-day "usual price" and the 12-week comparison, and inside
-# catalog_price_weekly's retention.
-BACKFILL_WEEKS = min(_env_int("WEEKLY_BACKFILL_WEEKS", 16), wr.HISTORY_WEEKS)
+# Enough for the 6-month risers/fallers (26 weeks before the report's week,
+# which is itself the week before the current one), inside
+# catalog_price_weekly's retention. Cards fetched with a shorter window (the
+# first release used 16) are fetched once more to reach this one.
+BACKFILL_WEEKS = min(_env_int("WEEKLY_BACKFILL_WEEKS", 28), wr.HISTORY_WEEKS)
+# PPT's history is asked for in days; 180 is the longest the tracker's own
+# Backdate has used on this plan, so Pokémon catalog cards reach ~25 weeks
+# back and their 6-month list fills in a week or two after the backfill.
+PPT_HISTORY_DAYS = min(BACKFILL_WEEKS * 7 + 7, 180)
+# TCGGO serves 20 days per page; 10 pages is ~200 days.
+RIFTBOUND_HISTORY_PAGES = 10
 # Cards fetched per game per UTC day.
 #   one_piece: 1 request each, against OPTCG's 1,800/day cap (sync needs few)
 #   pokemon:   2 PPT credits each, against 20,000/day shared with the tracker
-#   riftbound: up to 6 requests each, against 2,500/day (daily sync ~95)
+#   riftbound: up to 10 requests each, against 2,500/day (daily sync ~95)
 DAILY_CARDS = {
     "one_piece": _env_int("WEEKLY_BACKFILL_OP_PER_DAY", 1200),
     "pokemon": _env_int("WEEKLY_BACKFILL_PPT_PER_DAY", 2500),
-    "riftbound": _env_int("WEEKLY_BACKFILL_RIFTBOUND_PER_DAY", 200),
+    "riftbound": _env_int("WEEKLY_BACKFILL_RIFTBOUND_PER_DAY", 150),
 }
 # Stop Pokémon once PPT says fewer credits than this are left today, so the
 # tracker's own refresh always has room.
@@ -102,6 +110,10 @@ BACKFILL_SCHEMA = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_catalog_history_backfill_game_day "
     "ON catalog_history_backfill (game, fetched_at)",
+    # How many weeks back the card was fetched for. Rows from before this
+    # column existed were fetched with the first release's 16 weeks.
+    "ALTER TABLE catalog_history_backfill "
+    "ADD COLUMN IF NOT EXISTS window_weeks INTEGER NOT NULL DEFAULT 16",
 ]
 
 _lock = asyncio.Lock()
@@ -156,7 +168,7 @@ def weeks_from_points(points, current_week: date, weeks: int = None) -> dict:
 # Each: (client, pool, row) -> ([(datetime|date, price)], status, meta)
 
 async def _fetch_one_piece(client, pool, row):
-    body, status = await optcg.fetch_price_history(client, pool, row["source_id"])
+    body, status = await optcg.fetch_price_history(client, pool, row["source_id"], "1y")
     if status != "ok":
         return [], status, {}
     points = []
@@ -173,14 +185,15 @@ async def _fetch_one_piece(client, pool, row):
 
 async def _fetch_pokemon(client, pool, row):
     history, status, remaining = await price_sources.fetch_ppt_price_history(
-        client, row["tcgplayer_id"], BACKFILL_WEEKS * 7 + 7, language=row["language"])
+        client, row["tcgplayer_id"], PPT_HISTORY_DAYS, language=row["language"])
     await asyncio.sleep(PPT_PAUSE_S)
     points = [(h["date"], h["market"]) for h in history] if status == "ok" else []
     return points, status, {"remaining": remaining}
 
 
 async def _fetch_riftbound(client, pool, row):
-    history, status = await riftbound.fetch_history(client, row["source_id"])
+    history, status = await riftbound.fetch_history(client, row["source_id"],
+                                                    max_pages=RIFTBOUND_HISTORY_PAGES)
     await asyncio.sleep(RIFTBOUND_PAUSE_S)
     return [(h["date"], h["market"]) for h in history], status, {}
 
@@ -219,12 +232,14 @@ async def _candidates(conn, game: str, limit: int, now: datetime) -> list:
           AND c.price_source = $3
           AND COALESCE(c.{ident}, '') <> ''
           AND (b.catalog_id IS NULL
-               OR (b.status = 'error' AND b.fetched_at < $5::timestamptz - make_interval(days => $6)))
+               OR (b.status = 'error' AND b.fetched_at < $5::timestamptz - make_interval(days => $6))
+               OR (b.status <> 'error' AND b.window_weeks < $7))
           AND {not_tracked}
-        ORDER BY c.raw_price DESC, c.id
+        ORDER BY (b.catalog_id IS NOT NULL), c.raw_price DESC, c.id
         LIMIT $4
         """,
-        game, wr.MIN_PRICE, SOURCES[game], int(limit), now, RETRY_ERRORS_AFTER_DAYS)
+        game, wr.MIN_PRICE, SOURCES[game], int(limit), now, RETRY_ERRORS_AFTER_DAYS,
+        BACKFILL_WEEKS)
 
 
 async def _record(conn, row, status: str, weekly: dict, now: datetime) -> int:
@@ -246,10 +261,12 @@ async def _record(conn, row, status: str, weekly: dict, now: datetime) -> int:
                 wks, [weekly[w][0] for w in wks], [weekly[w][1] for w in wks])
             inserted = wr._count(tag)
         await conn.execute(
-            "INSERT INTO catalog_history_backfill (catalog_id, game, status, weeks, fetched_at) "
-            "VALUES ($1, $2, $3, $4, $5) ON CONFLICT (catalog_id) DO UPDATE "
-            "SET status = EXCLUDED.status, weeks = EXCLUDED.weeks, fetched_at = EXCLUDED.fetched_at",
-            row["id"], row["game"], status, inserted, now)
+            "INSERT INTO catalog_history_backfill "
+            "(catalog_id, game, status, weeks, fetched_at, window_weeks) "
+            "VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (catalog_id) DO UPDATE "
+            "SET status = EXCLUDED.status, weeks = catalog_history_backfill.weeks + EXCLUDED.weeks, "
+            "fetched_at = EXCLUDED.fetched_at, window_weeks = EXCLUDED.window_weeks",
+            row["id"], row["game"], status, inserted, now, BACKFILL_WEEKS)
     return inserted
 
 

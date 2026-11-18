@@ -2893,6 +2893,14 @@ async def api_weekly_report(request: Request, week: str = "", game: str = "",
         "weeks": [w.isoformat() for w in weeks],
         "games": [{"key": g.key, "label": g.label} for g in games.GAMES],
         "lists": [{"key": k, "label": label} for k, label in weekly_report.LISTS],
+        # Longer windows: risers and fallers only, keyed "<list>_<period>".
+        "periods": [{"key": "1w", "label": "1 week", "weeks": 1,
+                     "lists": [{"key": k, "label": label} for k, label in weekly_report.LISTS]}]
+                   + [{"key": p, "label": label, "weeks": weeks,
+                       "lists": [{"key": f"{kind}_{p}", "label": kl}
+                                 for kind, kl in (("risers", "Biggest risers"),
+                                                  ("fallers", "Biggest fallers"))]}
+                      for p, label, weeks, _tol in weekly_report.PERIODS],
         "rows": rows,
         "my_card_ids": [r["card_id"] for r in mine],
     }, headers={"Cache-Control": "no-store"})
