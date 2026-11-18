@@ -65,6 +65,7 @@ import gundam
 import games
 import traffic
 import weekly_report
+import weekly_backfill
 
 load_dotenv()
 
@@ -257,6 +258,32 @@ async def _weekly_report_scheduler(app: FastAPI) -> None:
         await asyncio.sleep(WEEKLY_REPORT_INTERVAL_S)
 
 
+# Past weeks for the catalog's weekly prices, from the price APIs we already
+# use (One Piece, Pokémon, Riftbound), so the catalog lists don't take weeks
+# to fill in. Each card is fetched once, within per-game daily budgets (see
+# weekly_backfill). When a pass adds weeks and this week's report already
+# exists, it's rebuilt so the new history shows up.
+WEEKLY_BACKFILL_START_DELAY_S = 15 * 60
+
+
+async def _weekly_backfill_scheduler(app: FastAPI) -> None:
+    await asyncio.sleep(WEEKLY_BACKFILL_START_DELAY_S)
+    while True:
+        try:
+            summary = await weekly_backfill.run_backfill(app.state.db)
+            if summary.get("weeks"):
+                this_week = weekly_report.week_start(datetime.utcnow())
+                if await weekly_report.latest_week(app.state.db) == this_week:
+                    rebuilt = await weekly_report.generate_report(app.state.db)
+                    logger.info("Weekly backfill: rebuilt week %s (%s row(s))",
+                                rebuilt.get("week"), rebuilt.get("rows"))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Weekly backfill failed — retrying next interval")
+        await asyncio.sleep(WEEKLY_REPORT_INTERVAL_S)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     secret = os.getenv("SESSION_SECRET", "")
@@ -307,6 +334,7 @@ async def lifespan(app: FastAPI):
     try:
         # After the catalog and tracker schemas: it reads both.
         await weekly_report.ensure_weekly_schema(app.state.db)
+        await weekly_backfill.ensure_backfill_schema(app.state.db)
     except Exception:
         logger.exception("Weekly report schema ensure failed — /weekly may be unavailable")
     try:
@@ -362,6 +390,7 @@ async def lifespan(app: FastAPI):
     traffic_maintenance_task = asyncio.create_task(traffic.run_maintenance(app))
     # Every few hours: weekly catalog prices, then the week's lists when due.
     weekly_report_task = asyncio.create_task(_weekly_report_scheduler(app))
+    weekly_backfill_task = asyncio.create_task(_weekly_backfill_scheduler(app))
     try:
         yield
     finally:
@@ -377,6 +406,7 @@ async def lifespan(app: FastAPI):
         traffic_flush_task.cancel()
         traffic_maintenance_task.cancel()
         weekly_report_task.cancel()
+        weekly_backfill_task.cancel()
         # Save whatever is still buffered before the pool goes away. Never raises.
         await traffic.flush_now(app.state.db)
         await app.state.db.close()

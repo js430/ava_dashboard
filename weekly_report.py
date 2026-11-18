@@ -331,8 +331,9 @@ def classify_tracked(series, score_row, release_date, now) -> dict:
     return out
 
 
-def _catalog_points(weekly_points) -> list:
-    """[(week_date, price)] sorted, restricted to the newest point's price_source."""
+def _catalog_points(weekly_points, upto=None) -> list:
+    """[(week_date, price)] sorted, restricted to the newest point's price_source.
+    Weeks after `upto` are dropped first, so a later week can't pick the source."""
     rows = []
     for p in weekly_points or []:
         wk, price = p[0], p[1]
@@ -340,6 +341,8 @@ def _catalog_points(weekly_points) -> list:
         if isinstance(wk, datetime):
             wk = week_start(wk)
         if wk is None or price is None or float(price) <= 0:
+            continue
+        if upto is not None and wk > upto:
             continue
         rows.append((wk, float(price), src or ""))
     rows.sort(key=lambda r: r[0])
@@ -360,7 +363,9 @@ def classify_catalog(weekly_points, now) -> dict:
     out = _empty()
     now = _utc(now)
     cur = week_start(now)
-    pts = _catalog_points(weekly_points)
+    # Weeks after `now` (the live capture's current week, when a report is
+    # built for the week that just ended) aren't part of this report.
+    pts = _catalog_points(weekly_points, upto=cur)
     if len(pts) < 2:
         return out
     by_week = dict(pts)
@@ -549,7 +554,7 @@ async def _catalog_candidates(conn, now: datetime, skip_ids: set) -> list:
             """
             SELECT w.catalog_id, w.week, w.price, w.price_source
             FROM catalog_price_weekly w
-            WHERE w.game = $1 AND w.week >= $2
+            WHERE w.game = $1 AND w.week >= $2 AND w.week <= $3
               AND w.catalog_id IN (SELECT catalog_id FROM catalog_price_weekly
                                    WHERE game = $1 AND week = $3 AND price >= $4)
             ORDER BY w.catalog_id, w.week

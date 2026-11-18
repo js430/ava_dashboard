@@ -320,6 +320,25 @@ async def _get(client: httpx.AsyncClient, pool, path: str, label: str) -> tuple:
         return None, "error"
 
 
+HISTORY_RANGES = ("1m", "3m", "6m", "1y", "all")
+
+
+async def fetch_price_history(client: httpx.AsyncClient, pool, card_id, range_: str = "6m") -> tuple:
+    """(body, status) for one card's weekly price snapshots. 1 request.
+
+    body is {"card_id", "range", "current_price", "points": [{"price", "t"}]},
+    `t` in epoch milliseconds, one point per weekly price refresh (Mondays).
+    Checked live 2026-11-17: ~31 points per card back to April 2026; the
+    newest variants come back with no points yet. Same limiter and daily cap
+    as every other request.
+    """
+    card_id = str(card_id or "")
+    if not _CARD_ID.fullmatch(card_id) or range_ not in HISTORY_RANGES:
+        return None, "error"
+    return await _get(client, pool, f"/cards/{card_id}/price-history?range={range_}",
+                      f"price history {card_id}")
+
+
 def _data_list(body) -> list:
     data = body.get("data") if isinstance(body, dict) else None
     return [d for d in data if isinstance(d, dict)] if isinstance(data, list) else []

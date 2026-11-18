@@ -46,6 +46,44 @@ an answer, all changeable: **members only** (same gate as the Card Tracker),
   (catalog Pokémon prices are only as fresh as the set's last refresh), so
   most Pokémon catalog movement comes from tracked cards. Watch this after the
   first few weeks.
+- **Bug caught by the backfill test, fixed:** with the "week that just ended"
+  rule, the live capture's NEW-week row made every catalog card look newer
+  than the report's week, so all catalog cards were skipped. The catalog query
+  now stops at the report's week (`w.week <= cur`) and `_catalog_points(upto=)`
+  drops later weeks before picking the price source. Regression check in the
+  integration test.
+
+### Backfill: past weeks from the APIs we already use (`weekly_backfill.py`)
+
+Jeffrey chose **A: APIs only** (rejected B: also TCGCSV's daily archives for
+Gundam — a new 7z/PPMd dependency and ~55 MB download for one game; C: wait
+~5 weeks). Checked live 2026-11-17:
+
+- **One Piece** — OPTCG `/cards/{id}/price-history` (`optcg.fetch_price_history`):
+  weekly points back to April 2026, the same series as the catalog. 1 request
+  per card, through the shared limiter; budget 1,200 cards/day of the
+  1,800 cap. Some weeks are missing for some cards (e.g. OP05-119 has no
+  week of 2026-11-09); a missing week simply isn't compared.
+- **Pokémon** — PPT includeHistory (`fetch_ppt_price_history`, the tracker's
+  Backdate call; `pokemonpricetracker-history` is already the same scoring
+  family as live PPT). 2 credits per card; budget 2,500 cards/day and it stops
+  when PPT reports fewer than 6,000 credits left (`WEEKLY_BACKFILL_PPT_RESERVE`).
+- **Riftbound** — TCGGO `/history-prices` (`riftbound.fetch_history`), up to
+  6 requests per card; budget 200 cards/day of the 2,500/day plan.
+- **Not covered:** Lorcana (Lorcast has no history; TCGplayer matched
+  Lorcast on only 474 of 816 printings, so mixing would invent small moves)
+  and Gundam (history only in TCGCSV archives). They fill in on their own.
+
+Rules: only cards ≥ $3 whose current `price_source` is the series the API
+serves (One Piece/Riftbound `tcgplayer`, Pokémon `pokemonpricetracker`) and
+not mapped to a tracked card; most valuable first. Each week stores the LAST
+point of that Monday-week under the catalog row's current price_source; never
+the current week, never over an existing week (ON CONFLICT DO NOTHING). Each
+card is fetched once (`catalog_history_backfill`, dashboard-owned); errors
+retry after 7 days; a 429/quota stops that game until the next pass. Runs
+every 3 h from 15 min after start; when it adds weeks and this week's report
+exists, the report is rebuilt. `WEEKLY_BACKFILL=0` turns it off; per-game
+budgets are `WEEKLY_BACKFILL_{OP,PPT,RIFTBOUND}_PER_DAY`.
 
 ## 2026-11-16 — Oversized uploads get a 413, not a 500
 
