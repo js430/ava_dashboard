@@ -546,6 +546,7 @@
       <div class="nav-menu">
         <a href="/portfolios">Portfolios</a>
         <a href="/card-tracker">Tracker</a>
+        {% if not is_guest %}<a href="/weekly">This week</a>{% endif %}
         <a href="/grading-calculator">Grading Calculator</a>
         <a href="/catalog" class="active">Catalog</a>
         {% if request.session.get('inventory_access', False) %}<a href="/inventory">Inventory</a>{% endif %}
