@@ -35,6 +35,8 @@ import os
 import re
 from decimal import Decimal, InvalidOperation
 
+import asyncpg
+
 logger = logging.getLogger("dashboard.monitor_alerts")
 
 MONITOR_ALERTS_SCHEMA = [
@@ -436,29 +438,25 @@ async def update_alert(pool, user_id: int, alert_id: int, cleaned: dict) -> tupl
 
     Returns None, error if the alert isn't this member's or if they're trying
     to change it to be identical to another alert they already have.
+
+    The duplicate is caught from the unique index refusing the UPDATE — the
+    same race-proof rule add_alert relies on. A check after the UPDATE could
+    never run: the index rejects the write first, which used to surface as a
+    server error instead of this message.
     """
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "UPDATE product_subscriptions "
-            "SET keyword = $3, match_all = $4, channel_ids = $5, "
-            "    max_price_usd = $6, dedupe_key = $7, exclude_keywords = $8 "
-            "WHERE id = $1 AND user_id = $2 "
-            f"RETURNING {_COLUMNS}",
-            alert_id, user_id, cleaned["keyword"], cleaned["match_all"],
-            cleaned["channel_ids"], cleaned["max_price_usd"],
-            cleaned["dedupe_key"], cleaned["exclude_keywords"])
+        try:
+            row = await conn.fetchrow(
+                "UPDATE product_subscriptions "
+                "SET keyword = $3, match_all = $4, channel_ids = $5, "
+                "    max_price_usd = $6, dedupe_key = $7, exclude_keywords = $8 "
+                "WHERE id = $1 AND user_id = $2 "
+                f"RETURNING {_COLUMNS}",
+                alert_id, user_id, cleaned["keyword"], cleaned["match_all"],
+                cleaned["channel_ids"], cleaned["max_price_usd"],
+                cleaned["dedupe_key"], cleaned["exclude_keywords"])
+        except asyncpg.UniqueViolationError:
+            return None, "You already have that exact alert."
     if row is None:
         return None, "That alert is already gone."
-
-    # Check if this update created a duplicate (same user + dedupe_key)
-    # by seeing if another row exists with the same dedupe_key.
-    async with pool.acquire() as conn:
-        dup = await conn.fetchval(
-            "SELECT id FROM product_subscriptions "
-            "WHERE user_id = $1 AND dedupe_key = $2 AND id != $3 "
-            "LIMIT 1",
-            user_id, cleaned["dedupe_key"], alert_id)
-    if dup is not None:
-        return None, "You already have that exact alert."
-
     return dict(row), None
