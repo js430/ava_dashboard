@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/brand/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/brand/icon-180.png">
+<script>try{var __t=localStorage.getItem('theme');if(__t)document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>This Week — Restock Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f4f5; color: #111; min-height: 100vh; }
+  .header { background: #fff; border-bottom: 1px solid #e4e4e7; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .header-title { font-size: 16px; font-weight: 600; color: #111; }
+  .header-sub { font-size: 12px; color: #999; margin-top: 1px; }
+  .nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .nav a { font-size: 12px; color: #555; text-decoration: none; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; }
+  .nav a:hover { background: #f4f4f5; }
+  .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-group { position: relative; display: inline-flex; }
+  .nav-group-btn { font-family: inherit; font-size: 12px; color: #555; padding: 4px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fff; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+  .nav-group-btn:hover { background: #f4f4f5; }
+  .nav-group-btn.active, .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .nav-caret { font-size: 9px; line-height: 1; }
+  .nav-menu { display: none; position: absolute; top: calc(100% + 4px); right: 0; min-width: 150px; padding: 4px; background: #fff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.10); z-index: 400; }
+  .nav-group.open .nav-menu { display: block; }
+  .nav-menu a { display: block; padding: 6px 10px; border: none; border-radius: 5px; background: none; font-size: 12px; color: #555; text-decoration: none; white-space: nowrap; }
+  .nav-menu a:hover { background: #f4f4f5; }
+  .nav-menu a.active { background: #5865F2; color: #fff; }
+  .main { padding: 24px; max-width: 1100px; margin: 0 auto; }
+
+  .table-card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; overflow: hidden; margin-bottom: 16px; }
+  .table-header { padding: 12px 16px; border-bottom: 1px solid #e4e4e7; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .table-header-title { font-size: 14px; font-weight: 600; color: #111; }
+  .list-blurb { font-size: 12px; color: #999; }
+  .btn-group { display: flex; }
+  #gameSwitch { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .btn-group button { font-size: 12px; height: 30px; padding: 0 11px; border: 1px solid #ddd; background: #fff; color: #333; cursor: pointer; white-space: nowrap; }
+  .btn-group button:first-child { border-radius: 6px 0 0 6px; }
+  .btn-group button:last-child { border-radius: 0 6px 6px 0; }
+  .btn-group button:not(:first-child) { border-left: none; }
+  .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  .week-select { font-size: 12px; height: 30px; padding: 0 8px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #111; }
+  .refresh-btn { font-size: 12px; height: 30px; padding: 0 12px; border: none; border-radius: 6px; background: #5865F2; color: #fff; cursor: pointer; font-weight: 600; }
+  .refresh-btn:disabled { opacity: .6; cursor: not-allowed; }
+  .toolbar-note { font-size: 12px; color: #999; margin-left: auto; }
+  .disclaimer { font-size: 12px; color: #888; margin: 0 0 16px; }
+
+  .mover { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid #f0f0f0; }
+  .mover:last-child { border-bottom: none; }
+  .mover-rank { width: 22px; font-size: 12px; color: #aaa; text-align: right; flex-shrink: 0; }
+  .mover-img { width: 40px; height: 56px; border-radius: 4px; background: #f0f0f2; object-fit: cover; flex-shrink: 0; }
+  .mover-img.none { display: inline-block; }
+  .mover-info { flex: 1; min-width: 0; }
+  .card-name { font-size: 13px; font-weight: 600; color: #111; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-sub { font-size: 12px; color: #999; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mover-reason { font-size: 12px; color: #555; margin-top: 2px; }
+  .mover-price { text-align: right; flex-shrink: 0; font-size: 12px; color: #666; white-space: nowrap; }
+  .mover-price .now { font-size: 14px; font-weight: 600; color: #111; }
+  .pos { color: #16a34a; font-weight: 600; }
+  .neg { color: #dc2626; font-weight: 600; }
+  .mine-tag { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: #eef0ff; color: #4338ca; margin-left: 5px; vertical-align: middle; }
+  .lang-badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: #fee2e2; color: #b91c1c; margin-left: 5px; vertical-align: middle; }
+  .empty { text-align: center; padding: 28px 16px; color: #aaa; font-size: 12px; }
+
+  @media (max-width: 720px) {
+    .header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px; }
+    .nav { gap: 5px; }
+    .nav-menu { left: 0; right: auto; }
+    .main { padding: 12px; }
+    .mover { padding: 10px 12px; gap: 8px; }
+    .toolbar-note { margin-left: 0; width: 100%; }
+  }
+  .theme-toggle { display: none; font-size: 16px; background: #f4f4f5; border: 1px solid #ddd; border-radius: 6px; padding: 4px 8px; cursor: pointer; line-height: 1; flex-shrink: 0; }
+  html[data-theme="dark"] { color-scheme: dark; }
+  html[data-theme="dark"] body { background: #111113; color: #f0f0f0; }
+  html[data-theme="dark"] .header { background: #1c1c1f; border-bottom-color: #303033; }
+  html[data-theme="dark"] .header-title { color: #f0f0f0; }
+  html[data-theme="dark"] .nav a { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .nav a:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav a.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .nav-group-btn { background: #252528; border-color: #383838; color: #bbbbc5; }
+  html[data-theme="dark"] .nav-group-btn:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav-group-btn.active, html[data-theme="dark"] .nav-group.open .nav-group-btn { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .nav-menu { background: #1c1c1f; border-color: #383838; box-shadow: 0 6px 20px rgba(0,0,0,0.45); }
+  html[data-theme="dark"] .nav-menu a { color: #bbbbc5; }
+  html[data-theme="dark"] .nav-menu a:hover { background: #2e2e32; }
+  html[data-theme="dark"] .nav-menu a.active { background: #5865F2; color: #fff; }
+  html[data-theme="dark"] .table-card { background: #1c1c1f; border-color: #303033; }
+  html[data-theme="dark"] .table-header { border-bottom-color: #303033; }
+  html[data-theme="dark"] .table-header-title, html[data-theme="dark"] .card-name, html[data-theme="dark"] .mover-price .now { color: #f0f0f0; }
+  html[data-theme="dark"] .btn-group button { background: #252528; border-color: #383838; color: #ccc; }
+  html[data-theme="dark"] .btn-group button.active { background: #5865F2; color: #fff; border-color: #5865F2; }
+  html[data-theme="dark"] .week-select { background: #252528; border-color: #383838; color: #f0f0f0; }
+  html[data-theme="dark"] .mover { border-bottom-color: #2a2a2d; }
+  html[data-theme="dark"] .mover-img { background: #2a2a2d; }
+  html[data-theme="dark"] .mover-reason, html[data-theme="dark"] .mover-price { color: #aaa; }
+  html[data-theme="dark"] .mine-tag { background: #26264a; color: #a5b4fc; }
+  html[data-theme="dark"] .lang-badge { background: #4a2323; color: #fca5a5; }
+  html[data-theme="dark"] .theme-toggle { background: #252528; border-color: #383838; color: #e0e0e0; }
+</style>
+<script src="/static/csrf.js"></script>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="header-title">This week</div>
+    <div class="header-sub">How card prices moved over the last week</div>
+  </div>
+  <div class="nav">
+    <a href="/">Dashboard</a>
+    <a href="/map">Map</a>
+    <a href="/status">Status</a>
+    <a href="/monitor-alerts-setup">Monitor Alerts Setup</a>
+    <a href="/tips">Tips, Tricks, and Guide</a>
+    {% set can_view_network = is_admin or request.session.get('mod', False) or request.session.get('all_mods', False) %}
+    {% if can_view_network %}
+    <div class="nav-group">
+      <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        {% if is_admin %}<a href="/admin">Visitor Log</a>{% endif %}
+        {% if is_admin %}<a href="/admin/traffic">Traffic</a>{% endif %}
+        {% if is_admin %}<a href="/contributors">Contributors</a>{% endif %}
+        <a href="/invite-network">Network</a>
+        <a href="/tracker-admin">Tracker Management</a>
+        {% if request.session.get('mod', False) %}<a href="/auto-delete-rules">Auto-Delete Rules</a>{% endif %}
+      </div>
+    </div>
+    {% endif %}
+    {% if is_admin %}<a href="/raffle-wheel">Raffle</a>{% endif %}
+    <div class="nav-group">
+      <button class="nav-group-btn active" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Nexus Playground<span class="nav-caret">&#9662;</span></button>
+      <div class="nav-menu">
+        <a href="/portfolios">Portfolios</a>
+        <a href="/card-tracker">Tracker</a>
+        <a href="/weekly" class="active">This week</a>
+        <a href="/grading-calculator">Grading Calculator</a>
+        <a href="/catalog">Catalog</a>
+        {% if request.session.get('inventory_access', False) %}<a href="/inventory">Inventory</a>{% endif %}
+      </div>
+    </div>
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Dark mode">🌙</button>
+    <a href="/logout">Log out</a>
+  </div>
+</div>
+
+<div class="main">
+
+  <div class="table-card">
+    <div class="table-header">
+      <div class="btn-group" id="gameSwitch"></div>
+      <select class="week-select" id="weekSelect" onchange="onWeekChange()" aria-label="Week"></select>
+      <div class="btn-group">
+        <button id="scopeAll" class="active" onclick="setScope('all')">All cards</button>
+        <button id="scopeMine" onclick="setScope('mine')">Cards I track</button>
+      </div>
+      {% if is_admin %}<button class="refresh-btn" id="rebuildBtn" onclick="rebuildWeek()">Rebuild this week</button>{% endif %}
+      <span class="toolbar-note" id="weekNote"></span>
+    </div>
+  </div>
+
+  <p class="disclaimer">These lists describe recent price moves. They aren't buy or sell advice.</p>
+
+  <div id="lists"><div class="empty">Loading…</div></div>
+
+</div>
+
+<script>
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+
+const BLURBS = {
+  risers: 'Cards whose price went up the most this week.',
+  fallers: 'Cards whose price went down the most this week.',
+  watch: 'Cards that have been climbing steadily, not just for a day.',
+  below_usual: 'Cards priced well under where they usually sit.',
+  cooling: 'Cards that have been slipping, or jumped quickly on little history.'
+};
+const EMPTY_LIST = 'Nothing here this week.';
+const EMPTY_ALL = 'Not enough price history yet — this fills in after a week or two.';
+
+let DATA = null;      // last API response
+let gameKey = null;
+let scope = 'all';
+let myIds = new Set();
+
+function fmtMoney(v){
+  if (v === null || v === undefined || isNaN(v)) return '—';
+  return '$' + Number(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+// change_pct is stored as a percent (18.0 = up 18%).
+function fmtPct(v){
+  if (v === null || v === undefined || isNaN(v)) return '';
+  const p = Number(v);
+  return (p > 0 ? '+' : '') + p.toFixed(Math.abs(p) < 10 ? 1 : 0) + '%';
+}
+// A report stored under Monday W covers the week that just ended (W-7 .. W-1).
+function fmtWeek(iso){
+  const end = new Date(iso + 'T00:00:00Z');
+  const start = new Date(end.getTime() - 7 * 86400000);
+  const last = new Date(end.getTime() - 86400000);
+  const o = {month: 'short', day: 'numeric', timeZone: 'UTC'};
+  return start.toLocaleDateString(undefined, o) + ' – ' +
+         last.toLocaleDateString(undefined, {...o, year: 'numeric'});
+}
+
+async function load(week){
+  const list = document.getElementById('lists');
+  try {
+    const resp = await fetch('/api/weekly-report' + (week ? '?week=' + encodeURIComponent(week) : ''));
+    if (!resp.ok) {
+      let msg = 'Something went wrong loading this week’s lists.';
+      try { const j = await resp.json(); if (j.detail) msg = j.detail; } catch(e) {}
+      list.innerHTML = `<div class="empty">${esc(msg)}</div>`;
+      return;
+    }
+    DATA = await resp.json();
+  } catch (e) {
+    list.innerHTML = '<div class="empty">Something went wrong loading this week’s lists.</div>';
+    return;
+  }
+  myIds = new Set(DATA.my_card_ids || []);
+  if (!gameKey || !DATA.games.some(g => g.key === gameKey)) {
+    // Start on the first game that has something to show.
+    const withRows = DATA.games.find(g => DATA.rows.some(r => r.game === g.key));
+    gameKey = (withRows || DATA.games[0] || {}).key || null;
+  }
+  renderControls();
+  render();
+}
+
+function renderControls(){
+  document.getElementById('gameSwitch').innerHTML = DATA.games.map(g =>
+    `<button class="${g.key === gameKey ? 'active' : ''}" onclick="setGame('${esc(g.key)}')">${esc(g.label)}</button>`).join('');
+  const sel = document.getElementById('weekSelect');
+  sel.innerHTML = DATA.weeks.map(w =>
+    `<option value="${esc(w)}"${w === DATA.week ? ' selected' : ''}>${esc(fmtWeek(w))}</option>`).join('');
+  sel.style.display = DATA.weeks.length ? '' : 'none';
+  document.getElementById('scopeAll').classList.toggle('active', scope === 'all');
+  document.getElementById('scopeMine').classList.toggle('active', scope === 'mine');
+}
+
+function setGame(k){ gameKey = k; renderControls(); render(); }
+function setScope(s){ scope = s; renderControls(); render(); }
+function onWeekChange(){ load(document.getElementById('weekSelect').value); }
+
+function moverHtml(r, i){
+  const pct = Number(r.change_pct);
+  const cls = pct > 0 ? 'pos' : (pct < 0 ? 'neg' : '');
+  const img = (typeof r.image_url === 'string' && r.image_url.indexOf('https://') === 0)
+    ? `<img class="mover-img" src="${esc(r.image_url)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
+    : '<span class="mover-img none"></span>';
+  const sub = [r.set_name, r.card_number ? '#' + r.card_number : '', r.version].filter(Boolean).join(' · ');
+  const mine = r.tracked_card_id && myIds.has(r.tracked_card_id) ? '<span class="mine-tag">You track this</span>' : '';
+  const jp = r.game === 'pokemon' && r.language === 'japanese' ? '<span class="lang-badge">JP</span>' : '';
+  return `<div class="mover">
+    <div class="mover-rank">${i + 1}</div>
+    ${img}
+    <div class="mover-info">
+      <div class="card-name">${esc(r.name)}${jp}${mine}</div>
+      <div class="card-sub">${esc(sub)}</div>
+      ${r.reason ? `<div class="mover-reason">${esc(r.reason)}</div>` : ''}
+    </div>
+    <div class="mover-price">
+      <div class="now">${esc(fmtMoney(r.price_now))}</div>
+      <div>${r.list === 'below_usual'
+        ? 'Usually ' + esc(fmtMoney(r.price_then))
+        : esc(fmtMoney(r.price_then)) + ' → ' + esc(fmtMoney(r.price_now))}</div>
+      <div class="${cls}">${esc(fmtPct(r.change_pct))}</div>
+    </div>
+  </div>`;
+}
+
+function render(){
+  const box = document.getElementById('lists');
+  const note = document.getElementById('weekNote');
+  if (!DATA || !DATA.week) {
+    note.textContent = '';
+    box.innerHTML = `<div class="table-card"><div class="empty">${esc(EMPTY_ALL)}</div></div>`;
+    return;
+  }
+  note.textContent = fmtWeek(DATA.week);
+  let rows = DATA.rows.filter(r => r.game === gameKey);
+  if (scope === 'mine') rows = rows.filter(r => r.tracked_card_id && myIds.has(r.tracked_card_id));
+  if (!rows.length) {
+    const msg = scope === 'mine'
+      ? 'None of the cards you track made a list this week.'
+      : EMPTY_ALL;
+    box.innerHTML = `<div class="table-card"><div class="empty">${esc(msg)}</div></div>`;
+    return;
+  }
+  box.innerHTML = DATA.lists.map(l => {
+    const items = rows.filter(r => r.list === l.key).sort((a, b) => (a.rank || 0) - (b.rank || 0));
+    return `<div class="table-card">
+      <div class="table-header">
+        <span class="table-header-title">${esc(l.label)}</span>
+        <span class="list-blurb">${esc(BLURBS[l.key] || '')}</span>
+      </div>
+      ${items.length ? items.map(moverHtml).join('') : `<div class="empty">${esc(EMPTY_LIST)}</div>`}
+    </div>`;
+  }).join('');
+}
+
+async function rebuildWeek(){
+  const btn = document.getElementById('rebuildBtn');
+  if (!btn) return;
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = 'Rebuilding…';
+  try {
+    const resp = await fetch('/api/weekly-report/regenerate', { method: 'POST' });
+    if (!resp.ok) {
+      let msg = 'Rebuild failed.';
+      try { const j = await resp.json(); if (j.detail) msg = j.detail; } catch(e) {}
+      document.getElementById('weekNote').textContent = msg;
+    } else {
+      await load();
+    }
+  } catch (e) {
+    document.getElementById('weekNote').textContent = 'Rebuild failed.';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
+load();
+
+(function(){var btn=document.getElementById('themeToggle');function upd(){if(!btn)return;var d=document.documentElement.getAttribute('data-theme')==='dark';btn.textContent=d?'☀️':'🌙';btn.title=d?'Light mode':'Dark mode';}window.toggleTheme=function(){var d=document.documentElement.getAttribute('data-theme')==='dark';var n=d?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('theme',n);upd();};upd();})();
+
+function closeNavGroups(){
+  document.querySelectorAll('.nav-group.open').forEach(function(g){
+    g.classList.remove('open');
+    var b = g.querySelector('.nav-group-btn');
+    if (b) b.setAttribute('aria-expanded', 'false');
+  });
+}
+function toggleNavGroup(ev){
+  ev.preventDefault();
+  ev.stopPropagation();
+  var btn = ev.currentTarget, grp = btn.parentElement, wasOpen = grp.classList.contains('open');
+  closeNavGroups();
+  if (!wasOpen){ grp.classList.add('open'); btn.setAttribute('aria-expanded', 'true'); }
+}
+document.addEventListener('click', closeNavGroups);
+document.addEventListener('keydown', function(ev){ if (ev.key === 'Escape') closeNavGroups(); });
+</script>
+</body>
+</html>

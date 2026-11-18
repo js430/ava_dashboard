@@ -3,6 +3,50 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-11-17 — Weekly movers page `/weekly` (branch weekly-movers)
+
+Jeffrey chose **B: tracked cards + the whole catalog** (rejected A: tracked
+cards only — too few cards to make the lists interesting; C: live API polls —
+cost and rate limits for data the app already stores). Defaults taken without
+an answer, all changeable: **members only** (same gate as the Card Tracker),
+**no Discord post yet**, thresholds as `WEEKLY_*` env-overridable constants in
+`weekly_report.py` ($3 floor, 15% under the 90-day median, 40% spike,
+3 weeks falling, 45-day new release, top 15 per list).
+
+- **Two new dashboard-owned tables** (ava_bot never reads them):
+  `catalog_price_weekly` (one price per catalog card per Monday-week, because
+  `catalog_cards` only holds today's price; kept 26 weeks) and
+  `weekly_reports` (the built lists, denormalized).
+- **Lists:** risers, fallers, "worth watching" (steady climb, not a spike),
+  "below its usual price" (≥15% under the 90-day median while the 3-month
+  trend isn't sliding), "cooling off" (3 weekly drops, a big jump on little
+  history, or a tracked new release easing). Wording describes what happened;
+  never buy/sell advice, and the page says so.
+- **The report for week W covers the week that just ENDED** (Mon W-7 to
+  Sun W-1, measured as of Sun 23:59:59 UTC). Rejected "as of now": on a
+  Monday the catalog's current-week row is a few hours old and One Piece
+  isn't repriced yet, so nearly every catalog card would show no move. W-1's
+  catalog row is final once W begins, so a rebuild later in the week gives the
+  same answer.
+- **Schedule:** every 3 h capture the catalog's fresh prices into this week's
+  row (fresh = priced within 3 days, One Piece 9); build the report once from
+  Monday 12:00 UTC. Admin "Rebuild this week" button for a manual run.
+- **Same-source rule kept:** tracked series go through
+  `card_scoring.select_scoring_series`; catalog weeks compare only points with
+  the newest point's `price_source`, and a missing week means no comparison
+  (never a longer span).
+- **Tracked wins over catalog:** a catalog row that maps to a tracked card
+  (`source_id`, or Pokémon `tcgplayer_id` + language) is skipped; the tracked
+  row borrows its image.
+- **`change_pct` is stored in percent** (18.0 = +18%), like
+  `card_scores.momentum_*`; the pure functions work in fractions.
+  `below_usual` rows store the usual price in `price_then` and the gap in
+  `change_pct`.
+- **Pokémon catalog cards only appear when their set was refreshed recently**
+  (catalog Pokémon prices are only as fresh as the set's last refresh), so
+  most Pokémon catalog movement comes from tracked cards. Watch this after the
+  first few weeks.
+
 ## 2026-11-16 — Oversized uploads get a 413, not a 500
 
 Jeffrey chose **B: subclass the size-limit library.** A body over

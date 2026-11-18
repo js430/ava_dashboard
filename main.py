@@ -64,6 +64,7 @@ import lorcana
 import gundam
 import games
 import traffic
+import weekly_report
 
 load_dotenv()
 
@@ -232,6 +233,30 @@ async def _card_price_sweep_scheduler(app: FastAPI) -> None:
         await asyncio.sleep(CARD_SWEEP_INTERVAL_S)
 
 
+# "This week" report: every few hours, keep the catalog's weekly price rows
+# current and build the week's lists once they are due (Monday afternoon UTC
+# onward, once per week). Reads only data the app already stores.
+WEEKLY_REPORT_START_DELAY_S = 10 * 60
+WEEKLY_REPORT_INTERVAL_S = 3 * 60 * 60
+
+
+async def _weekly_report_scheduler(app: FastAPI) -> None:
+    await asyncio.sleep(WEEKLY_REPORT_START_DELAY_S)
+    while True:
+        try:
+            captured = await weekly_report.capture_catalog_week(app.state.db)
+            logger.info("Weekly report: %s catalog price(s) captured", captured)
+            if await weekly_report.report_due(app.state.db):
+                summary = await weekly_report.generate_report(app.state.db)
+                logger.info("Weekly report: built week %s (%s row(s))",
+                            summary.get("week"), summary.get("rows"))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Weekly report failed — retrying next interval")
+        await asyncio.sleep(WEEKLY_REPORT_INTERVAL_S)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     secret = os.getenv("SESSION_SECRET", "")
@@ -279,6 +304,11 @@ async def lifespan(app: FastAPI):
     # without costing anything but search speed. Never raises.
     if await catalog.ensure_catalog_search_indexes(app.state.db):
         logger.info("Catalog search indexes ready")
+    try:
+        # After the catalog and tracker schemas: it reads both.
+        await weekly_report.ensure_weekly_schema(app.state.db)
+    except Exception:
+        logger.exception("Weekly report schema ensure failed — /weekly may be unavailable")
     try:
         await population.ensure_population_schema(app.state.db)
     except Exception:
@@ -330,6 +360,8 @@ async def lifespan(app: FastAPI):
     # few seconds, and keeps the hourly totals and old-row clean-up going.
     traffic_flush_task = asyncio.create_task(traffic.run_flusher(app))
     traffic_maintenance_task = asyncio.create_task(traffic.run_maintenance(app))
+    # Every few hours: weekly catalog prices, then the week's lists when due.
+    weekly_report_task = asyncio.create_task(_weekly_report_scheduler(app))
     try:
         yield
     finally:
@@ -344,6 +376,7 @@ async def lifespan(app: FastAPI):
         gundam_sync_task.cancel()
         traffic_flush_task.cancel()
         traffic_maintenance_task.cancel()
+        weekly_report_task.cancel()
         # Save whatever is still buffered before the pool goes away. Never raises.
         await traffic.flush_now(app.state.db)
         await app.state.db.close()
@@ -2760,6 +2793,93 @@ async def card_tracker_page(request: Request):
         "max_portfolio_cards": MAX_USER_PORTFOLIO_CARDS,
         "default_visible_columns": DEFAULT_VISIBLE_COLUMNS,
     })
+
+
+@app.get("/weekly", response_class=HTMLResponse)
+async def weekly_page(request: Request):
+    """"This week" price-move lists. Same access as /card-tracker: a full
+    member or a paying local account; guests get the sign-in preview and
+    demo/role-less accounts go to the trial. The data itself only comes from
+    /api/weekly-report, which is gated the same way."""
+    user = request.session.get("user")
+    subscriber = None
+    if not user:
+        if await account_has_access(request):
+            subscriber = {"id": current_account_id(request),
+                          "username": request.session.get("account_email", "Member")}
+        else:
+            return login_redirect_or_preview(
+                request, title="This Week's Price Moves — Nexus Card Co",
+                description="Weekly lists of the biggest card price risers, fallers and "
+                            "cards worth watching. Sign in with Discord to see them.")
+    if user and is_demo(request):
+        return RedirectResponse("/sample-card-tracker")
+    return templates.TemplateResponse(request, "weekly.html", {
+        "request": request,
+        "username": (user or subscriber)["username"],
+        "avatar": user.get("avatar") if user else None,
+        "user_id": (user or subscriber)["id"],
+        "is_admin": bool(user) and int(user["id"]) in ADMIN_USER_IDS,
+        "is_mod": bool(user) and request.session.get("mod", False),
+    })
+
+
+def _weekly_json_value(v):
+    """asyncpg hands back Decimal and date objects; JSON wants plain values."""
+    if isinstance(v, Decimal):
+        return float(v)
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    return v
+
+
+@app.get("/api/weekly-report")
+@limiter.limit("60/minute")
+async def api_weekly_report(request: Request, week: str = "", game: str = "",
+                            user=Depends(get_member_or_subscriber)):
+    pool = request.app.state.db
+    if game and game not in games.KEYS:
+        raise HTTPException(status_code=400, detail="Unknown game.")
+    weeks = await weekly_report.report_weeks(pool)
+    chosen = None
+    if week:
+        try:
+            chosen = datetime.strptime(week, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="That week isn't a valid date.")
+        if chosen not in weeks:
+            raise HTTPException(status_code=404, detail="There is no report for that week.")
+    elif weeks:
+        chosen = weeks[0]
+    rows = []
+    if chosen is not None:
+        raw = await weekly_report.read_report(pool, chosen, game or None)
+        rows = [{k: _weekly_json_value(v) for k, v in dict(r).items()} for r in raw]
+    async with pool.acquire() as conn:
+        mine = await conn.fetch(
+            "SELECT card_id FROM user_tracked_cards WHERE user_id = $1", int(user["id"]))
+    return JSONResponse({
+        "week": chosen.isoformat() if chosen else None,
+        "weeks": [w.isoformat() for w in weeks],
+        "games": [{"key": g.key, "label": g.label} for g in games.GAMES],
+        "lists": [{"key": k, "label": label} for k, label in weekly_report.LISTS],
+        "rows": rows,
+        "my_card_ids": [r["card_id"] for r in mine],
+    }, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/weekly-report/regenerate")
+@limiter.limit("10/hour")
+async def api_weekly_report_regenerate(request: Request, user=Depends(require_admin)):
+    """Admin only: refresh the catalog's weekly prices and rebuild this
+    week's lists now, instead of waiting for the scheduler."""
+    pool = request.app.state.db
+    captured = await weekly_report.capture_catalog_week(pool)
+    summary = await weekly_report.generate_report(pool)
+    logger.info("Weekly report: rebuilt by admin %s (%s catalog price(s) captured)",
+                user["id"], captured)
+    return JSONResponse({"ok": True, "captured": captured, **summary},
+                        headers={"Cache-Control": "no-store"})
 
 # The trial's data source: a real, curated portfolio (not synthetic data like
 # /sample's) shown read-only to demo members as a taste of the live tracker.
