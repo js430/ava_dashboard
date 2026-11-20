@@ -2671,3 +2671,13 @@ Cross-repo with ava_bot (decision logged there, "Dashboard access follows Discor
 - "Refresh my access": `/refresh-access?next=` goes back through Discord login; the validated local return path rides in the HMAC-signed OAuth state (old 3-part states still verify). Link sits under the "Get Intel or Monitor role" button on the 4 sample pages.
 - Rejected: a FastAPI dependency (access is read from the session in templates and routes without a user dependency); calling Discord per request/timer; shorter cookie.
 - Tested: 54 checks (tests/test_role_refresh.py, local Postgres); cross-checked against the bot's real upsert. Not tested in a browser or against live Discord/Whop.
+
+## 2026-11-20 — Photo scanner reads Lorcana and Gundam (branch claude/scan-lorcana-gundam)
+
+Cross-repo with ava_bot ("card ID reads the shared catalog", logged there). The bot's card identifier is moving to the shared catalog for One Piece, Riftbound, Lorcana and Gundam, and the website scanner should recognise the same games.
+- **Scanner prompt** now knows `lorcana` and `gundam`. Lorcana: number before the slash ("123/204 • EN" -> "123"), name as "Title - Subtitle" to match how lorcana.py stores it. Gundam: the printed code as is ("GD01-001"), name without code or rarity. Rules and output keys for existing games are untouched.
+- **games.py:** `scan_name` added for both, so `from_scan` maps them.
+- **find-card** (`/api/grading-calculator/find-card`) handles Lorcana's quirks: numbers restart in every set, so the name narrows the search before the 25-row cap; leading zeros are ignored; the normal print is chosen over the foil (foil is its own row). Other games' matching is unchanged.
+- **On the page:** the Grading Calculator is the only place with the scanner, and grading is still off for Lorcana and Gundam (not enabled, deliberately). A Lorcana or Gundam scan fills the name, set and number boxes and says "Scanned a Lorcana card — this calculator covers ..., so nothing was auto-matched." No grading was switched on.
+- Not done: Gundam reprints keep their original number in a later set, so find-card finds two sets and answers "no single match"; and two prints of one Gundam number in the same set pick the first row. Left as is until the bot or page needs better.
+- Tests: tests/test_scan_games.py (real Postgres in its own schema, mocked Anthropic client).

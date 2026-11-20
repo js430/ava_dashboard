@@ -1450,7 +1450,10 @@ async function applyScanResult(scan){
     const names = Array.from(gameSel.options).map(o => o.textContent.trim());
     const list = names.length > 1
       ? names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] : names.join('');
-    status.textContent = `Scanned a ${scan.game || 'card'} — this calculator covers ${list}, `
+    // Lorcana and Gundam are read by the scanner but have no grading here.
+    const known = GAME_INFO[scan.game];
+    const scannedLabel = known ? known.label + ' card' : (scan.game || 'card');
+    status.textContent = `Scanned a ${scannedLabel} — this calculator covers ${list}, `
       + `so nothing was auto-matched. The scanned name/set/number are filled in above.`;
     return;
   }
