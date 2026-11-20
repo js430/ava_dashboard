@@ -91,12 +91,14 @@ GAMES = (
          priced_from_catalog=True, scan_name="riftbound",
          card_example="Ahri", sealed_example="Origins Booster Box"),
     # Priced from the catalog (lorcana.py, a daily sync from Lorcast); cards
-    # only, no grading, set import or scanner.
+    # only, no grading or set import. The photo scanner reads them
+    # (scan_name), but the Grading Calculator it lives on has no Lorcana or
+    # Gundam game to fill, so a scan there fills the manual fields instead.
     Game("lorcana", "Lorcana", catalog=True, catalog_picker=True, priced_from_catalog=True,
-         card_example="Elsa - Spirit of Winter"),
+         scan_name="lorcana", card_example="Elsa - Spirit of Winter"),
     # Same (gundam.py, a daily sync from TCGCSV).
     Game("gundam", "Gundam", catalog=True, catalog_picker=True, priced_from_catalog=True,
-         card_example="Gundam Aerial"),
+         scan_name="gundam", card_example="Gundam Aerial"),
 )
 
 KEYS = tuple(g.key for g in GAMES)

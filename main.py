@@ -979,7 +979,7 @@ EXTRACT_PROMPT = (
     "You are reading a trading card game card image. Extract the following and return "
     "ONLY a valid JSON object with no extra text, markdown, or code fences:\n\n"
     "{\n"
-    '  "game": "one of: pokemon, magic, yugioh, one piece, riftbound, other",\n'
+    '  "game": "one of: pokemon, magic, yugioh, one piece, riftbound, lorcana, gundam, other",\n'
     '  "name": "the card name exactly as printed — see formatting rules below",\n'
     '  "number": "the card number as printed (e.g. 045, OP01-001), without the set total — null if not visible",\n'
     '  "set": "the set or expansion name if visible, otherwise null",\n'
@@ -990,9 +990,18 @@ EXTRACT_PROMPT = (
     "}\n\n"
     "For the game field: use 'magic' for Magic: The Gathering, 'yugioh' for Yu-Gi-Oh!, "
     "'one piece' for One Piece TCG, 'pokemon' for Pokemon TCG, 'riftbound' for Riftbound "
-    "(the League of Legends trading card game), or 'other' for anything else.\n\n"
+    "(the League of Legends trading card game), 'lorcana' for Disney Lorcana, 'gundam' for the "
+    "Gundam Card Game, or 'other' for anything else.\n\n"
     "For a Riftbound card, the number is printed at the bottom with a set code, like "
     "'OGN-066/298': return it as 'OGN-066', without the total.\n\n"
+    "For a Lorcana card, the collector number is printed at the bottom-left like '123/204 • EN • 1'. "
+    "Return only the number before the slash, as '123', without the total and without the language "
+    "code. Enchanted and other cards numbered past the set total (e.g. '205/204') still return just "
+    "'205'. The name is the bold title PLUS the subtitle printed under it, joined with ' - ' "
+    "(e.g. 'Elsa - Spirit of Winter'); a card with no subtitle is just its title.\n\n"
+    "For a Gundam Card Game card, the card number is a code like 'GD01-001' or 'ST01-001' "
+    "printed at the bottom: return it exactly as printed. The name is the card's title only, "
+    "without the code or rarity.\n\n"
     "promo_stamp: if the card artwork has a retailer or event stamp printed over it "
     "(e.g. 'GameStop', 'Target', 'Walmart', 'Best Buy', 'PAX', 'Pokemon Center'), set this "
     "to the stamp name as a string. Otherwise null. "
@@ -6313,12 +6322,26 @@ async def api_grading_find_card(request: Request, game: str, number: str = "",
     name = (name or "").strip()[:120]
     if not code and not name:
         raise HTTPException(status_code=400, detail="A number or name is required")
+    # Lorcana numbers restart at 1 in every set, so a number alone spans many
+    # sets: the name narrows the query itself (before the 25-row cap), and
+    # leading zeros are ignored ("007" on the card, "7" in the catalog). Its
+    # foil is a separate row (version 'Foil'); ORDER BY version lists the
+    # normal print first, so that is the one picked.
+    number_sql = "lower(split_part(card_number, '/', 1))"
+    by_name = ""
+    if game == "lorcana":
+        code = code.lstrip("0") or code
+        number_sql = "ltrim(" + number_sql + ", '0')"
+        if code and name:
+            by_name = "AND lower(card_name) = lower($3) "
+    query = ("SELECT id, set_id, card_name FROM catalog_cards WHERE game = $1 "
+             f"AND ($2 = '' OR {number_sql} = lower($2)) "
+             "AND ($2 <> '' OR lower(card_name) = lower($3)) ")
     async with request.app.state.db.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT id, set_id, card_name FROM catalog_cards WHERE game = $1 "
-            "AND ($2 = '' OR lower(split_part(card_number, '/', 1)) = lower($2)) "
-            "AND ($2 <> '' OR lower(card_name) = lower($3)) "
-            "ORDER BY version, id LIMIT 25", game, code, name)
+        rows = await conn.fetch(query + by_name + "ORDER BY version, id LIMIT 25",
+                                game, code, name)
+        if not rows and by_name:
+            rows = await conn.fetch(query + "ORDER BY version, id LIMIT 25", game, code, name)
     if code and name:
         named = [r for r in rows if r["card_name"].lower() == name.lower()]
         rows = named or rows
