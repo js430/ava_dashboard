@@ -176,7 +176,7 @@
       </div>
     </div>
     {% endif %}
-    <a href="/raffle-wheel">Raffle</a>
+    {% if is_admin %}<a href="/raffle-wheel">Raffle</a>{% endif %}
     <div class="nav-group">
       <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Nexus Playground<span class="nav-caret">&#9662;</span></button>
       <div class="nav-menu">

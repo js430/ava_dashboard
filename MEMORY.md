@@ -3,6 +3,19 @@ Decision log for ava_dashboard. Read this at the start of every session.
 
 ---
 
+## 2026-11-24 — Weekly QA pass (security scan + break-testing), first run and fixes
+
+**Weekly job:** Claude desktop scheduled task `ava-dashboard-weekly-qa`, Sundays 10:00 local, runbook `.claude/qa/README.md` (gitignored, never deployed). Chosen over a cloud routine (can't reach a local Postgres/test app or the browser pane) and GitHub Actions (deterministic only, no exploratory testing). Cost: it runs only while the desktop app is open. Each run tests `origin/main` in a new worktree `qa/weekly-<date>`, fixes small things there, never commits or pushes, and writes `.claude/qa/reports/<date>/SUMMARY.md`. Testing = five Sonnet subagents (free tiers, paid accounts, members, staff, browser/mobile) against the real app on a throwaway Postgres with synthetic data and outbound network blocked (`.claude/qa/harness`).
+
+**First run (by hand):** pip-audit clean; no access leaks across 156 routes × 10 tiers. Fixes (uncommitted on `weekly-movers` when written; apply cleanly to main):
+- **Role re-check no longer skips Discord sessions carrying a leftover `guest` flag.** `/guest` used to set it on Discord sessions and `/callback` never cleared it, so "continue as guest" then Discord login switched the re-check off for good (the cookie slides on every response). Now `/callback` pops `guest`, `/guest` only sets it with no Discord user, and `RoleRefreshMiddleware` keys on the Discord user alone. **Revises the 2026-11-09 "skips … guest" rule** for that both-flags case only; `tests/test_role_refresh.py` updated (55/55).
+- Global 400s instead of 500s: unreadable JSON (`json.JSONDecodeError`), values Postgres refuses (`asyncpg DataError`: int overflow, NUL, out-of-range dates), and missing referenced rows (`ForeignKeyViolationError`). Rate-limit 429 now `{"detail": plain English}` (slowapi's `{"error": …}` was invisible to pages).
+- `/docs`, `/redoc`, `/openapi.json` turned off (published every route, admin ones too).
+- Tips photos must decode as JPEG/PNG/GIF/WebP and are stored under their real type; `_is_int_id` (JSON `true` is not id 1) on tracker tools; inventory price must be finite; `portfolios.MAX_MONEY` = NUMERIC(12,2) max; map links http(s) only; Discord-unreachable login page; admin nav gated on Monitor Alerts and Raffle on Network.
+- **Open decisions** (see that run's SUMMARY.md): Render's `X-Real-IP` trust, made-up cards in shared `tracked_cards`, Stripe billing portal, wrong-typed JSON bodies per route, terms gate on APIs, paid-account nav.
+
+---
+
 ## 2026-11-17 — Weekly movers page `/weekly` (branch weekly-movers)
 
 Jeffrey chose **B: tracked cards + the whole catalog** (rejected A: tracked
