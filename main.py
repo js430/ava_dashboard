@@ -26,7 +26,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from anthropic import AsyncAnthropic
 from PIL import Image
@@ -412,7 +412,9 @@ async def lifespan(app: FastAPI):
         await app.state.db.close()
 
 
-app = FastAPI(lifespan=lifespan)
+# No /docs, /redoc or /openapi.json: they published every route, admin ones
+# included, to anyone. Nothing in the app or its pages uses them.
+app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
 # ---- Static assets ----
 # Brand assets (favicon, app icons, the Open Graph banner). Self-hosted, which
@@ -495,7 +497,43 @@ def rate_limit_key(request: Request) -> str:
 
 limiter = Limiter(key_func=rate_limit_key)
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+async def _rate_limited(request: Request, exc: RateLimitExceeded):
+    """Same 429 as slowapi's own handler, but worded for people and under
+    "detail", which is the field every page shows. slowapi's {"error": ...}
+    reply was invisible to the pages ("Something went wrong")."""
+    return JSONResponse(
+        {"detail": "You're doing that too often. Please wait a few minutes and try again."},
+        status_code=429)
+
+
+app.add_exception_handler(RateLimitExceeded, _rate_limited)
+
+
+# ---- Bad input that used to surface as a 500 ----
+# A body that isn't JSON (request.json()), or a value Postgres refuses (an id
+# past the int range, a NUL character in text, a date out of range) is the
+# sender's mistake, not a server fault. Answer 400 in plain English and log a
+# one-line warning instead of a traceback.
+BAD_INPUT_MESSAGE = "Some of what was sent isn't valid. Check it and try again."
+
+
+async def _bad_json(request: Request, exc: json.JSONDecodeError):
+    logger.warning("Unreadable JSON body on %s %s", request.method, request.url.path)
+    return JSONResponse({"detail": BAD_INPUT_MESSAGE}, status_code=400)
+
+
+async def _bad_db_value(request: Request, exc: asyncpg.exceptions.DataError):
+    logger.warning("Database refused a value on %s %s: %s", request.method,
+                   request.url.path, str(exc)[:200])
+    return JSONResponse({"detail": BAD_INPUT_MESSAGE}, status_code=400)
+
+
+app.add_exception_handler(json.JSONDecodeError, _bad_json)
+app.add_exception_handler(asyncpg.exceptions.DataError, _bad_db_value)
+# e.g. liking a tip that doesn't exist, or a photo for a missing module.
+app.add_exception_handler(asyncpg.exceptions.ForeignKeyViolationError, _bad_db_value)
 
 # ---- Security headers ----
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -664,7 +702,9 @@ class RoleRefreshMiddleware(BaseHTTPMiddleware):
             session = request.session
             user = session.get("user")
             pool = getattr(request.app.state, "db", None)
-            if user and pool is not None and not session.get("guest"):
+            # Keyed on the Discord user alone: a leftover "guest" flag on a
+            # Discord session must not switch the re-check off.
+            if user and user.get("id") and pool is not None:
                 try:
                     found = await _fetch_member_roles(pool, int(user["id"]))
                     if (isinstance(found, tuple)
@@ -1696,7 +1736,11 @@ async def guest_entry(request: Request):
     guest and lands on a menu of the Nexus Playground tools guests may
     use — Grading Calculator, Card Catalog, and the read-only Card Tracker
     trial (require_trial_viewer allows guests too)."""
-    request.session["guest"] = True
+    # Only for visitors with no Discord login: on a Discord session the flag
+    # would switch off RoleRefreshMiddleware's role re-check (it skips guests),
+    # and a demo account already gets the guest tier without it.
+    if not request.session.get("user"):
+        request.session["guest"] = True
     return templates.TemplateResponse(request, "guest_home.html", {
         "request": request,
         "guest_scan_daily_limit": GUEST_SCAN_DAILY_LIMIT,
@@ -2151,29 +2195,36 @@ async def callback(request: Request, code: str = None, error: str = None, state:
     if not verify_oauth_state(state):
         return HTMLResponse("<h3>Invalid session state. Please try logging in again.</h3>", status_code=400)
 
-    async with httpx.AsyncClient() as client:
-        token_resp = await client.post(
-            f"{DISCORD_API}/oauth2/token",
-            data={
-                "client_id": DISCORD_CLIENT_ID,
-                "client_secret": DISCORD_CLIENT_SECRET,
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": DISCORD_REDIRECT_URI,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"}
-        )
+    # Discord down or slow: a plain page instead of a 500 traceback.
+    try:
+        async with httpx.AsyncClient() as client:
+            token_resp = await client.post(
+                f"{DISCORD_API}/oauth2/token",
+                data={
+                    "client_id": DISCORD_CLIENT_ID,
+                    "client_secret": DISCORD_CLIENT_SECRET,
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": DISCORD_REDIRECT_URI,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"}
+            )
 
-    if token_resp.status_code != 200:
-        return HTMLResponse("<h3>OAuth failed. Try again.</h3>", status_code=500)
+        if token_resp.status_code != 200:
+            return HTMLResponse("<h3>OAuth failed. Try again.</h3>", status_code=500)
 
-    tokens = token_resp.json()
-    access_token = tokens.get("access_token")
+        tokens = token_resp.json()
+        access_token = tokens.get("access_token")
 
-    # Taken before the roles are read, so a role change landing mid-login is
-    # still picked up by the re-check afterwards.
-    roles_at = time.time()
-    has_role, user, member_roles = await check_discord_role(access_token)
+        # Taken before the roles are read, so a role change landing mid-login is
+        # still picked up by the re-check afterwards.
+        roles_at = time.time()
+        has_role, user, member_roles = await check_discord_role(access_token)
+    except httpx.HTTPError:
+        logger.exception("Discord login: couldn't reach Discord")
+        return HTMLResponse("<h3>We couldn't reach Discord just now.</h3>"
+                            "<p><a href=\"/login\">Try signing in again</a> in a minute.</p>",
+                            status_code=502)
 
     if not user:
         return HTMLResponse("<h3>Could not verify your Discord account.</h3>", status_code=403)
@@ -2185,6 +2236,10 @@ async def callback(request: Request, code: str = None, error: str = None, state:
             status_code=403
         )
     request.session["roles_at"] = roles_at
+    # A guest visit earlier in this browser leaves session["guest"] behind.
+    # RoleRefreshMiddleware skips guest sessions, so a leftover flag would
+    # switch off the role re-check for this Discord login.
+    request.session.pop("guest", None)
     is_member = request.session["member"]
     region_access = request.session.get("regions") or []
 
@@ -2580,6 +2635,12 @@ async def api_raffle_spin(request: Request, user=Depends(get_current_user)):
 # catalog and the destructive tools (refresh, rematch, reset-history, remove,
 # backdate, import).
 
+def _is_int_id(value) -> bool:
+    """A JSON integer id. bool is a subclass of int in Python, so a bare
+    isinstance check lets `true` through as id 1."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def require_server_mod(request: Request) -> dict:
     """Admins or SERVER MODS (MOD_ROLE_IDS). Backs the Tracker Management
     page and its actions.
@@ -2733,6 +2794,10 @@ async def api_inventory_create_card(request: Request, user=Depends(require_inven
     try:
         price = float(price) if price not in (None, "") else None
     except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="price must be a number")
+    # float() accepts "nan", "inf" and "1e999"; a stored NaN/inf price made the
+    # card list fail for everyone.
+    if price is not None and not math.isfinite(price):
         raise HTTPException(status_code=400, detail="price must be a number")
 
     pool = request.app.state.db
@@ -3247,7 +3312,7 @@ async def api_portfolio_remove(request: Request, user=Depends(get_member_or_subs
     anyone else still tracking it. No cap; unlinking is cheap."""
     body = await request.json()
     ids = body.get("card_ids")
-    if not isinstance(ids, list) or not ids or not all(isinstance(i, int) for i in ids):
+    if not isinstance(ids, list) or not ids or not all(_is_int_id(i) for i in ids):
         raise HTTPException(status_code=400, detail="card_ids (non-empty list of int) required")
     user_id = int(user["id"])
     async with request.app.state.db.acquire() as conn:
@@ -3457,7 +3522,7 @@ async def api_card_tracker_rematch(request: Request, user=Depends(require_admin)
         raise HTTPException(status_code=403, detail="Re-matching is admin-only")
     body = await request.json()
     card_id = body.get("card_id")
-    if not isinstance(card_id, int):
+    if not _is_int_id(card_id):
         raise HTTPException(status_code=400, detail="card_id (int) required")
     async with request.app.state.db.acquire() as conn:
         card = await conn.fetchrow("SELECT id, name FROM tracked_cards WHERE id = $1", card_id)
@@ -3490,7 +3555,7 @@ async def api_card_tracker_reset_history(request: Request, user=Depends(require_
     body = await request.json()
     reset_all = bool(body.get("all"))
     card_id = body.get("card_id")
-    if not reset_all and not isinstance(card_id, int):
+    if not reset_all and not _is_int_id(card_id):
         raise HTTPException(status_code=400, detail="card_id (int) or all=true required")
 
     async with request.app.state.db.acquire() as conn:
@@ -3522,7 +3587,7 @@ def _validate_card_ids(body: dict) -> list:
     cards are selected. The cap belongs to backdate (see
     _validate_backdate_card_ids), which spends PPT credits per card."""
     ids = body.get("card_ids")
-    if not isinstance(ids, list) or not ids or not all(isinstance(i, int) for i in ids):
+    if not isinstance(ids, list) or not ids or not all(_is_int_id(i) for i in ids):
         raise HTTPException(status_code=400, detail="card_ids (non-empty list of int) required")
     return ids
 
@@ -5662,6 +5727,17 @@ async def api_tips_create_photo(request: Request, user=Depends(get_current_disco
         image_bytes = base64.b64decode(image_data)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid base64 image")
+
+    # The label above is the sender's own claim. Store only bytes that really
+    # are one of the allowed image formats, served under their real type.
+    try:
+        with Image.open(io.BytesIO(image_bytes), formats=_PILLOW_FORMATS) as probe:
+            real_format = probe.format
+            probe.verify()
+        media_type = f"image/{real_format.lower()}"
+    except Exception:
+        raise HTTPException(status_code=400,
+                            detail="That file isn't a photo we can use. Try a JPEG or PNG.")
 
     if len(image_bytes) > MAX_IMAGE_BYTES:
         image_bytes, media_type = _compress_card_image(image_bytes)
@@ -9895,7 +9971,10 @@ async def get_map_data(
         result.append({
             "location": loc["location"],
             "store":    loc["store_type"],
-            "link":     loc["location_link"],
+            # Rendered as the panel's href: only web links, never javascript:.
+            "link":     (loc["location_link"]
+                         if loc["location_link"].lower().startswith(("https://", "http://"))
+                         else None),
             "lat":      lat,
             "lng":      lng,
             "restocks": restock_map.get(key, []),

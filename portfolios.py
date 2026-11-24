@@ -121,7 +121,9 @@ def default_cost_for(product_type: str):
 TWO_DP = Decimal("0.01")
 # Upper bound on any single money value. Guards quantize() against absurd but
 # technically-finite input like "1e400", which raises rather than rounding.
-MAX_MONEY = Decimal("1000000000000")   # 1 trillion
+# Also the most a NUMERIC(12,2) column holds: anything above it was accepted
+# here and then failed in the database with a 500.
+MAX_MONEY = Decimal("9999999999.99")
 
 
 PORTFOLIO_SCHEMA = [
@@ -255,7 +257,7 @@ def to_money(value, default=None):
     if d != d or d.is_infinite():          # NaN / Infinity
         return default
     # A finite-but-absurd value ("1e400") still blows up quantize(), so bound
-    # the magnitude too. Anything past a trillion is a typo, not a holding.
+    # the magnitude too. Anything past ~$10 billion is a typo, not a holding.
     if abs(d) > MAX_MONEY:
         return default
     try:

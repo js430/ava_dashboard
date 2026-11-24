@@ -323,18 +323,21 @@
     <a href="/status">Status</a>
     <a href="/monitor-alerts-setup" class="active">Monitor Alerts Setup</a>
     <a href="/tips">Tips, Tricks, and Guide</a>
+    {% set can_view_network = is_admin or request.session.get('mod', False) or request.session.get('all_mods', False) %}
+    {% if can_view_network %}
     <div class="nav-group">
-      <button class="nav-group-btn active" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
+      <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Admin Tools<span class="nav-caret">&#9662;</span></button>
       <div class="nav-menu">
-        <a href="/admin">Visitor Log</a>
-        <a href="/admin/traffic">Traffic</a>
-        <a href="/contributors">Contributors</a>
+        {% if is_admin %}<a href="/admin">Visitor Log</a>{% endif %}
+        {% if is_admin %}<a href="/admin/traffic">Traffic</a>{% endif %}
+        {% if is_admin %}<a href="/contributors">Contributors</a>{% endif %}
         <a href="/invite-network">Network</a>
         <a href="/tracker-admin">Tracker Management</a>
         {% if request.session.get('mod', False) %}<a href="/auto-delete-rules">Auto-Delete Rules</a>{% endif %}
       </div>
     </div>
-    <a href="/raffle-wheel">Raffle</a>
+    {% endif %}
+    {% if is_admin %}<a href="/raffle-wheel">Raffle</a>{% endif %}
     <div class="nav-group">
       <button class="nav-group-btn" onclick="toggleNavGroup(event)" aria-haspopup="true" aria-expanded="false">Nexus Playground<span class="nav-caret">&#9662;</span></button>
       <div class="nav-menu">

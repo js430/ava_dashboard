@@ -250,10 +250,16 @@ async def main_async():
     reset_state(); counting.queries = 0
     await get(client, None)
     await get(client, {"guest": True})
-    await get(client, {"guest": True, "user": user(6)})
     await get(client, {"account_id": 5})
     await client.get("/static/does-not-exist.css")
     check("anonymous / guest / account / static: no queries", counting.queries == 0, counting.queries)
+
+    # A leftover guest flag on a Discord session must not switch the check off
+    # (it used to: visiting /guest, then logging in, kept the flag for good).
+    reset_state(); counting.queries = 0
+    await get(client, {"guest": True, "user": user(6)})
+    check("Discord session with a leftover guest flag: still checked",
+          counting.queries == 1, counting.queries)
 
     # ---- missing table tolerated ----
     reset_state(); counting.queries = 0
